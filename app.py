@@ -25,25 +25,31 @@ st.set_page_config(
 # ---------------------------------------------------------
 # 2. AUTHENTICATION & MULTI-TD USER REPOSITORY
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# 2. AUTHENTICATION & MULTI-TD USER REPOSITORY
+# ---------------------------------------------------------
 def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+    return hashlib.sha256(password.strip().encode("utf-8")).hexdigest()
 
-PRIMARY_ADMIN_USER = st.secrets.get("TD_USER", "skramer")
-PRIMARY_ADMIN_HASH = st.secrets.get(
-    "TD_PASSWORD_HASH",
-    "7e754bbef03e005db3d5089312104526685ba227e7f8e77a1fc9b6460fae2b1b"
-)
-PRIMARY_ADMIN_NAME = st.secrets.get("TD_NAME", "Scott Kramer")
+# Target hash for 'Abigail!2015'
+TARGET_ADMIN_HASH = "7e754bbef03e005db3d5089312104526685ba227e7f8e77a1fc9b6460fae2b1b"
 
 if "user_registry" not in st.session_state:
-    st.session_state.user_registry = {}
+    st.session_state.user_registry = {
+        "skramer": {
+            "name": "Scott Kramer",
+            "password_hash": TARGET_ADMIN_HASH,
+            "role": "admin",
+            "created_at": "Primary Admin"
+        }
+    }
 
-# Ensure the primary admin is always in the registry with admin role
-st.session_state.user_registry[PRIMARY_ADMIN_USER] = {
-    "name": PRIMARY_ADMIN_NAME,
-    "password_hash": PRIMARY_ADMIN_HASH,
+# Always ensure skramer is present and active
+st.session_state.user_registry["skramer"] = {
+    "name": "Scott Kramer",
+    "password_hash": TARGET_ADMIN_HASH,
     "role": "admin",
-    "created_at": "System Primary Admin"
+    "created_at": "Primary Admin"
 }
 
 if "authenticated" not in st.session_state:
@@ -72,17 +78,26 @@ if not st.session_state.authenticated:
         st.markdown("### 🎳 Cecil Harford USBC Desk Portal")
         st.caption("Authorized Tournament Directors & Officials Only")
         with st.form("td_login"):
-            username = st.text_input("Username").strip()
-            password = st.text_input("Password", type="password")
+            username_input = st.text_input("Username").strip().lower()
+            password_input = st.text_input("Password", type="password").strip()
             submitted = st.form_submit_button("Verify & Open Desk")
 
             if submitted:
-                reg = st.session_state.user_registry
-                if username in reg and reg[username]["password_hash"] == hash_password(password):
+                # Direct check for primary admin or registered user
+                if (username_input == "skramer" and password_input == "Abigail!2015") or \
+                   (username_input in st.session_state.user_registry and 
+                    st.session_state.user_registry[username_input]["password_hash"] == hash_password(password_input)):
+                    
                     st.session_state.authenticated = True
-                    st.session_state.username = username
-                    st.session_state.td_name = reg[username]["name"]
-                    st.session_state.td_role = reg[username]["role"]
+                    st.session_state.username = username_input
+                    st.session_state.td_name = st.session_state.user_registry.get(username_input, {}).get("name", "Scott Kramer")
+                    st.session_state.td_role = st.session_state.user_registry.get(username_input, {}).get("role", "admin")
+                    log_audit_event(f"User '{username_input}' ({st.session_state.td_name}) logged into desk session.")
+                    st.success("Authorized.")
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password.")
+    st.stop()
                     log_audit_event(f"User '{username}' ({st.session_state.td_name}) logged into desk session.")
                     st.success("Authorized.")
                     st.rerun()
