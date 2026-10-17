@@ -28,29 +28,23 @@ st.set_page_config(
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
-# Initial user registry with admin default ("admin" / "admin")
-DEFAULT_ADMIN_USER = "admin"
-DEFAULT_ADMIN_HASH = "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"
+PRIMARY_ADMIN_USER = st.secrets.get("TD_USER", "skramer")
+PRIMARY_ADMIN_HASH = st.secrets.get(
+    "TD_PASSWORD_HASH",
+    "7e754bbef03e005db3d5089312104526685ba227e7f8e77a1fc9b6460fae2b1b"
+)
+PRIMARY_ADMIN_NAME = st.secrets.get("TD_NAME", "Scott Kramer")
 
 if "user_registry" not in st.session_state:
-    st.session_state.user_registry = {
-        DEFAULT_ADMIN_USER: {
-            "name": "Association Admin",
-            "password_hash": DEFAULT_ADMIN_HASH,
-            "role": "admin",
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
-        }
-    }
+    st.session_state.user_registry = {}
 
-# Sync with Streamlit Secrets if configured
-if "TD_USER" in st.secrets and "TD_PASSWORD_HASH" in st.secrets:
-    sec_user = st.secrets["TD_USER"]
-    st.session_state.user_registry[sec_user] = {
-        "name": "Primary TD",
-        "password_hash": st.secrets["TD_PASSWORD_HASH"],
-        "role": "admin",
-        "created_at": "Secrets Config"
-    }
+# Ensure the primary admin is always in the registry with admin role
+st.session_state.user_registry[PRIMARY_ADMIN_USER] = {
+    "name": PRIMARY_ADMIN_NAME,
+    "password_hash": PRIMARY_ADMIN_HASH,
+    "role": "admin",
+    "created_at": "System Primary Admin"
+}
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -238,7 +232,6 @@ nav_options = [
     "5. TD Audit Log"
 ]
 
-# Only show the user management panel to Admin accounts
 if st.session_state.td_role == "admin":
     nav_options.append("6. TD User Management ⚙️")
 
