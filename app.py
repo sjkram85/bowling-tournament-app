@@ -25,26 +25,14 @@ st.set_page_config(
 # ---------------------------------------------------------
 # 2. AUTHENTICATION & MULTI-TD USER REPOSITORY
 # ---------------------------------------------------------
-# ---------------------------------------------------------
-# 2. AUTHENTICATION & MULTI-TD USER REPOSITORY
-# ---------------------------------------------------------
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.strip().encode("utf-8")).hexdigest()
 
-# Target hash for 'Abigail!2015'
 TARGET_ADMIN_HASH = "7e754bbef03e005db3d5089312104526685ba227e7f8e77a1fc9b6460fae2b1b"
 
 if "user_registry" not in st.session_state:
-    st.session_state.user_registry = {
-        "skramer": {
-            "name": "Scott Kramer",
-            "password_hash": TARGET_ADMIN_HASH,
-            "role": "admin",
-            "created_at": "Primary Admin"
-        }
-    }
+    st.session_state.user_registry = {}
 
-# Always ensure skramer is present and active
 st.session_state.user_registry["skramer"] = {
     "name": "Scott Kramer",
     "password_hash": TARGET_ADMIN_HASH,
@@ -71,7 +59,6 @@ def log_audit_event(action: str):
         "action": action
     })
 
-# Login Screen
 if not st.session_state.authenticated:
     st.columns([1, 2, 1])[1].write("")
     with st.columns([1, 2, 1])[1]:
@@ -83,22 +70,17 @@ if not st.session_state.authenticated:
             submitted = st.form_submit_button("Verify & Open Desk")
 
             if submitted:
-                # Direct check for primary admin or registered user
-                if (username_input == "skramer" and password_input == "Abigail!2015") or \
-                   (username_input in st.session_state.user_registry and 
-                    st.session_state.user_registry[username_input]["password_hash"] == hash_password(password_input)):
-                    
+                is_skramer = (username_input == "skramer" and password_input == "Abigail!2015")
+                is_reg = (username_input in st.session_state.user_registry and 
+                          st.session_state.user_registry[username_input]["password_hash"] == hash_password(password_input))
+
+                if is_skramer or is_reg:
                     st.session_state.authenticated = True
                     st.session_state.username = username_input
-                    st.session_state.td_name = st.session_state.user_registry.get(username_input, {}).get("name", "Scott Kramer")
-                    st.session_state.td_role = st.session_state.user_registry.get(username_input, {}).get("role", "admin")
+                    user_info = st.session_state.user_registry.get(username_input, {})
+                    st.session_state.td_name = user_info.get("name", "Scott Kramer")
+                    st.session_state.td_role = user_info.get("role", "admin")
                     log_audit_event(f"User '{username_input}' ({st.session_state.td_name}) logged into desk session.")
-                    st.success("Authorized.")
-                    st.rerun()
-                else:
-                    st.error("Invalid username or password.")
-    st.stop()
-                    log_audit_event(f"User '{username}' ({st.session_state.td_name}) logged into desk session.")
                     st.success("Authorized.")
                     st.rerun()
                 else:
@@ -226,7 +208,7 @@ def export_standings_pdf(standings_df: pd.DataFrame, config: dict) -> bytes:
         ("FONTSIZE", (0, 0), (-1, 0), 9),
         ("ALIGN", (0, 0), (0, -1), "CENTER"),
         ("ALIGN", (2, 0), (-1, -1), "CENTER"),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+        ("GRID", (0, 0), (-1, 0), 0.5, colors.HexColor("#cbd5e1")),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
         ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
         ("FONTSIZE", (0, 1), (-1, -1), 8.5),
@@ -605,7 +587,7 @@ elif nav == "6. TD User Management ⚙️":
     with col_add:
         st.subheader("Add New Tournament Director")
         with st.form("add_td_form"):
-            new_user = st.text_input("New TD Username (login handle):").strip()
+            new_user = st.text_input("New TD Username (login handle):").strip().lower()
             new_name = st.text_input("Official Full Name:")
             new_pw = st.text_input("Temporary Password:", type="password")
             new_role = st.selectbox("Assigned Role:", ["td", "admin"], help="TDs can run tournaments; Admins can also add/manage other TDs.")
