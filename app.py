@@ -2470,8 +2470,14 @@ if st.session_state.td_role == "admin":
     nav_options.append(label)
 
 with st.sidebar:
-    if HAS_LOGO:
-        st.image(LOGO_PATH, width=130)
+    if HAS_LOGO or os.path.exists("maryland-flag-800.jpg"):
+        c_sl1, c_sl2 = st.columns(2)
+        with c_sl1:
+            if HAS_LOGO:
+                st.image(LOGO_PATH, width=64)
+        with c_sl2:
+            if os.path.exists("maryland-flag-800.jpg"):
+                st.image("maryland-flag-800.jpg", width=64)
     else:
         st.markdown("""
         <div style="padding-bottom: 12px;">
