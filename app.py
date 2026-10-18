@@ -52,6 +52,9 @@ st.set_page_config(
 LOGO_PATH = "CHUSBC.jpg"
 HAS_LOGO = os.path.exists(LOGO_PATH)
 
+FLAG_PATH = "maryland-flag-800.jpg"
+HAS_FLAG = os.path.exists(FLAG_PATH)
+
 RULEBOOK_PATH = "USBC-Playing-Rulebook-26-27.pdf"
 HAS_RULEBOOK = os.path.exists(RULEBOOK_PATH)
 
