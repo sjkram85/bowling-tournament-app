@@ -405,7 +405,6 @@ def hash_password(password: str) -> str:
 TARGET_ADMIN_HASH = "7e754bbef03e005db3d5089312104526685ba227e7f8e77a1fc9b6460fae2b1b"
 
 def hash_pin(pin_str: str) -> str:
-    """Hashes a 4-digit TD PIN for on-lane verification concurrence."""
     return hashlib.sha256(str(pin_str).strip().encode("utf-8")).hexdigest()
 
 def get_db_connection():
@@ -526,7 +525,6 @@ def clear_active_tournament_state():
     return False
 
 def register_td_pin(td_name: str, pin_str: str) -> bool:
-    """Registers or updates a TD's 4-digit PIN for the active squad."""
     if not td_name or len(str(pin_str).strip()) < 4:
         return False
     if "td_pins" not in st.session_state:
@@ -540,7 +538,6 @@ def register_td_pin(td_name: str, pin_str: str) -> bool:
     return True
 
 def verify_td_pin(td_name: str, pin_str: str) -> bool:
-    """Validates the entered PIN against the stored hash for that official."""
     pins = st.session_state.get("td_pins", {})
     stored_hash = pins.get(td_name.strip(), "")
     if not stored_hash:
@@ -956,7 +953,6 @@ if query_params.get("mode") == "scorer":
     if "mobile_scorer_td" not in st.session_state:
         st.session_state.mobile_scorer_td = ""
 
-    # Onboarding Form: Identify Official and Establish / Verify 4-digit PIN
     if not st.session_state.mobile_scorer_td:
         with st.form("scorer_identify_form"):
             td_name_in = st.text_input("Enter Your Name (TD on Floor):", placeholder="e.g. Dave Miller, Chris Reynolds").strip()
@@ -1004,7 +1000,19 @@ if query_params.get("mode") == "scorer":
     target_pair = parsed_pairs[selected_pair_idx]
     lane_odd, lane_even = target_pair
 
-    pair_bowlers = st.session_state.roster[st.session_state.roster["Starting Lane"].isin([lane_odd, lane_even])]
+    # Defensive check: ensure Starting Lane exists and pair_bowlers is filtered safely without KeyError
+    if "Starting Lane" not in st.session_state.roster.columns:
+        st.session_state.roster["Starting Lane"] = 1
+
+    if st.session_state.roster.empty:
+        pair_bowlers = pd.DataFrame()
+    else:
+        st.session_state.roster["Starting Lane"] = pd.to_numeric(
+            st.session_state.roster["Starting Lane"], errors="coerce"
+        ).fillna(1).astype(int)
+        pair_bowlers = st.session_state.roster[
+            st.session_state.roster["Starting Lane"].isin([lane_odd, lane_even])
+        ]
 
     if pair_bowlers.empty:
         st.warning(f"No bowlers currently assigned to {selected_pair_label}.")
@@ -1023,18 +1031,49 @@ if query_params.get("mode") == "scorer":
             </div>
             """, unsafe_allow_html=True)
 
+        # -------------------------------------------------------------
+        # 📸 MOBILE CAMERA SNAPSHOT (OVERHEAD MONITOR OCR)
+        # -------------------------------------------------------------
+        with st.expander("📸 Snap Overhead Monitor / Recap Photo (AI OCR)", expanded=False):
+            st.caption(f"Point phone camera at the screen for Lanes {lane_odd} & {lane_even}:")
+            cam_pic = st.camera_input("Take photo of monitor:", key=f"cam_{lane_odd}_{selected_game_num}")
+
+            if cam_pic is not None:
+                if st.button("🔍 Read Scores from Monitor Photo", type="primary", use_container_width=True, key=f"btn_ocr_{lane_odd}_{selected_game_num}"):
+                    if not ai_client:
+                        st.error("Gemini API key missing.")
+                    else:
+                        with st.spinner("Analyzing overhead scores with Gemini..."):
+                            bowler_list = pair_bowlers["Bowler"].tolist()
+                            scanned_scores = extract_scores_from_overhead_photo(
+                                cam_pic.getvalue(), 
+                                bowler_list, 
+                                selected_game_num
+                            )
+                            if scanned_scores:
+                                for b_name, sc_val in scanned_scores.items():
+                                    st.session_state[f"temp_ocr_{b_name}_{selected_game_num}"] = int(sc_val)
+                                st.success(f"Extracted scores for {len(scanned_scores)} bowlers! Review and verify below.")
+                            else:
+                                st.warning("Could not clearly read scores from the monitor. Please enter them manually below.")
+
+        # -------------------------------------------------------------
+        # SCORE VERIFICATION FORM WITH PIN CONCURRENCE
+        # -------------------------------------------------------------
         with st.form(f"mobile_score_form_{lane_odd}_{selected_game_num}"):
             updated_scores_map = {}
             for b_idx, b_row in pair_bowlers.iterrows():
                 b_name = b_row["Bowler"]
                 b_lane = b_row["Starting Lane"]
-                b_curr_val = int(pd.to_numeric(b_row.get(g_col, 0), errors="coerce") or 0)
                 
+                ocr_key = f"temp_ocr_{b_name}_{selected_game_num}"
+                default_score = st.session_state.get(ocr_key, int(pd.to_numeric(b_row.get(g_col, 0), errors="coerce") or 0))
+
                 updated_scores_map[b_row["USBC ID"]] = st.number_input(
                     f"Lane {b_lane}: {b_name} (Entering Avg: {b_row['Average']})",
                     min_value=0,
                     max_value=300,
-                    value=b_curr_val,
+                    value=default_score,
                     step=1,
                     key=f"m_score_{b_row['USBC ID']}_{selected_game_num}"
                 )
@@ -1341,7 +1380,7 @@ if not st.session_state.session_initialized:
     st.stop()
 
 # ---------------------------------------------------------
-# 9. GEMINI API CLIENT & DETERMINISTIC RULES ARBITER
+# 9. GEMINI API CLIENT, OVERHEAD OCR & DETERMINISTIC ARBITER
 # ---------------------------------------------------------
 api_key = st.secrets.get("GEMINI_API_KEY", None)
 if not api_key:
@@ -1376,6 +1415,47 @@ def generate_with_failover(prompt: str, temperature: float = 0.0) -> str:
                     break
 
     raise last_exception
+
+def extract_scores_from_overhead_photo(image_bytes: bytes, bowlers_on_pair: list, game_num: int) -> dict:
+    """
+    Extracts individual bowler game scores from a photo of an overhead bowling monitor or recap sheet.
+    Returns a dict: {bowler_name: score_int}
+    """
+    if not ai_client:
+        return {}
+
+    bowler_names_str = ", ".join(bowlers_on_pair)
+    prompt = f"""
+You are an expert bowling tournament scorekeeper assistant.
+Analyze this photo of an overhead bowling center display monitor, recap sheet, or score sheet.
+
+Target Bowlers assigned to this pair:
+{bowler_names_str}
+
+We need scores for Game {game_num}.
+
+Instructions:
+1. Identify the game scores corresponding to each target bowler for Game {game_num}.
+2. Note that bowling monitors often abbreviate names (e.g. 'S KRAMER', 'DAVE M', 'KRAMER, S'). Match them accurately to the closest name in the Target Bowlers list.
+3. Extract total final game score (between 0 and 300). If a game is in progress or unbowled, output 0.
+4. Output strictly a JSON object mapping the exact bowler name from the Target Bowlers list to their integer score.
+Example output format:
+{{"Scott Kramer": 245, "Dave Miller": 210}}
+
+Output ONLY raw JSON with no markdown formatting or backticks.
+"""
+    try:
+        content_part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
+        response = ai_client.models.generate_content(
+            model=PRIMARY_MODEL,
+            contents=[content_part, prompt],
+            config=types.GenerateContentConfig(temperature=0.0)
+        )
+        cleaned = response.text.replace("```json", "").replace("```", "").strip()
+        return json.loads(cleaned)
+    except Exception as e:
+        print(f"Error parsing overhead score photo: {e}")
+        return {}
 
 def arbitrate_rules_inquiry(query_text: str, event_context: str) -> str:
     if not ai_client:
@@ -1428,8 +1508,8 @@ def generate_first_time_td_guide() -> str:
             "1. T-60 Min: Connect external monitor to laptop. Extend display (Win+P). Open ?mode=kiosk on secondary display and hit F11.\n"
             "2. T-45 Min: In Module 1 (Tab 2), ingest roster and run Automated Lane Balancer (handles up to 40 lanes, keeps teams together).\n"
             "3. T-30 Min: As bowlers arrive, select name in Module 1 (Tab 3), collect fee, click 'Mark Paid & Display on Customer Screen'.\n"
-            "4. T-15 Min: Floor TDs scan ?mode=scorer QR code on their phones, create their 4-digit PIN, and begin monitoring pairs.\n"
-            "5. Squad Active: Roving TDs input scores on their phones and lock with their secret PIN. Central Desk monitors verified lanes on the Radar Matrix.\n"
+            "4. T-15 Min: Floor TDs scan ?mode=scorer QR code on their phones, create their 4-digit PIN, and claim lane pairs.\n"
+            "5. Squad Active: Roving TDs snap overhead monitors with phone camera OCR, input scores, and lock with their secret PIN. Central Desk monitors verified lanes on the Radar Matrix.\n"
             "6. Finals & Archive: In Module 3, run stepladder finals, declare Champion, and click 'Archive Tournament' to store in Google Sheets."
         )
 
@@ -1443,7 +1523,7 @@ Current Event Context:
 - Active Pairs: {st.session_state.tournament_config['lanes_range']}
 - Format Mode: {st.session_state.tournament_config.get('format_mode', 'Standard')}
 
-Structure the guide into 6 numbered chronological steps including how floor TDs connect their phones to ?mode=scorer, set their secret PIN, sign score submissions with PIN concurrence, and how Central Desk monitors the live Lane Radar Matrix.
+Structure the guide into 6 numbered chronological steps including how floor TDs connect their phones to ?mode=scorer, snap overhead scoring screens with camera OCR, sign score submissions with PIN concurrence, and how Central Desk monitors the live Lane Radar Matrix.
 """
     try:
         return generate_with_failover(prompt, temperature=0.1)
@@ -1452,8 +1532,8 @@ Structure the guide into 6 numbered chronological steps including how floor TDs 
             "1. Setup external monitor on desk facing bowlers (?mode=kiosk, F11).\n"
             "2. Ingest roster and balance lanes across pairs in Module 1.\n"
             "3. Take payments and push check-in QR codes to bowler screen.\n"
-            "4. Roving TDs open ?mode=scorer on their phones and set a 4-digit PIN.\n"
-            "5. TDs enter scores on pairs and lock with PIN concurrence. Monitor verified pairs in Module 2 Lane Radar Matrix.\n"
+            "4. Roving TDs open ?mode=scorer on their phones, snap monitors with AI OCR, and set a 4-digit PIN.\n"
+            "5. TDs lock submissions with PIN concurrence. Central Desk tracks verification in Module 2 Lane Radar Matrix.\n"
             "6. Run stepladder and archive event in Module 3."
         )
 
@@ -1607,221 +1687,7 @@ def resolve_bracket_match(b1_id: str, b2_id: str, game_col: str, bracket_type: s
     return r1["Bowler"], t1, r2["Bowler"], t2, winner_id
 
 # ---------------------------------------------------------
-# 11. DYNAMIC SOP GENERATION (WORD & PDF)
-# ---------------------------------------------------------
-def generate_sop_docx() -> io.BytesIO:
-    doc = Document()
-    for section in doc.sections:
-        section.top_margin = Inches(1.0)
-        section.bottom_margin = Inches(1.0)
-        section.left_margin = Inches(1.0)
-        section.right_margin = Inches(1.0)
-
-    PRIMARY = RGBColor(14, 58, 138)
-    SECONDARY = RGBColor(2, 132, 199)
-    TEXT_DARK = RGBColor(15, 23, 42)
-    MUTED = RGBColor(100, 116, 139)
-
-    style_normal = doc.styles['Normal']
-    style_normal.font.name = 'Calibri'
-    style_normal.font.size = Pt(11)
-    style_normal.font.color.rgb = TEXT_DARK
-    style_normal.paragraph_format.line_spacing = 1.15
-    style_normal.paragraph_format.space_after = Pt(6)
-
-    def set_cell_background(cell, hex_color):
-        tcPr = cell._tc.get_or_add_tcPr()
-        tcPr.append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="{hex_color}"/>'))
-
-    def set_cell_padding(cell, top=100, bottom=100, left=140, right=140):
-        tcPr = cell._tc.get_or_add_tcPr()
-        tcPr.append(parse_xml(
-            f'<w:tcMar {nsdecls("w")}>'
-            f'<w:top w:w="{top}" w:type="dxa"/><w:bottom w:w="{bottom}" w:type="dxa"/>'
-            f'<w:left w:w="{left}" w:type="dxa"/><w:right w:w="{right}" w:type="dxa"/>'
-            f'</w:tcMar>'
-        ))
-
-    p_org = doc.add_paragraph()
-    p_org.paragraph_format.space_after = Pt(2)
-    r_org = p_org.add_run("CECIL HARFORD UNITED STATES BOWLING CONGRESS")
-    r_org.font.size = Pt(11)
-    r_org.font.bold = True
-    r_org.font.color.rgb = SECONDARY
-
-    p_title = doc.add_paragraph()
-    p_title.paragraph_format.space_after = Pt(4)
-    r_title = p_title.add_run("Standard Operating Procedure: Tournament Desk Operations Console")
-    r_title.font.size = Pt(20)
-    r_title.font.bold = True
-    r_title.font.color.rgb = PRIMARY
-
-    p_meta = doc.add_paragraph()
-    p_meta.paragraph_format.space_after = Pt(14)
-    r_meta = p_meta.add_run(
-        f"Document Identifier: SOP-TD-2026-01 | Event: {st.session_state.tournament_config['name']}\n"
-        f"Generated from Live Console: {datetime.now().strftime('%B %d, %Y')} | Active Center: {st.session_state.tournament_config['center']}"
-    )
-    r_meta.font.size = Pt(9.5)
-    r_meta.font.color.rgb = MUTED
-
-    t_div = doc.add_table(rows=1, cols=1)
-    t_div.alignment = WD_TABLE_ALIGNMENT.CENTER
-    c_div = t_div.cell(0, 0)
-    c_div.width = Inches(6.5)
-    set_cell_background(c_div, "0E3A8A")
-    c_div.height = Pt(3)
-
-    doc.add_paragraph().paragraph_format.space_after = Pt(8)
-
-    h1 = doc.add_heading(level=1)
-    h1.add_run("1. Purpose & System Overview").font.color.rgb = PRIMARY
-    doc.add_paragraph(
-        f"This Standard Operating Procedure (SOP) standardizes tournament desk operations for the {st.session_state.tournament_config['name']} "
-        "and all official Cecil Harford USBC (CHUSBC) championship events. The platform is configured with presets for all eight CHUSBC tournaments, "
-        "supporting multi-tier desk operations, team-aware automated lane balancing up to 40 lanes, roving mobile TD scoring with secret PIN concurrence, and cloud archiving."
-    )
-
-    h2 = doc.add_heading(level=1)
-    h2.add_run("2. Hardware Configuration & Station Setup").font.color.rgb = PRIMARY
-    doc.add_paragraph("Desk staff must arrive at the host facility at least 60 minutes prior to squad practice to configure equipment:")
-
-    t_hw = doc.add_table(rows=5, cols=3)
-    t_hw.alignment = WD_TABLE_ALIGNMENT.CENTER
-    hw_headers = ["Component", "Physical Position", "Operational Role"]
-    hw_widths = [Inches(1.8), Inches(1.9), Inches(2.8)]
-
-    for i, title in enumerate(hw_headers):
-        cell = t_hw.cell(0, i)
-        cell.width = hw_widths[i]
-        set_cell_background(cell, "0E3A8A")
-        set_cell_padding(cell, 120, 120, 140, 140)
-        p = cell.paragraphs[0]
-        r = p.add_run(title)
-        r.bold = True
-        r.font.color.rgb = RGBColor(255, 255, 255)
-        r.font.size = Pt(10)
-
-    hw_rows = [
-        ("TD Laptop", "Behind desk, facing official only", "Main operational workstation. Keep browser logged into the TD Console."),
-        ("External Monitor", "Facing bowler registration queue", "Connected via HDMI/USB-C as 'Extended Display'. Runs ?mode=kiosk in fullscreen (F11)."),
-        ("Cash Box & Receipts", "Beside TD Laptop (secure)", "Holds cash entries, checks, and side pot pools. Must balance against console totals."),
-        ("Network / Hotspot", "Pre-tested before queue opens", "Ensure connection stability. Keep a staff cellular hotspot on standby for failover.")
-    ]
-    for row_idx, row_data in enumerate(hw_rows, start=1):
-        for col_idx, val in enumerate(row_data):
-            cell = t_hw.cell(row_idx, col_idx)
-            cell.width = hw_widths[col_idx]
-            set_cell_background(cell, "F8FAFC" if row_idx % 2 == 1 else "FFFFFF")
-            set_cell_padding(cell, 100, 100, 140, 140)
-            p = cell.paragraphs[0]
-            p.paragraph_format.line_spacing = 1.1
-            p.paragraph_format.space_after = Pt(2)
-            r = p.add_run(val)
-            r.font.size = Pt(9.5)
-
-    doc.add_paragraph().paragraph_format.space_after = Pt(6)
-
-    h_novice = doc.add_heading(level=1)
-    h_novice.add_run("3. First-Time Tournament Director (TD) Quickstart Guide").font.color.rgb = PRIMARY
-    guide_text = generate_first_time_td_guide()
-    p_guide = doc.add_paragraph(guide_text)
-    p_guide.paragraph_format.space_after = Pt(8)
-
-    buf = io.BytesIO()
-    doc.save(buf)
-    buf.seek(0)
-    return buf
-
-def generate_sop_pdf() -> bytes:
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
-    styles = getSampleStyleSheet()
-    story = []
-
-    title_style = ParagraphStyle(
-        "SOPTitle",
-        parent=styles["Heading1"],
-        fontSize=15,
-        leading=18,
-        textColor=colors.HexColor("#0e3a8a"),
-        spaceAfter=2
-    )
-    h2_style = ParagraphStyle(
-        "SOPH2",
-        parent=styles["Heading2"],
-        fontSize=11,
-        leading=14,
-        textColor=colors.HexColor("#0284c7"),
-        spaceBefore=6,
-        spaceAfter=3
-    )
-    body_style = ParagraphStyle(
-        "SOPBody",
-        parent=styles["Normal"],
-        fontSize=8,
-        leading=11,
-        textColor=colors.HexColor("#0f172a"),
-        spaceAfter=4
-    )
-
-    header_text = f"""
-    <b>Cecil Harford USBC — Tournament Desk Standard Operating Procedure</b><br/>
-    <font size="8" color="#475569">
-    Official Board Manual & First-Time TD Reference Guide | Event: {st.session_state.tournament_config['name']}<br/>
-    Host Center: {st.session_state.tournament_config['center']} | Effective: October 2026 | Document ID: SOP-TD-2026-01
-    </font>
-    """
-
-    if HAS_LOGO:
-        logo_img = RLImage(LOGO_PATH, width=48, height=48)
-        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[56, 484])
-        header_table.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ]))
-        story.append(header_table)
-    else:
-        story.append(Paragraph("Cecil Harford USBC — Tournament Desk Standard Operating Procedure", title_style))
-        story.append(Spacer(1, 4))
-
-    story.append(Paragraph("1. First-Time Tournament Director (TD) Quickstart Walkthrough", h2_style))
-    story.append(Paragraph(
-        "<b>Step 1 (T-60 Setup):</b> Connect external monitor to laptop. Extend display (Win+P). Go to Module 1 -> Tab 3 -> click 'Open External Bowler Kiosk Window'. Drag to secondary monitor facing bowlers, press F11.<br/>"
-        "<b>Step 2 (T-45 Roster & Balancing):</b> Ingest roster in Module 1. Use the 'Automated Lane Balancer' tab to distribute bowlers across active lanes (supports up to 40 lanes) with team grouping and alternating odd/even lead-off.<br/>"
-        "<b>Step 3 (T-30 Bowler Line):</b> Select bowler in Module 1 -> Tab 3. Collect fee, click 'Mark Paid & Display on Customer Screen'. Bowler scans QR code on kiosk screen. Click 'Reset External Display'.<br/>"
-        "<b>Step 4 (T-15 Floor Scorer Setup):</b> Floor TDs scan the ?mode=scorer QR code on their phones, set a 4-digit PIN, and claim lane pairs.<br/>"
-        "<b>Step 5 (Scoring with PIN Concurrence):</b> Roving TDs input pair scores on mobile and enter their secret PIN to lock them. Central Desk tracks verification in Module 2 Lane Radar Matrix.<br/>"
-        "<b>Step 6 (Finals & Archive):</b> Go to Module 3. Select match winners for top 5 stepladder, declare Champion, and click 'Archive Tournament & Save Official PDF'.",
-        body_style
-    ))
-
-    rules_table_data = [
-        ["Statute", "Mandatory Desk Enforcement"],
-        ["Rule 17: Altering Surface", "No abrasive pads or liquid cleaners once competition starts. Remove ball immediately; frames bowled post-adjustment incur zero scores."],
-        ["Rule 18: Equipment Specs", "Balance holes are prohibited. All drilled holes must be occupied by gripping fingers on delivery. Non-compliant balls must be removed."],
-        ["Rule 10: Tardy Bowlers", "Late bowlers begin in current frame if not completed by all on pair. No warm-up frames. Missed frames are scored zero."],
-        ["Rule 400: Youth SMART", "CRITICAL MANDATE: All prizes and awards in youth divisions must be deposited into the USBC SMART program. Zero cash/gift card policy."]
-    ]
-    t_rules = Table(rules_table_data, colWidths=[120, 420])
-    t_rules.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0284c7")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-    ]))
-    story.append(t_rules)
-    doc.build(story)
-    buffer.seek(0)
-    return buffer.getvalue()
-
-# ---------------------------------------------------------
-# 12. SIDEBAR NAVIGATION & CONTROLS
+# 11. SIDEBAR NAVIGATION & CONTROLS
 # ---------------------------------------------------------
 nav_options = [
     "1. Event & Roster Intake",
@@ -2451,7 +2317,7 @@ elif nav == "2. Scores & Standings":
             Have roving TDs and board members scan the QR code to open the **PIN-Secured Floor Scorer Portal** on their phones.
             
             * **URL:** `{scorer_url}`
-            * Officials claim lane pairs, input scores from overhead monitors, and sign with their secret 4-digit PIN.
+            * Officials claim lane pairs, input scores from overhead monitors (manually or via **AI Camera Snapshot**), and sign with their secret 4-digit PIN.
             * The **Lane Radar Matrix** below tracks real-time verification and timestamps across the entire bowling center.
             """)
             st.link_button("📲 Open Mobile Scorer View in New Tab", scorer_url, use_container_width=True)
@@ -2470,6 +2336,10 @@ elif nav == "2. Scores & Standings":
         for p_idx, pair in enumerate(parsed_pairs):
             col_target = radar_cols[p_idx % 4]
             lane_odd, lane_even = pair
+            
+            if "Starting Lane" not in st.session_state.roster.columns:
+                st.session_state.roster["Starting Lane"] = 1
+                
             p_bowlers = st.session_state.roster[st.session_state.roster["Starting Lane"].isin([lane_odd, lane_even])]
 
             if p_bowlers.empty:
@@ -3101,7 +2971,7 @@ Rules & Architecture:
 - 3 tiers: TD Console, External Kiosk (?mode=kiosk), Bowler Mobile Check-in (?mode=checkin), and Mobile Floor Scorer (?mode=scorer).
 - Payment gate: Unpaid bowlers are locked from check-in until TD marks paid (Cash/Check/Venmo) and pushes to customer screen.
 - Scoring: Deterministic {int(st.session_state.tournament_config.get('hdcp_pct', 0.90)*100)}% of {st.session_state.tournament_config.get('hdcp_base', 220)} HDCP, cut to top 5 stepladder, permanent archiving to Google Sheets.
-- Floor Scorers: Roving TDs input & verify scores at lanes via ?mode=scorer with secret 4-digit PIN concurrence; Central Desk tracks status via Lane Radar Matrix.
+- Floor Scorers: Roving TDs input & verify scores at lanes via ?mode=scorer with camera snapshot OCR and secret 4-digit PIN concurrence; Central Desk tracks status via Lane Radar Matrix.
 - House Matrix: Team-aware automated balancing across up to 40 lanes.
 
 User Question:
