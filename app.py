@@ -2,6 +2,7 @@ import os
 import io
 import time
 import math
+import base64
 import hashlib
 from datetime import datetime
 import pandas as pd
@@ -29,7 +30,6 @@ st.set_page_config(
 LOGO_PATH = "CHUSBC.jpg"
 HAS_LOGO = os.path.exists(LOGO_PATH)
 
-# Active production models with automatic resilience pool
 PRIMARY_MODEL = "gemini-3.8-flash"
 FALLBACK_MODELS = ["gemini-3.7-flash", "gemini-3.5-flash"]
 
@@ -127,7 +127,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 2. PERSISTENT GOOGLE SHEETS USER REPOSITORY
+# 2. PERSISTENT GOOGLE SHEETS REPOSITORY (USERS & ARCHIVES)
 # ---------------------------------------------------------
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.strip().encode("utf-8")).hexdigest()
@@ -146,7 +146,7 @@ def fetch_users_df() -> pd.DataFrame:
     
     if conn is not None:
         try:
-            df = conn.read(ttl=0)
+            df = conn.read(worksheet="Sheet1", ttl=0)
             if df is not None and not df.empty:
                 df.columns = [str(c).strip().lower() for c in df.columns]
                 for col in required_cols:
@@ -170,11 +170,39 @@ def write_users_df(df: pd.DataFrame):
     conn = get_db_connection()
     if conn is not None:
         try:
-            conn.update(data=df)
+            conn.update(worksheet="Sheet1", data=df)
             st.cache_data.clear()
             return True
         except Exception as e:
             st.error(f"Error persisting to Google Sheets: {e}")
+            return False
+    return False
+
+def fetch_archives_df() -> pd.DataFrame:
+    conn = get_db_connection()
+    archive_cols = ["tournament_name", "center", "division", "date", "entries", "champion", "pdf_data", "archived_by"]
+    if conn is not None:
+        try:
+            df = conn.read(worksheet="Archived_Tournaments", ttl=0)
+            if df is not None and not df.empty:
+                df.columns = [str(c).strip().lower() for c in df.columns]
+                for col in archive_cols:
+                    if col not in df.columns:
+                        df[col] = ""
+                return df
+        except Exception:
+            pass
+    return pd.DataFrame(columns=archive_cols)
+
+def write_archives_df(df: pd.DataFrame):
+    conn = get_db_connection()
+    if conn is not None:
+        try:
+            conn.update(worksheet="Archived_Tournaments", data=df)
+            st.cache_data.clear()
+            return True
+        except Exception as e:
+            st.error(f"Error persisting archive to Google Sheets: {e}")
             return False
     return False
 
@@ -333,10 +361,6 @@ if not api_key:
 ai_client = genai.Client(api_key=api_key) if api_key else None
 
 def generate_with_failover(prompt: str, temperature: float = 0.0) -> str:
-    """
-    Executes prompt across 3.x Flash fleet with automatic backoff and model failover
-    to eliminate temporary 503 UNAVAILABLE or 429 rate limit errors.
-    """
     if not ai_client:
         raise ValueError("Gemini API key is not configured.")
 
@@ -355,12 +379,10 @@ def generate_with_failover(prompt: str, temperature: float = 0.0) -> str:
             except Exception as e:
                 last_exception = e
                 err_msg = str(e).lower()
-                # If capacity spike (503) or rate limit (429), pause and retry
                 if "503" in err_msg or "unavailable" in err_msg or "429" in err_msg or "quota" in err_msg:
                     time.sleep(1.5)
                     continue
                 else:
-                    # Non-transient error, move to next model in pool immediately
                     break
 
     raise last_exception
@@ -381,12 +403,12 @@ if "tournament_config" not in st.session_state:
 
 if "roster" not in st.session_state:
     st.session_state.roster = pd.DataFrame([
-        {"Bowler": "Marcus Vance", "Average": 198, "Starting Lane": 1, "Game 1": 214, "Game 2": 235, "Game 3": 201},
-        {"Bowler": "Elena Rostova", "Average": 215, "Starting Lane": 1, "Game 1": 257, "Game 2": 248, "Game 3": 222},
-        {"Bowler": "Derek Jackson", "Average": 182, "Starting Lane": 2, "Game 1": 178, "Game 2": 195, "Game 3": 210},
-        {"Bowler": "Chloe Davenport", "Average": 204, "Starting Lane": 2, "Game 1": 225, "Game 2": 210, "Game 3": 244},
-        {"Bowler": "Samir Patel", "Average": 175, "Starting Lane": 3, "Game 1": 180, "Game 2": 192, "Game 3": 175},
-        {"Bowler": "Tanya Miller", "Average": 211, "Starting Lane": 3, "Game 1": 204, "Game 2": 231, "Game 3": 220},
+        {"Bowler": "Scott Kramer", "Average": 218, "Starting Lane": 1, "Game 1": 245, "Game 2": 238, "Game 3": 268},
+        {"Bowler": "Dave Miller", "Average": 205, "Starting Lane": 1, "Game 1": 210, "Game 2": 195, "Game 3": 215},
+        {"Bowler": "Chris Reynolds", "Average": 195, "Starting Lane": 2, "Game 1": 188, "Game 2": 220, "Game 3": 202},
+        {"Bowler": "Marcus Vance", "Average": 198, "Starting Lane": 2, "Game 1": 224, "Game 2": 215, "Game 3": 201},
+        {"Bowler": "Elena Rostova", "Average": 215, "Starting Lane": 3, "Game 1": 257, "Game 2": 248, "Game 3": 222},
+        {"Bowler": "Derek Jackson", "Average": 182, "Starting Lane": 3, "Game 1": 178, "Game 2": 195, "Game 3": 210},
     ])
 
 # ---------------------------------------------------------
@@ -425,7 +447,7 @@ def compile_standings(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------
 # 6. REPORTLAB PDF STANDINGS GENERATOR
 # ---------------------------------------------------------
-def export_standings_pdf(standings_df: pd.DataFrame, config: dict) -> bytes:
+def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name: str = "") -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
@@ -447,10 +469,11 @@ def export_standings_pdf(standings_df: pd.DataFrame, config: dict) -> bytes:
         spaceAfter=10
     )
 
+    champ_str = f" | <b>CHAMPION: {champion_name}</b>" if champion_name else ""
     header_text = f"""
     <b>Cecil Harford USBC — {config['name']}</b><br/>
     <font size="8" color="#475569">
-    Host: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}<br/>
+    Host: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}{champ_str}<br/>
     TD on Duty: {st.session_state.td_name} | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}
     </font>
     """
@@ -466,7 +489,7 @@ def export_standings_pdf(standings_df: pd.DataFrame, config: dict) -> bytes:
     else:
         story.append(Paragraph(f"Cecil Harford USBC — {config['name']}", title_style))
         story.append(Paragraph(
-            f"Center: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}<br/>"
+            f"Center: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}{champ_str}<br/>"
             f"TD on Duty: {st.session_state.td_name} | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}",
             meta_style
         ))
@@ -511,14 +534,15 @@ nav_options = [
     "2. Scores & Standings",
     "3. Stepladder Finals",
     "4. AI Rules Arbiter",
-    "5. TD Audit Log"
+    "5. Past Tournaments Archive 📂",
+    "6. TD Audit Log"
 ]
 
 users_df = fetch_users_df()
 pending_count = len(users_df[users_df["status"] == "pending"])
 
 if st.session_state.td_role == "admin":
-    label = f"6. TD User Management ⚙️ ({pending_count} pending)" if pending_count > 0 else "6. TD User Management ⚙️"
+    label = f"7. TD User Management ⚙️ ({pending_count} pending)" if pending_count > 0 else "7. TD User Management ⚙️"
     nav_options.append(label)
 
 with st.sidebar:
@@ -794,20 +818,20 @@ Bowler,Average,Starting Lane,Game 1,Game 2,Game 3
 
         pdf_bytes = export_standings_pdf(standings, st.session_state.tournament_config)
         st.download_button(
-            "📄 Download Official ReportLab PDF Standings",
+            "📄 Download Current Official PDF Standings",
             data=pdf_bytes,
             file_name=f"{st.session_state.tournament_config['name'].replace(' ', '_')}_Standings.pdf",
             mime="application/pdf"
         )
 
 # ---------------------------------------------------------
-# MODULE 3: STEP-LADDER FINALS BRACKET
+# MODULE 3: STEP-LADDER FINALS BRACKET & ARCHIVING
 # ---------------------------------------------------------
 elif nav == "3. Stepladder Finals":
     st.markdown("""
     <div class="brand-banner">
         <h1>Championship Stepladder Finals</h1>
-        <p>Top 5 qualifying cut-line elimination bracket.</p>
+        <p>Top 5 qualifying cut-line elimination bracket and tournament completion.</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -841,9 +865,34 @@ elif nav == "3. Stepladder Finals":
             </div>
             """, unsafe_allow_html=True)
 
-            if st.button("Lock Champion in Audit Log", type="primary", use_container_width=True):
-                log_audit_event(f"Stepladder complete. Champion declared: {champion}.")
-                st.success("Official result recorded.")
+            st.write("")
+            col_lock, col_archive = st.columns(2)
+            with col_lock:
+                if st.button("Lock Champion in Audit Log", type="primary", use_container_width=True):
+                    log_audit_event(f"Stepladder complete. Champion declared: {champion}.")
+                    st.success("Official result recorded.")
+
+            with col_archive:
+                if st.button("📦 Archive Tournament & Save Official PDF", use_container_width=True):
+                    pdf_bytes = export_standings_pdf(standings, st.session_state.tournament_config, champion_name=champion)
+                    encoded_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
+
+                    archive_df = fetch_archives_df()
+                    new_archive_record = pd.DataFrame([{
+                        "tournament_name": st.session_state.tournament_config["name"],
+                        "center": st.session_state.tournament_config["center"],
+                        "division": st.session_state.tournament_config["division"],
+                        "date": datetime.now().strftime("%Y-%m-%d"),
+                        "entries": len(st.session_state.roster),
+                        "champion": champion,
+                        "pdf_data": encoded_pdf,
+                        "archived_by": st.session_state.td_name
+                    }])
+
+                    updated_archives = pd.concat([archive_df, new_archive_record], ignore_index=True)
+                    write_archives_df(updated_archives)
+                    log_audit_event(f"Tournament '{st.session_state.tournament_config['name']}' officially archived with Champion: {champion}.")
+                    st.success(f"Official PDF and tournament record permanently archived to Google Sheets!")
 
 # ---------------------------------------------------------
 # MODULE 4: AI RULES ARBITER
@@ -907,9 +956,65 @@ Format:
                         st.error(f"Error querying Gemini: {err}")
 
 # ---------------------------------------------------------
-# MODULE 5: AUDIT LOG
+# MODULE 5: PAST TOURNAMENTS ARCHIVE (PERSISTENT PDF STORAGE)
 # ---------------------------------------------------------
-elif nav == "5. TD Audit Log":
+elif nav == "5. Past Tournaments Archive 📂":
+    st.markdown("""
+    <div class="brand-banner">
+        <h1>Historical Tournament Archive</h1>
+        <p>Official final results and downloadable PDF documents permanently stored on Google Sheets.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    archive_df = fetch_archives_df()
+
+    if archive_df.empty:
+        st.info("No past tournaments have been archived yet. Once an event concludes in Module 3, click 'Archive Tournament' to store it permanently.")
+    else:
+        for idx, row in archive_df.iloc[::-1].iterrows():
+            t_name = row.get("tournament_name", "CHUSBC Event")
+            t_date = row.get("date", "Unknown Date")
+            t_center = row.get("center", "")
+            t_div = row.get("division", "")
+            t_champ = row.get("champion", "N/A")
+            t_entries = row.get("entries", 0)
+            t_td = row.get("archived_by", "Staff")
+            pdf_b64 = row.get("pdf_data", "")
+
+            with st.container():
+                st.markdown(f"""
+                <div style="background-color: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 18px; margin-bottom: 16px;">
+                    <div style="display: flex; justify-content: space-between; align-items: baseline;">
+                        <h3 style="margin: 0; color: #f8fafc; font-size: 20px;">🏆 {t_name}</h3>
+                        <span style="color: #38bdf8; font-weight: 700;">{t_date}</span>
+                    </div>
+                    <div style="color: #94a3b8; font-size: 14px; margin-top: 6px;">
+                        <strong>Center:</strong> {t_center} | <strong>Division:</strong> {t_div} | <strong>Field:</strong> {t_entries} Bowlers | <strong>Archived By:</strong> {t_td}
+                    </div>
+                    <div style="margin-top: 10px; font-size: 16px; color: #34d399; font-weight: 700;">
+                        👑 Champion: {t_champ}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                if pdf_b64:
+                    try:
+                        pdf_decoded = base64.b64decode(pdf_b64)
+                        st.download_button(
+                            f"📄 Download Official Final Standings PDF ({t_name})",
+                            data=pdf_decoded,
+                            file_name=f"{str(t_name).replace(' ', '_')}_{str(t_date)}.pdf",
+                            mime="application/pdf",
+                            key=f"dl_pdf_{idx}"
+                        )
+                    except Exception as e:
+                        st.caption("Unable to decode stored PDF data.")
+                st.divider()
+
+# ---------------------------------------------------------
+# MODULE 6: AUDIT LOG
+# ---------------------------------------------------------
+elif nav == "6. TD Audit Log":
     st.markdown("""
     <div class="brand-banner">
         <h1>Official Tournament Audit Log</h1>
@@ -923,9 +1028,9 @@ elif nav == "5. TD Audit Log":
         st.dataframe(pd.DataFrame(st.session_state.audit_trail), use_container_width=True)
 
 # ---------------------------------------------------------
-# MODULE 6: ADMIN USER MANAGEMENT (APPROVALS, ADD, RESET, DELETE)
+# MODULE 7: ADMIN USER MANAGEMENT
 # ---------------------------------------------------------
-elif "6. TD User Management" in nav:
+elif "7. TD User Management" in nav:
     st.markdown("""
     <div class="brand-banner">
         <h1>Tournament Director & Staff Management</h1>
@@ -935,7 +1040,6 @@ elif "6. TD User Management" in nav:
 
     users_df = fetch_users_df()
 
-    # 1. Pending Approvals Section
     pending_df = users_df[users_df["status"] == "pending"]
 
     st.subheader(f"Account Requests Pending Approval ({len(pending_df)})")
@@ -982,7 +1086,6 @@ elif "6. TD User Management" in nav:
                         st.rerun()
             st.divider()
 
-    # 2. Active Staff Registry Display
     st.subheader("Active Staff Registry (Live from Google Sheets)")
     active_df = users_df[users_df["status"] == "active"].copy()
     display_df = pd.DataFrame({
@@ -996,7 +1099,6 @@ elif "6. TD User Management" in nav:
 
     st.divider()
 
-    # 3. Add New TD Section
     col_add, col_reset, col_del = st.columns([1, 1, 1])
 
     with col_add:
@@ -1032,7 +1134,6 @@ elif "6. TD User Management" in nav:
                     st.success(f"Official '{new_name}' registered.")
                     st.rerun()
 
-    # 4. Reset User Password Section
     with col_reset:
         st.subheader("Reset / Override Password")
         active_users = users_df[users_df["status"] == "active"]["username"].tolist()
@@ -1058,7 +1159,6 @@ elif "6. TD User Management" in nav:
                     st.success(f"Password for '{target_user}' updated.")
                     st.rerun()
 
-    # 5. Delete User Account Section
     with col_del:
         st.subheader("Delete User Account")
         deletable_users = [u for u in users_df["username"].tolist() if u != "skramer"]
