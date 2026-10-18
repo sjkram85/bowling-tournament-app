@@ -17,13 +17,6 @@ from pypdf import PdfReader
 import qrcode
 from PIL import Image
 
-# Safe Auto-Refresh Import (Prevents Startup Crashes if not in requirements.txt)
-try:
-    from streamlit_autorefresh import st_autorefresh
-    HAS_AUTOREFRESH = True
-except ImportError:
-    HAS_AUTOREFRESH = False
-
 # Argon2 Cryptographic Hashing
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, InvalidHashError
@@ -1275,7 +1268,7 @@ def export_tournament_summary_pdf(standings_df: pd.DataFrame, config: dict, cham
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), 8),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
         ("ALIGN", (0, 0), (0, -1), "CENTER"),
         ("ALIGN", (2, 0), (-1, -1), "CENTER"),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
@@ -2661,21 +2654,110 @@ with st.sidebar:
         st.rerun()
 
 # ---------------------------------------------------------
-# SCOPED AUTO-REFRESH & BACKGROUND CLOUD SYNC
+# NATIVE FRAGMENT LOGIC: LIVE DESK MONITOR (NO SCREEN DIMMING)
 # ---------------------------------------------------------
-def sync_desk_with_cloud():
+@st.fragment(run_every="8s")
+def render_live_checkin_counters_fragment():
+    # Silently pull fresh check-ins from Google Sheets without page dimming
     cloud_state = fetch_active_tournament_state()
     if cloud_state and "roster" in cloud_state:
-        cloud_roster_df = pd.DataFrame(cloud_state["roster"])
-        if not cloud_roster_df.empty:
-            local_roster = st.session_state.get("roster", pd.DataFrame())
-            if local_roster.empty or len(local_roster) == len(cloud_roster_df):
-                st.session_state.roster = cloud_roster_df
+        cloud_df = pd.DataFrame(cloud_state["roster"])
+        if not cloud_df.empty:
+            st.session_state.roster = cloud_df
 
-if st.session_state.authenticated and st.session_state.session_initialized:
-    if HAS_AUTOREFRESH:
-        count = st_autorefresh(interval=8000, limit=None, key="central_desk_poller")
-        sync_desk_with_cloud()
+    total_bowlers = len(st.session_state.roster)
+    paid_bowlers = len(st.session_state.roster[st.session_state.roster["Paid"] == True]) if total_bowlers > 0 else 0
+    checked_bowlers = len(st.session_state.roster[st.session_state.roster["Checked_In"] == True]) if total_bowlers > 0 else 0
+
+    c_t1, c_t2, c_t3 = st.columns(3)
+    with c_t1:
+        st.markdown(f"""
+        <div class="stat-card">
+            <div class="stat-value">{total_bowlers}</div>
+            <div class="stat-label">Total Roster</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with c_t2:
+        st.markdown(f"""
+        <div class="stat-card">
+            <div class="stat-value" style="color: {'#34d399' if paid_bowlers == total_bowlers and total_bowlers > 0 else '#fbbf24'};">{paid_bowlers} / {total_bowlers}</div>
+            <div class="stat-label">Paid Entries</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with c_t3:
+        st.markdown(f"""
+        <div class="stat-card">
+            <div class="stat-value" style="color: {'#34d399' if checked_bowlers == total_bowlers and total_bowlers > 0 else '#38bdf8'};">{checked_bowlers} / {total_bowlers}</div>
+            <div class="stat-label">Confirmed On-Lane</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+@st.fragment(run_every="8s")
+def render_live_radar_matrix_fragment(radar_game: int):
+    # Silently pull latest locked scores from Google Sheets
+    cloud_state = fetch_active_tournament_state()
+    if cloud_state and "roster" in cloud_state:
+        cloud_df = pd.DataFrame(cloud_state["roster"])
+        if not cloud_df.empty:
+            st.session_state.roster = cloud_df
+
+    parsed_pairs = parse_active_pairs(st.session_state.tournament_config.get("lanes_range", "1-40"), max_lanes=40)
+    g_target = f"Game {radar_game}"
+    v_by_target = f"G{radar_game}_Verified_By"
+    v_at_target = f"G{radar_game}_Verified_At"
+
+    rotation_rule = st.session_state.tournament_config.get("movement_rule", "Move Right 1 Pair (+2 Lanes)")
+    max_center_lanes = int(st.session_state.tournament_config.get("lanes_count", 40))
+
+    if parsed_pairs:
+        radar_cols = st.columns(4)
+        for p_idx, pair in enumerate(parsed_pairs):
+            col_target = radar_cols[p_idx % 4]
+            lane_odd, lane_even = pair
+            
+            if "Starting Lane" not in st.session_state.roster.columns:
+                st.session_state.roster["Starting Lane"] = 1
+                
+            working_rost = st.session_state.roster.copy()
+            working_rost["Starting Lane"] = pd.to_numeric(working_rost["Starting Lane"], errors="coerce").fillna(1).astype(int)
+            working_rost["Active_Game_Lane"] = working_rost["Starting Lane"].apply(
+                lambda l: get_bowler_lane_for_game(int(l), radar_game, rotation_rule, max_lanes=max_center_lanes)
+            )
+            p_bowlers = working_rost[working_rost["Active_Game_Lane"].isin([lane_odd, lane_even])]
+
+            if p_bowlers.empty:
+                status_color = "#334155"
+                status_badge = "⚪ EMPTY"
+                card_sub = "No bowlers assigned"
+            else:
+                has_scores = (p_bowlers[g_target] > 0).any()
+                all_verified = (p_bowlers[v_by_target].astype(str).str.strip() != "").all()
+
+                if all_verified and has_scores:
+                    status_color = "#10b981"
+                    v_name = p_bowlers.iloc[0].get(v_by_target, "TD")
+                    v_time = p_bowlers.iloc[0].get(v_at_target, "")
+                    status_badge = "🟢 PIN VERIFIED"
+                    card_sub = f"By {v_name} ({v_time})"
+                elif has_scores:
+                    status_color = "#f59e0b"
+                    status_badge = "🟡 PROVISIONAL"
+                    card_sub = "Scores posted, pending PIN"
+                else:
+                    status_color = "#ef4444"
+                    status_badge = "🔴 PENDING"
+                    card_sub = "Awaiting game completion"
+
+            with col_target:
+                st.markdown(f"""
+                <div style="background-color: #0f172a; border: 1.5px solid {status_color}; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px;">
+                    <div style="display: flex; justify-content: space-between; align-items: baseline;">
+                        <strong style="color: #f8fafc; font-size: 13.5px;">Lanes {lane_odd} & {lane_even}</strong>
+                        <span style="font-size: 11px; font-weight: 800; color: {status_color};">{status_badge}</span>
+                    </div>
+                    <div style="color: #cbd5e1; font-size: 11.5px; margin-top: 4px;">{card_sub}</div>
+                </div>
+                """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # MODULE 1: COMPREHENSIVE INTAKE (SETTINGS -> ROSTER -> DESK TERMINAL)
@@ -3050,7 +3132,7 @@ Input:
             st.markdown("##### 🚪 Entrance Self-Check-In QR")
             st.image(generate_qr_image(self_checkin_url), width=140)
             st.link_button("🔗 Open Entrance Check-In", self_checkin_url, use_container_width=True)
-            st.caption("Pre-paid bowlers check in automatically; unpaid or bracket bowlers are directed to desk.")
+            st.caption("Pre-paid bowlers auto-check in; unpaid or bracket bowlers are directed to desk.")
         with col_qr2:
             st.markdown("##### 📊 Bowler Live Portal QR")
             st.image(generate_qr_image(bowler_portal_url), width=140)
@@ -3067,32 +3149,8 @@ Input:
 
         st.divider()
 
-        total_bowlers = len(st.session_state.roster)
-        paid_bowlers = len(st.session_state.roster[st.session_state.roster["Paid"] == True]) if total_bowlers > 0 else 0
-        checked_bowlers = len(st.session_state.roster[st.session_state.roster["Checked_In"] == True]) if total_bowlers > 0 else 0
-
-        c_t1, c_t2, c_t3 = st.columns(3)
-        with c_t1:
-            st.markdown(f"""
-            <div class="stat-card">
-                <div class="stat-value">{total_bowlers}</div>
-                <div class="stat-label">Total Roster</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with c_t2:
-            st.markdown(f"""
-            <div class="stat-card">
-                <div class="stat-value" style="color: {'#34d399' if paid_bowlers == total_bowlers and total_bowlers > 0 else '#fbbf24'};">{paid_bowlers} / {total_bowlers}</div>
-                <div class="stat-label">Paid Entries</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with c_t3:
-            st.markdown(f"""
-            <div class="stat-card">
-                <div class="stat-value" style="color: {'#34d399' if checked_bowlers == total_bowlers and total_bowlers > 0 else '#38bdf8'};">{checked_bowlers} / {total_bowlers}</div>
-                <div class="stat-label">Confirmed On-Lane</div>
-            </div>
-            """, unsafe_allow_html=True)
+        # Render Live Counters via Fragment (Zero-Dimming Auto-Sync)
+        render_live_checkin_counters_fragment()
 
         st.write("")
 
@@ -3255,65 +3313,10 @@ elif nav == "2. Scores & Standings":
             st.caption("Autoscrolling, high-contrast overhead display for spectators & bowlers.")
 
     st.subheader("🛰️ Central Desk Lane Radar Matrix")
-    parsed_pairs = parse_active_pairs(st.session_state.tournament_config.get("lanes_range", "1-40"), max_lanes=40)
     radar_game = st.radio("Display Radar for Game:", [1, 2, 3], horizontal=True, key="radar_game_sel")
 
-    g_target = f"Game {radar_game}"
-    v_by_target = f"G{radar_game}_Verified_By"
-    v_at_target = f"G{radar_game}_Verified_At"
-
-    rotation_rule = st.session_state.tournament_config.get("movement_rule", "Move Right 1 Pair (+2 Lanes)")
-    max_center_lanes = int(st.session_state.tournament_config.get("lanes_count", 40))
-
-    if parsed_pairs:
-        radar_cols = st.columns(4)
-        for p_idx, pair in enumerate(parsed_pairs):
-            col_target = radar_cols[p_idx % 4]
-            lane_odd, lane_even = pair
-            
-            if "Starting Lane" not in st.session_state.roster.columns:
-                st.session_state.roster["Starting Lane"] = 1
-                
-            working_rost = st.session_state.roster.copy()
-            working_rost["Starting Lane"] = pd.to_numeric(working_rost["Starting Lane"], errors="coerce").fillna(1).astype(int)
-            working_rost["Active_Game_Lane"] = working_rost["Starting Lane"].apply(
-                lambda l: get_bowler_lane_for_game(int(l), radar_game, rotation_rule, max_lanes=max_center_lanes)
-            )
-            p_bowlers = working_rost[working_rost["Active_Game_Lane"].isin([lane_odd, lane_even])]
-
-            if p_bowlers.empty:
-                status_color = "#334155"
-                status_badge = "⚪ EMPTY"
-                card_sub = "No bowlers assigned"
-            else:
-                has_scores = (p_bowlers[g_target] > 0).any()
-                all_verified = (p_bowlers[v_by_target].astype(str).str.strip() != "").all()
-
-                if all_verified and has_scores:
-                    status_color = "#10b981"
-                    v_name = p_bowlers.iloc[0].get(v_by_target, "TD")
-                    v_time = p_bowlers.iloc[0].get(v_at_target, "")
-                    status_badge = "🟢 PIN VERIFIED"
-                    card_sub = f"By {v_name} ({v_time})"
-                elif has_scores:
-                    status_color = "#f59e0b"
-                    status_badge = "🟡 PROVISIONAL"
-                    card_sub = "Scores posted, pending PIN"
-                else:
-                    status_color = "#ef4444"
-                    status_badge = "🔴 PENDING"
-                    card_sub = "Awaiting game completion"
-
-            with col_target:
-                st.markdown(f"""
-                <div style="background-color: #0f172a; border: 1.5px solid {status_color}; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px;">
-                    <div style="display: flex; justify-content: space-between; align-items: baseline;">
-                        <strong style="color: #f8fafc; font-size: 13.5px;">Lanes {lane_odd} & {lane_even}</strong>
-                        <span style="font-size: 11px; font-weight: 800; color: {status_color};">{status_badge}</span>
-                    </div>
-                    <div style="color: #cbd5e1; font-size: 11.5px; margin-top: 4px;">{card_sub}</div>
-                </div>
-                """, unsafe_allow_html=True)
+    # Render Live Lane Radar Matrix via Fragment (Zero-Dimming Auto-Sync)
+    render_live_radar_matrix_fragment(radar_game)
 
     st.divider()
 
@@ -4284,10 +4287,10 @@ elif "TD User Management" in nav:
                         st.rerun()
 
 # ---------------------------------------------------------
-# FLOATING GEMINI DESK COACH (PERSISTENT STATE ACROSS REFRESHES)
+# FLOATING GEMINI DESK COACH (AWARE OF ACTIVE MODULE & UI TABS)
 # ---------------------------------------------------------
 if st.session_state.authenticated and st.session_state.session_initialized:
-    # Initialize persistent copilot history in session state
+    # Initialize persistent state so copilot dialog stays open and intact
     if "copilot_query" not in st.session_state:
         st.session_state.copilot_query = ""
     if "copilot_response" not in st.session_state:
@@ -4307,7 +4310,6 @@ if st.session_state.authenticated and st.session_state.session_initialized:
         </div>
         """, unsafe_allow_html=True)
 
-        # Context-Aware Presets dynamically set persistent query in session state
         st.caption("⚡ Quick Actions for This Screen:")
         c_p1, c_p2 = st.columns(2)
 
@@ -4347,6 +4349,22 @@ if st.session_state.authenticated and st.session_state.session_initialized:
                 if st.button("Cloud archive help", use_container_width=True, key="ctx_btn_4"):
                     st.session_state.copilot_query = "How does archiving work, where does the saved tournament go in Google Sheets, and how do I access past archives?"
 
+        elif "4. Side Action" in current_module:
+            with c_p1:
+                if st.button("Seed 8-Bowler Bracket", use_container_width=True, key="ctx_btn_1"):
+                    st.session_state.copilot_query = "How do I randomly seed 8-bowler brackets, and what is the standard payout split ($25 1st, $10 2nd, $5 expense)?"
+            with c_p2:
+                if st.button("Side Pot payouts", use_container_width=True, key="ctx_btn_2"):
+                    st.session_state.copilot_query = "How are High-Game and Series side pots calculated across Games 1, 2, and 3, and how are ties handled in the payout?"
+
+        elif "5. Financial" in current_module:
+            with c_p1:
+                if st.button("Reconcile drawer", use_container_width=True, key="ctx_btn_1"):
+                    st.session_state.copilot_query = "How do I balance our cash drawer against the center lineage fee and tournament prize fund in Module 5?"
+            with c_p2:
+                if st.button("Youth SMART export", use_container_width=True, key="ctx_btn_2"):
+                    st.session_state.copilot_query = "This is a youth division. How do I export the official USBC SMART scholarship submission file under Rule 400?"
+
         else:
             with c_p1:
                 if st.button("What do I do here?", use_container_width=True, key="ctx_btn_1"):
@@ -4355,7 +4373,6 @@ if st.session_state.authenticated and st.session_state.session_initialized:
                 if st.button("Contact Tech Support", use_container_width=True, key="ctx_btn_2"):
                     st.session_state.copilot_query = "Who is the technical point of contact if I need urgent help or run into system errors?"
 
-        # Bind query to session state so background reruns do not clear it
         user_float_q = st.text_input(
             "Ask a question about this screen or a rule:",
             value=st.session_state.copilot_query,
@@ -4373,6 +4390,8 @@ if st.session_state.authenticated and st.session_state.session_initialized:
                 with st.spinner("Analyzing active screen and event state..."):
                     float_context = f"""
 You are the official Cecil Harford USBC (CHUSBC) Tournament Desk Operations Copilot and Rules Arbiter.
+You are assisting an on-duty Tournament Director (TD) or volunteer using the live Streamlit console.
+
 CURRENT RUNTIME CONTEXT:
 - Active Sidebar Module: {current_module}
 - Event Title: {st.session_state.tournament_config['name']}
@@ -4383,17 +4402,47 @@ CURRENT RUNTIME CONTEXT:
 - Paid Entries: {paid_field}
 - Technical Point of Contact (TPOC): Scott Kramer (scottjk85@gmail.com | 443.966.4460)
 
-Provide direct, numbered steps for desk operations, or exact USBC rulebook citations for playing disputes.
+EXACT UI ARCHITECTURE & TABS FOR MODULES:
+1. Module 1: '1. Event & Roster Intake' contains 4 main tabs:
+   - Tab 1: '⚙️ Event Settings & CHUSBC Presets' -> Has preset dropdown (8 CHUSBC tournaments), center selector, lane count/range, handicap base/pct, movement rule dropdown, and rules text area / flyer uploader. Button: '🔒 Save & Lock Tournament Configuration'.
+   - Tab 2: '📝 Roster Ingestion & 40-Lane Balancing' -> Contains 5 sub-tabs:
+       * Sub-tab '📸 Scan/Photo Clipboard (AI)': Take phone camera photo or upload sheet. Button: '🔍 Extract Bowlers from Photo with Gemini'.
+       * Sub-tab '🤖 Paste Signup Notes (Gemini AI)': Text area to paste unformatted notes/emails. Button: 'Extract Roster with Gemini'.
+       * Sub-tab '📁 Upload CSV': Upload master spreadsheet.
+       * Sub-tab '📋 Editable Master Grid': Direct spreadsheet editor (`st.data_editor`) with columns: USBC ID, Bowler, Average, Starting Lane, Division, Team_Name, Paid, Checked_In. Button: 'Save Roster Changes'.
+       * Sub-tab '🎳 Automated Lane Balancer': Select active pairs, max bowlers per pair, checkboxes '👥 Group Teammates' and '🎲 Blind Random Draw'. Buttons: '⚡ Balance & Assign Lanes Automatically' and '📄 Download Printable PDF Lane Assignment Roster'.
+   - Tab 3: '💳 Desk Intake & Entrance QR Posters' -> Has QR download for entrance self-check-in (?mode=self_checkin) and bowler portal (?mode=bowler_portal), secondary customer kiosk monitor launcher (?mode=kiosk), and bowler search dropdown. Buttons: 'Mark Paid' (Cash, Check, Venmo) and '📺 Push to Customer Screen'.
+   - Tab 4: '🔐 Floor TD PIN Registry (Argon2)' -> Lists floor officials with locked Argon2 PINs. Has Central Desk override form to set or reset 4-digit PINs.
+
+2. Module 2: '2. Scores & Standings':
+   - Has QR code / links to launch mobile roving floor scorer (?mode=scorer) and concourse TV leaderboard (?mode=leaderboard).
+   - '🛰️ Central Desk Lane Radar Matrix': Live status indicators for all active pairs across Game 1, 2, and 3 (🟢 PIN VERIFIED, 🟡 PROVISIONAL, 🔴 PENDING) rendered dynamically with native @st.fragment polling.
+   - 'Official Scoring Grid': Data editor for Game 1, Game 2, Game 3 scores and verifier timestamps. Button: 'Save Scores & Recalculate Standings'.
+   - Official Standings & All-Events Leaderboards with PDF download buttons.
+
+3. Module 3: '3. Stepladder Finals':
+   - Automated completion engine for top 5 qualifiers.
+   - Shows seeded matches (#4 vs #5, #3 vs M1 winner, #2 vs Semifinal, #1 vs Semifinalist) and declares Champion.
+   - Buttons: '📝 Record Official Champion in Audit Log', '🖨️ Download Official Hard-Copy Summary Report (PDF)', and '📦 Archive Tournament to Cloud & Reset Active State'.
+
+4. Module 4: '4. Side Action: Brackets & Pots 💰':
+   - Sub-tabs for '🌳 8-Bowler Elimination Brackets' and '💵 High-Game & Series Side Pots' ($10 buy-in: $3 G1, $3 G2, $3 G3, $1 Series).
+
+5. Module 5: '5. Financial & Payout Ledger 💵':
+   - Lineage, expense, and prize pool calculator. If youth event, enforces USBC Rule 400 and exports SMART scholarship CSV.
+
+INSTRUCTIONS FOR YOUR RESPONSE:
+- If the question is about how to operate the system or what button to click, refer to the EXACT tabs, buttons, and sub-tabs detailed above. Do not invent non-existent form fields.
+- If the user asks about an on-lane dispute or rule, first provide the USBC Rule citation from the 2026-2027 rulebook (Rule 10 for tardiness, Rule 17 for surface alteration, Rule 18 for balance holes, Rule 400 for SMART scholarships), then provide the immediate step-by-step action for the desk official.
+- Keep directions brief, bulleted, and actionable.
 """
                     try:
                         ans = arbitrate_rules_inquiry(user_float_q, float_context)
-                        # Save response in session state so background 8s ticks don't erase it
                         st.session_state.copilot_response = ans
                         log_audit_event(f"Live AI Copilot assisted on '{current_module}': '{user_float_q[:40]}...'")
                     except Exception as err:
                         st.error(f"Error consulting Gemini: {err}")
 
-        # Display persistent answer across all background refresh ticks
         if st.session_state.copilot_response:
             st.markdown(f"""
             <div style="background-color: #1e293b; border-left: 3px solid #38bdf8; padding: 12px; border-radius: 6px; font-size: 13px; margin-top: 10px;">
