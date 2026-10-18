@@ -322,7 +322,6 @@ def write_archives_df(df: pd.DataFrame):
             return False
     return False
 
-# --- Active Tournament Cloud Persistence Functions ---
 def fetch_active_tournament_state():
     """Retrieves the currently in-flight tournament state from Google Sheets."""
     conn = get_db_connection()
@@ -439,14 +438,108 @@ def notify_admin_new_registration(requested_user: str, requested_name: str, requ
         return False
 
 # ---------------------------------------------------------
-# 3. INITIALIZE TOURNAMENT STATE & ROSTER
+# 3. LANE BALANCER & HOUSE MATRIX LOGIC (UP TO 40 LANES)
+# ---------------------------------------------------------
+def parse_active_pairs(range_str: str, max_lanes: int = 40):
+    """
+    Parses ranges like '1-40', '1-16', or '1-20, 25-36' into valid bowling pairs:
+    [(1, 2), (3, 4), ..., (39, 40)].
+    """
+    lanes = set()
+    parts = [p.strip() for p in range_str.split(",") if p.strip()]
+    
+    for part in parts:
+        if "-" in part:
+            sub = part.split("-")
+            try:
+                start, end = int(sub[0]), int(sub[1])
+                for l in range(start, end + 1):
+                    if 1 <= l <= max_lanes:
+                        lanes.add(l)
+            except ValueError:
+                continue
+        else:
+            try:
+                l = int(part)
+                if 1 <= l <= max_lanes:
+                    lanes.add(l)
+            except ValueError:
+                continue
+
+    sorted_lanes = sorted(list(lanes))
+    pairs = []
+    i = 0
+    while i < len(sorted_lanes):
+        l1 = sorted_lanes[i]
+        if l1 % 2 != 0 and (l1 + 1) in lanes:
+            pairs.append((l1, l1 + 1))
+            i += 2
+        else:
+            pair_partner = l1 + 1 if l1 % 2 != 0 else l1 - 1
+            pairs.append((min(l1, pair_partner), max(l1, pair_partner)))
+            i += 1
+            
+    seen = set()
+    unique_pairs = []
+    for p in pairs:
+        if p not in seen:
+            seen.add(p)
+            unique_pairs.append(p)
+            
+    return unique_pairs
+
+def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list, max_per_pair: int = 5, shuffle: bool = True):
+    """
+    Distributes bowlers evenly across available lane pairs with odd/even alternating lead-off.
+    """
+    if roster_df.empty or not pairs:
+        return roster_df, "No roster or lane pairs provided."
+
+    total_bowlers = len(roster_df)
+    total_capacity = len(pairs) * max_per_pair
+
+    if total_bowlers > total_capacity:
+        return roster_df, f"Capacity exceeded! {total_bowlers} bowlers cannot fit on {len(pairs)} pairs with a max of {max_per_pair} per pair (Capacity: {total_capacity})."
+
+    updated_df = roster_df.copy()
+    
+    indices = list(updated_df.index)
+    if shuffle:
+        random.shuffle(indices)
+
+    pair_buckets = {p: [] for p in pairs}
+    pair_cycle = list(pairs)
+
+    b_idx = 0
+    while b_idx < len(indices):
+        for p in pair_cycle:
+            if b_idx >= len(indices):
+                break
+            if len(pair_buckets[p]) < max_per_pair:
+                row_idx = indices[b_idx]
+                pair_buckets[p].append(row_idx)
+                b_idx += 1
+
+    for p, row_indices in pair_buckets.items():
+        lane_odd, lane_even = p
+        for order_on_pair, r_idx in enumerate(row_indices):
+            assigned_lane = lane_odd if (order_on_pair % 2 == 0) else lane_even
+            updated_df.loc[r_idx, "Starting Lane"] = int(assigned_lane)
+
+    updated_df["Starting Lane"] = pd.to_numeric(updated_df["Starting Lane"], errors="coerce").fillna(1).astype(int)
+    updated_df = updated_df.sort_values(by=["Starting Lane", "Bowler"]).reset_index(drop=True)
+    
+    return updated_df, None
+
+# ---------------------------------------------------------
+# 4. INITIALIZE TOURNAMENT STATE & ROSTER
 # ---------------------------------------------------------
 if "tournament_config" not in st.session_state:
     st.session_state.tournament_config = {
         "center": "Forest Hill Lanes",
         "name": "Cecil Harford Annual Championship",
-        "lanes_count": 16,
-        "lanes_range": "1-16",
+        "lanes_count": 40,
+        "lanes_range": "1-40",
         "division": "Adult Open",
         "rules_text": "Qualifying: 3 games across 3 pairs. Cut to top 5 for stepladder finals. Handicap based on 90% of 220 based on highest 2025-26 book average.",
         "intake_completed": False
@@ -491,7 +584,7 @@ def generate_qr_image(url: str) -> io.BytesIO:
     return buf
 
 # ---------------------------------------------------------
-# 4A. EXTERNAL MONITOR / BOWLER KIOSK DISPLAY (?mode=kiosk)
+# 5A. EXTERNAL MONITOR / BOWLER KIOSK DISPLAY (?mode=kiosk)
 # ---------------------------------------------------------
 query_params = st.query_params
 if query_params.get("mode") == "kiosk":
@@ -571,7 +664,7 @@ if query_params.get("mode") == "kiosk":
     st.rerun()
 
 # ---------------------------------------------------------
-# 4B. MOBILE-OPTIMIZED BOWLER SELF-CHECK-IN ROUTE (?mode=checkin)
+# 5B. MOBILE-OPTIMIZED BOWLER SELF-CHECK-IN ROUTE (?mode=checkin)
 # ---------------------------------------------------------
 if query_params.get("mode") == "checkin":
     target_id = query_params.get("usbc_id", "")
@@ -615,7 +708,6 @@ if query_params.get("mode") == "checkin":
                     match_idx = st.session_state.roster.index[st.session_state.roster["USBC ID"].astype(str) == str(target_id)].tolist()
                     if match_idx:
                         st.session_state.roster.loc[match_idx[0], "Checked_In"] = True
-                        # Auto-persist check-in
                         write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
 
                 st.markdown(f"""
@@ -647,7 +739,7 @@ if query_params.get("mode") == "checkin":
     st.stop()
 
 # ---------------------------------------------------------
-# 5. TD AUTHENTICATION & LOGIN GATE
+# 6. TD AUTHENTICATION & LOGIN GATE
 # ---------------------------------------------------------
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -787,7 +879,6 @@ if not st.session_state.authenticated:
                             updated_df = pd.concat([current_df, new_row], ignore_index=True)
                             write_users_df(updated_df)
                             
-                            # Send automatic email alert to Scott Kramer
                             notify_admin_new_registration(
                                 requested_user=req_user, 
                                 requested_name=req_name, 
@@ -800,7 +891,7 @@ if not st.session_state.authenticated:
     st.stop()
 
 # ---------------------------------------------------------
-# 6. GEMINI API CLIENT & RETRY FAILOVER ENGINE
+# 7. GEMINI API CLIENT & RETRY FAILOVER ENGINE
 # ---------------------------------------------------------
 api_key = st.secrets.get("GEMINI_API_KEY", None)
 if not api_key:
@@ -880,7 +971,7 @@ Keep the language direct, actionable, friendly, and free of unnecessary technica
         )
 
 # ---------------------------------------------------------
-# 7. DETERMINISTIC SCORING ENGINE & PDF GENERATOR
+# 8. DETERMINISTIC SCORING ENGINE & PDF GENERATOR
 # ---------------------------------------------------------
 def calculate_handicap(avg: int, base: int = 220, percentage: float = 0.90) -> int:
     if avg >= base:
@@ -1020,7 +1111,7 @@ def resolve_bracket_match(b1_id: str, b2_id: str, game_col: str, bracket_type: s
     return r1["Bowler"], t1, r2["Bowler"], t2, winner_id
 
 # ---------------------------------------------------------
-# 8. DYNAMIC SOP GENERATION (WORD .DOCX & VECTOR PDF)
+# 9. DYNAMIC SOP GENERATION (WORD .DOCX & VECTOR PDF)
 # ---------------------------------------------------------
 def generate_sop_docx() -> io.BytesIO:
     doc = Document()
@@ -1056,7 +1147,6 @@ def generate_sop_docx() -> io.BytesIO:
             f'</w:tcMar>'
         ))
 
-    # Header / Title Block
     p_org = doc.add_paragraph()
     p_org.paragraph_format.space_after = Pt(2)
     r_org = p_org.add_run("CECIL HARFORD UNITED STATES BOWLING CONGRESS")
@@ -1089,14 +1179,13 @@ def generate_sop_docx() -> io.BytesIO:
 
     doc.add_paragraph().paragraph_format.space_after = Pt(8)
 
-    # 1. Purpose
     h1 = doc.add_heading(level=1)
     h1.add_run("1. Purpose & System Overview").font.color.rgb = PRIMARY
     doc.add_paragraph(
         "This Standard Operating Procedure (SOP) standardizes tournament desk operations for all Cecil Harford USBC "
         "(CHUSBC) championship, youth, and open events. The CHUSBC Tournament Desk Ops platform is a cloud-based suite "
         "designed to replace manual paper sheets, automate handicap calculations, synchronize real-time dual-screen check-ins, "
-        "manage brackets/pots, and permanently archive official records to Google Sheets."
+        "manage brackets/pots, balance up to 40 lane pairs automatically, and permanently archive official records to Google Sheets."
     )
     doc.add_paragraph(
         "The system operates across three synchronized tiers:\n"
@@ -1105,7 +1194,6 @@ def generate_sop_docx() -> io.BytesIO:
         "• Bowler Smartphone Portal (?mode=checkin): Contactless mobile interface loaded upon scanning QR code to confirm on-lane arrival."
     )
 
-    # 2. Hardware Matrix
     h2 = doc.add_heading(level=1)
     h2.add_run("2. Hardware Configuration & Station Setup").font.color.rgb = PRIMARY
     doc.add_paragraph("Desk staff must arrive at the host facility at least 60 minutes prior to squad practice to configure equipment:")
@@ -1146,14 +1234,12 @@ def generate_sop_docx() -> io.BytesIO:
 
     doc.add_paragraph().paragraph_format.space_after = Pt(6)
 
-    # 3. Dynamic Gemini First-Time TD Guide
     h_novice = doc.add_heading(level=1)
     h_novice.add_run("3. First-Time Tournament Director (TD) Quickstart Guide").font.color.rgb = PRIMARY
     guide_text = generate_first_time_td_guide()
     p_guide = doc.add_paragraph(guide_text)
     p_guide.paragraph_format.space_after = Pt(8)
 
-    # 4. Standard Operational Phases
     h3 = doc.add_heading(level=1)
     h3.add_run("4. Standard Tournament Day Operating Phases").font.color.rgb = PRIMARY
 
@@ -1161,16 +1247,13 @@ def generate_sop_docx() -> io.BytesIO:
         ("Phase 1: Event Calibration & Rules Locking",
          "1. Sign in to the console using your administrative or staff credentials.\n"
          "2. Navigate to Module 1: 'Event & Roster Intake' -> Tab 1: '⚙️ Event Settings & Rules PDF'.\n"
-         "3. Fill in: Tournament Name, Host Bowling Center, Total Lanes, Active Pair Range (e.g., 1-16), and Division.\n"
+         "3. Fill in: Tournament Name, Host Bowling Center, Total Lanes, Active Pair Range (e.g., 1-40), and Division.\n"
          "4. Upload tournament flyer PDF or paste tournament rules.\n"
          "5. Click 'Save & Lock Tournament Configuration' to lock parameters and index rules context for the AI Arbiter."),
 
-        ("Phase 2: Bowler Roster Ingestion",
-         "Switch to Tab 2: '📝 Roster Ingestion & Editing'. Board members may ingest bowlers through any of four methods:\n"
-         "• Camera OCR: Select '📸 Scan/Photo Clipboard (AI)'. Take a snapshot of the paper sheet and click 'Extract Bowlers with Gemini'.\n"
-         "• AI Text Parser: Select '🤖 Paste Signup Notes (Gemini AI)'. Paste unformatted text and click 'Extract Roster with Gemini'.\n"
-         "• CSV Import: Select '📁 Upload CSV' with columns: USBC ID, Bowler, Average, Starting Lane.\n"
-         "• Master Grid Entry: Select '📋 Editable Master Grid' for direct walk-in registration."),
+        ("Phase 2: Bowler Roster Ingestion & Automated Lane Balancing",
+         "Switch to Tab 2: '📝 Roster Ingestion & Editing'. Ingest bowlers via Camera OCR, Gemini Text, or CSV.\n"
+         "• Automated Lane Balancer (Tab 5): Enter house range (supports up to 40 lanes, e.g. '1-40' or '1-20, 25-36'), select max bowlers per pair (4, 5, or 6), and click '⚡ Balance & Assign Lanes Automatically'. The system balances density evenly across pairs and alternates odd/even lead-off lanes."),
 
         ("Phase 3: Customer Kiosk Launch",
          "1. Switch to Tab 3: '💳 Desk Intake & Payment Terminal'.\n"
@@ -1214,7 +1297,6 @@ def generate_sop_docx() -> io.BytesIO:
         p = doc.add_paragraph(p_body)
         p.paragraph_format.space_after = Pt(6)
 
-    # 5. Rules
     h4 = doc.add_heading(level=1)
     h4.add_run("5. Rules Arbitration & Youth Compliance Guidelines").font.color.rgb = PRIMARY
     doc.add_paragraph("Desk officials must enforce USBC Playing Rules consistently. Consult Module 5 ('AI Rules Arbiter') for on-lane protests:")
@@ -1256,7 +1338,6 @@ def generate_sop_docx() -> io.BytesIO:
 
     doc.add_paragraph().paragraph_format.space_after = Pt(6)
 
-    # 6. Troubleshooting
     h5 = doc.add_heading(level=1)
     h5.add_run("6. Contingency Procedures & Troubleshooting").font.color.rgb = PRIMARY
     doc.add_paragraph(
@@ -1326,7 +1407,7 @@ def generate_sop_pdf() -> bytes:
     story.append(Paragraph("1. First-Time Tournament Director (TD) Quickstart Walkthrough", h2_style))
     story.append(Paragraph(
         "<b>Step 1 (T-60 Setup):</b> Connect external monitor to laptop. Extend display (Win+P). Go to Module 1 -> Tab 3 -> click 'Open External Bowler Kiosk Window'. Drag to secondary monitor facing bowlers, press F11.<br/>"
-        "<b>Step 2 (T-45 Roster):</b> Go to Module 1 -> Tab 2. Snap photo of paper clipboard with 'Scan/Photo Clipboard (AI)' or paste signup list into 'Paste Signup Notes'. Verify in master grid.<br/>"
+        "<b>Step 2 (T-45 Roster & Balancing):</b> Ingest roster in Module 1. Use the 'Automated Lane Balancer' tab to distribute bowlers across up to 40 lanes automatically with alternating odd/even lead-off.<br/>"
         "<b>Step 3 (T-30 Bowler Line):</b> Select bowler in Module 1 -> Tab 3. Collect fee, click 'Mark Paid & Display on Customer Screen'. Bowler scans QR code on kiosk screen. Click 'Reset External Display'.<br/>"
         "<b>Step 4 (T-15 Brackets):</b> Go to Module 4. Select division, click 'Generate & Seed Brackets'. Brackets auto-seed and advance as scores are entered.<br/>"
         "<b>Step 5 (Scoring):</b> Go to Module 2. Paste center recap into Gemini Live Score Ingestion, click 'Apply Recap Scores' -> 'Save Scores & Recalculate Standings'.<br/>"
@@ -1367,7 +1448,7 @@ def generate_sop_pdf() -> bytes:
     return buffer.getvalue()
 
 # ---------------------------------------------------------
-# 9. SIDEBAR NAVIGATION & CLOUD PERSISTENCE CONTROLS
+# 10. SIDEBAR NAVIGATION & CLOUD PERSISTENCE CONTROLS
 # ---------------------------------------------------------
 nav_options = [
     "1. Event & Roster Intake",
@@ -1411,7 +1492,6 @@ with st.sidebar:
     st.caption(f"📍 **{st.session_state.tournament_config['center']}**")
     st.caption(f"🏆 {st.session_state.tournament_config['name']}")
 
-    # --- Live Tournament Cloud Save/Restore Controls ---
     st.markdown("### 💾 Live Cloud State")
     c_save, c_load = st.columns(2)
     with c_save:
@@ -1486,7 +1566,7 @@ if nav == "1. Event & Roster Intake":
     st.markdown("""
     <div class="brand-banner">
         <h1>Step 1: Tournament Setup & Bowler Intake</h1>
-        <p>Establish event metadata, rules parameters, bowler roster, and execute desk check-ins.</p>
+        <p>Establish event metadata, rules parameters, bowler roster, 40-lane balancing, and execute desk check-ins.</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1510,9 +1590,9 @@ if nav == "1. Event & Roster Intake":
 
         col_lanes1, col_lanes2, col_div = st.columns([1, 1, 1])
         with col_lanes1:
-            lane_count = st.number_input("Total Lanes in Use:", min_value=2, max_value=60, value=16, step=2)
+            lane_count = st.number_input("Total Lanes in Center:", min_value=2, max_value=60, value=40, step=2)
         with col_lanes2:
-            lane_range = st.text_input("Active Pair Range (e.g., 1-16):", value=st.session_state.tournament_config["lanes_range"])
+            lane_range = st.text_input("Active Pair Range (e.g. 1-40 or 1-16, 21-36):", value=st.session_state.tournament_config["lanes_range"])
         with col_div:
             division = st.selectbox(
                 "Division:",
@@ -1552,20 +1632,20 @@ if nav == "1. Event & Roster Intake":
                 "rules_text": t_rules + uploaded_content,
                 "intake_completed": True
             }
-            # Auto-persist to Google Sheets
             write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
             log_audit_event(f"Configuration locked: {t_name} with {len(st.session_state.roster)} bowlers.")
             st.success("Configuration, roster, and tournament rules locked & saved to cloud.")
 
     with intake_tab_entry:
-        st.subheader("Bowler Entry & Roster Intake")
-        st.caption("Ingest bowlers via clipboard photo/scan, Gemini text parsing, CSV upload, or the master grid.")
+        st.subheader("Bowler Entry, Ingestion & Automated Lane Balancing")
+        st.caption("Ingest bowlers via photo/scan, text notes, CSV, or balance your field across up to 40 lanes automatically.")
 
-        tab_scan, tab_ai, tab_csv, tab_manual = st.tabs([
+        tab_scan, tab_ai, tab_csv, tab_manual, tab_balancer = st.tabs([
             "📸 Scan/Photo Clipboard (AI)",
             "🤖 Paste Signup Notes (Gemini AI)",
             "📁 Upload CSV",
-            "📋 Editable Master Grid"
+            "📋 Editable Master Grid",
+            "🎳 Automated Lane Balancer"
         ])
 
         with tab_scan:
@@ -1716,6 +1796,90 @@ Input:
                 write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
                 log_audit_event("TD updated roster grid.")
                 st.success("Roster updated & saved to cloud.")
+
+        with tab_balancer:
+            st.markdown("### 🎳 Automated Lane Balancer & House Matrix (Up to 40 Lanes)")
+            st.caption("Distribute your field evenly across active pairs with alternating odd/even lead-off balancing and capacity caps.")
+
+            col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
+            with col_b1:
+                custom_range = st.text_input(
+                    "Active Lane Range (supports commas and hyphens):",
+                    value=st.session_state.tournament_config.get("lanes_range", "1-40"),
+                    placeholder="e.g. 1-40 or 1-16, 21-36"
+                )
+            with col_b2:
+                max_capacity = st.selectbox("Max Bowlers per Pair:", [4, 5, 6], index=1)
+            with col_b3:
+                shuffle_draw = st.checkbox("🎲 Blind Random Draw", value=True, help="Shuffles bowlers randomly across pairs before assigning.")
+
+            parsed_pairs = parse_active_pairs(custom_range, max_lanes=40)
+            total_capacity = len(parsed_pairs) * max_capacity
+            field_size = len(st.session_state.roster)
+
+            st.markdown(f"""
+            <div style="background-color: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 12px 16px; margin: 12px 0; font-size: 14px;">
+                Active Pairs: <b>{len(parsed_pairs)} pairs</b> ({len(parsed_pairs)*2} lanes) | 
+                Current Roster: <b>{field_size} bowlers</b> | 
+                Max Capacity: <b>{total_capacity} bowlers</b> | 
+                Average Density: <b>{round(field_size / max(len(parsed_pairs), 1), 1)} bowlers/pair</b>
+            </div>
+            """, unsafe_allow_html=True)
+
+            col_run_bal, col_clear_bal = st.columns([1, 1])
+            with col_run_bal:
+                if st.button("⚡ Balance & Assign Lanes Automatically", type="primary", use_container_width=True):
+                    if not parsed_pairs:
+                        st.error("No valid lane pairs found in the specified range.")
+                    else:
+                        new_roster, err = auto_assign_lanes(
+                            st.session_state.roster,
+                            parsed_pairs,
+                            max_per_pair=max_capacity,
+                            shuffle=shuffle_draw
+                        )
+                        if err:
+                            st.error(err)
+                        else:
+                            st.session_state.roster = new_roster
+                            st.session_state.tournament_config["lanes_range"] = custom_range
+                            st.session_state.tournament_config["lanes_count"] = len(parsed_pairs) * 2
+                            write_active_tournament_state(
+                                st.session_state.tournament_config,
+                                st.session_state.roster,
+                                st.session_state.brackets
+                            )
+                            log_audit_event(f"Automated lane balancing executed across {len(parsed_pairs)} pairs for {field_size} bowlers.")
+                            st.success(f"Successfully balanced {field_size} bowlers across {len(parsed_pairs)} lane pairs!")
+                            st.rerun()
+
+            if not st.session_state.roster.empty and parsed_pairs:
+                st.markdown("#### 📍 Active House Layout Matrix")
+                matrix_cols = st.columns(4)
+                for idx, pair in enumerate(parsed_pairs):
+                    col_target = matrix_cols[idx % 4]
+                    lane_odd, lane_even = pair
+                    bowlers_on_pair = st.session_state.roster[st.session_state.roster["Starting Lane"].isin([lane_odd, lane_even])]
+                    
+                    with col_target:
+                        st.markdown(f"""
+                        <div style="background-color: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 10px; margin-bottom: 10px;">
+                            <div style="font-weight: 800; color: #38bdf8; font-size: 13px; border-bottom: 1px solid #1e293b; padding-bottom: 4px; margin-bottom: 6px;">
+                                Lanes {lane_odd} & {lane_even} <span style="color: #94a3b8; font-size: 11px; float: right;">({len(bowlers_on_pair)}/{max_capacity})</span>
+                            </div>
+                        """, unsafe_allow_html=True)
+                        
+                        if bowlers_on_pair.empty:
+                            st.markdown("<span style='color: #64748b; font-size: 12px;'><i>Empty pair</i></span></div>", unsafe_allow_html=True)
+                        else:
+                            for _, b in bowlers_on_pair.iterrows():
+                                paid_icon = "🟢" if b["Paid"] else "🔴"
+                                st.markdown(f"""
+                                <div style="font-size: 12px; color: #f8fafc; margin-bottom: 2px;">
+                                    {paid_icon} <b>L{b['Starting Lane']}:</b> {b['Bowler']} <span style="color: #94a3b8;">({b['Average']})</span>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            st.markdown("</div>", unsafe_allow_html=True)
 
     with intake_tab_terminal:
         st.subheader("Payment Gate & QR Check-In Terminal")
@@ -2041,7 +2205,6 @@ elif nav == "3. Stepladder Finals":
                     updated_archives = pd.concat([archive_df, new_archive_record], ignore_index=True)
                     write_archives_df(updated_archives)
                     
-                    # Clear live slot in Google Sheets upon archive
                     clear_active_tournament_state()
                     
                     log_audit_event(f"Tournament '{st.session_state.tournament_config['name']}' officially archived with Champion: {champion}.")
@@ -2456,6 +2619,7 @@ Rules & Architecture:
 - Payment gate: Unpaid bowlers are locked from check-in until TD marks paid (Cash/Check/Venmo) and pushes to customer screen.
 - Scoring: Deterministic 90% of 220 HDCP, cut to top 5 stepladder, permanent archiving to Google Sheets.
 - Side Action: 8-bowler single elimination brackets ($25 1st, $10 2nd, $5 expense) and high-game pots ($10 entry).
+- House Matrix: Automated balancing across up to 40 lanes.
 
 User Question:
 {coach_question}
@@ -2509,11 +2673,11 @@ Format your response in simple, numbered, crystal-clear steps telling the offici
            * Navigate to **Module 1: Event & Roster Intake** $\\rightarrow$ Tab 3: **💳 Desk Intake & Payment Terminal**.
            * Click **🖥️ Open External Bowler Kiosk Window**. Drag that new tab to the monitor facing bowlers and press **F11** for fullscreen.
 
-        2. **T-45 Minutes (Roster Intake)**
+        2. **T-45 Minutes (Roster Intake & Lane Balancing)**
            * In Module 1, go to Tab 2: **📝 Roster Ingestion & Editing**.
            * **Paper Clipboard?** Snap a photo under **📸 Scan/Photo Clipboard (AI)** and click **Extract Bowlers with Gemini**.
            * **Text List?** Paste it under **🤖 Paste Signup Notes (Gemini AI)**.
-           * Check the **📋 Editable Master Grid** to verify names, USBC IDs, averages, and lane assignments.
+           * Go to the **🎳 Automated Lane Balancer** sub-tab: enter your active lanes (e.g. `1-40`), choose max per pair (4, 5, or 6), and click **⚡ Balance & Assign Lanes Automatically**.
 
         3. **T-30 Minutes (Bowler Arrival & The 3-Click Check-In Dance)**
            * As each bowler steps up to the desk, stay on **Module 1 $\\rightarrow$ Tab 3**:
