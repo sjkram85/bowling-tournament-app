@@ -1,3 +1,4 @@
+import os
 import io
 import math
 import hashlib
@@ -5,7 +6,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Image as RLImage
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
@@ -13,7 +14,7 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------
-# 1. PAGE SETUP & CONFIGURATION
+# 1. PAGE SETUP & GLOBAL CUSTOM THEME
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="CHUSBC Tournament Desk Ops",
@@ -21,6 +22,92 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+LOGO_PATH = "CHUSBC.jpg"
+HAS_LOGO = os.path.exists(LOGO_PATH)
+
+st.markdown("""
+<style>
+    .stApp {
+        background-color: #0b1120;
+    }
+    .brand-banner {
+        background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%);
+        border: 1px solid #1e40af;
+        border-radius: 12px;
+        padding: 20px 24px;
+        margin-bottom: 24px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    }
+    .brand-banner h1 {
+        color: #f8fafc;
+        margin: 0;
+        font-size: 26px;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+    }
+    .brand-banner p {
+        color: #94a3b8;
+        margin: 6px 0 0 0;
+        font-size: 14px;
+    }
+    .stat-card {
+        background-color: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 10px;
+        padding: 16px;
+        text-align: center;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+    }
+    .stat-value {
+        font-size: 28px;
+        font-weight: 800;
+        color: #38bdf8;
+        line-height: 1.1;
+    }
+    .stat-label {
+        font-size: 12px;
+        font-weight: 600;
+        color: #94a3b8;
+        text-transform: uppercase;
+        margin-top: 4px;
+        letter-spacing: 0.5px;
+    }
+    .badge-admin {
+        background: #f59e0b20;
+        color: #fbbf24;
+        border: 1px solid #f59e0b50;
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 700;
+        display: inline-block;
+    }
+    .badge-td {
+        background: #0284c720;
+        color: #38bdf8;
+        border: 1px solid #0284c750;
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 700;
+        display: inline-block;
+    }
+    .match-box {
+        background-color: #1e293b;
+        border: 1px solid #334155;
+        border-left: 4px solid #38bdf8;
+        border-radius: 8px;
+        padding: 14px;
+        margin-bottom: 14px;
+    }
+    div.stButton > button:first-child {
+        border-radius: 8px;
+        font-weight: 600;
+        transition: all 0.2s ease;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # 2. AUTHENTICATION & MULTI-TD USER REPOSITORY
@@ -33,13 +120,15 @@ TARGET_ADMIN_HASH = "7e754bbef03e005db3d5089312104526685ba227e7f8e77a1fc9b6460fa
 if "user_registry" not in st.session_state:
     st.session_state.user_registry = {}
 
-st.session_state.user_registry["skramer"] = {
-    "name": "Scott Kramer",
-    "password_hash": TARGET_ADMIN_HASH,
-    "role": "admin",
-    "must_change_password": False,
-    "created_at": "Primary Admin"
-}
+# Ensure skramer is initialized if not already registered
+if "skramer" not in st.session_state.user_registry:
+    st.session_state.user_registry["skramer"] = {
+        "name": "Scott Kramer",
+        "password_hash": TARGET_ADMIN_HASH,
+        "role": "admin",
+        "must_change_password": False,
+        "created_at": "Primary Admin"
+    }
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -62,24 +151,28 @@ def log_audit_event(action: str):
         "action": action
     })
 
-# ---------------------------------------------------------
-# AUTHENTICATION & FIRST-TIME PASSWORD RESET WORKFLOW
-# ---------------------------------------------------------
+# Login Screen
 if not st.session_state.authenticated:
     st.columns([1, 2, 1])[1].write("")
     with st.columns([1, 2, 1])[1]:
-        # Intercept if user logged in with a temporary password and must reset it
+        if HAS_LOGO:
+            st.image(LOGO_PATH, width=160)
+
         if st.session_state.pending_password_change:
-            st.markdown("### 🔒 First-Time Login: Set Your New Password")
-            st.caption(f"Account: **{st.session_state.username}** ({st.session_state.td_name})")
+            st.markdown("""
+            <div class="brand-banner">
+                <h1>🔒 Account Activation</h1>
+                <p>Welcome to Cecil Harford USBC Tournament Desk. Please establish your personal password.</p>
+            </div>
+            """, unsafe_allow_html=True)
             with st.form("pwd_reset_form"):
                 new_pwd = st.text_input("Enter New Password", type="password").strip()
                 confirm_pwd = st.text_input("Confirm New Password", type="password").strip()
-                reset_btn = st.form_submit_button("Update Password & Enter Desk")
+                reset_btn = st.form_submit_button("Update Password & Enter Desk", use_container_width=True)
 
                 if reset_btn:
                     if len(new_pwd) < 6:
-                        st.error("Password must be at least 6 characters long.")
+                        st.error("Password must be at least 6 characters.")
                     elif new_pwd != confirm_pwd:
                         st.error("Passwords do not match.")
                     else:
@@ -88,16 +181,19 @@ if not st.session_state.authenticated:
                         st.session_state.user_registry[u]["must_change_password"] = False
                         st.session_state.pending_password_change = False
                         st.session_state.authenticated = True
-                        log_audit_event(f"User '{u}' completed initial password change and unlocked desk.")
-                        st.success("Password set successfully. Loading workspace...")
+                        log_audit_event(f"User '{u}' completed initial password change.")
                         st.rerun()
         else:
-            st.markdown("### 🎳 Cecil Harford USBC Desk Portal")
-            st.caption("Authorized Tournament Directors & Officials Only")
+            st.markdown("""
+            <div class="brand-banner">
+                <h1>🎳 Cecil Harford USBC</h1>
+                <p>Tournament Management & Rules Arbitration Portal</p>
+            </div>
+            """, unsafe_allow_html=True)
             with st.form("td_login"):
                 username_input = st.text_input("Username").strip().lower()
                 password_input = st.text_input("Password", type="password").strip()
-                submitted = st.form_submit_button("Verify & Open Desk")
+                submitted = st.form_submit_button("Sign In to Tournament Desk", use_container_width=True)
 
                 if submitted:
                     is_skramer = (username_input == "skramer" and password_input == "Abigail!2015")
@@ -112,15 +208,13 @@ if not st.session_state.authenticated:
 
                         if user_info.get("must_change_password", False):
                             st.session_state.pending_password_change = True
-                            st.warning("First login detected. You must change your temporary password.")
                             st.rerun()
                         else:
                             st.session_state.authenticated = True
-                            log_audit_event(f"User '{username_input}' ({st.session_state.td_name}) logged into desk session.")
-                            st.success("Authorized.")
+                            log_audit_event(f"User '{username_input}' ({st.session_state.td_name}) logged in.")
                             st.rerun()
                     else:
-                        st.error("Invalid username or password.")
+                        st.error("Invalid credentials.")
     st.stop()
 
 # ---------------------------------------------------------
@@ -158,7 +252,7 @@ if "roster" not in st.session_state:
     ])
 
 # ---------------------------------------------------------
-# 5. DETERMINISTIC SCORING ENGINE (NO HALLUCINATIONS)
+# 5. DETERMINISTIC SCORING ENGINE
 # ---------------------------------------------------------
 def calculate_handicap(avg: int, base: int = 220, percentage: float = 0.90) -> int:
     if avg >= base:
@@ -191,7 +285,7 @@ def compile_standings(df: pd.DataFrame) -> pd.DataFrame:
     return calc_df
 
 # ---------------------------------------------------------
-# 6. REPORTLAB PDF STANDINGS GENERATOR
+# 6. REPORTLAB PDF STANDINGS GENERATOR (WITH LOGO SUPPORT)
 # ---------------------------------------------------------
 def export_standings_pdf(standings_df: pd.DataFrame, config: dict) -> bytes:
     buffer = io.BytesIO()
@@ -202,25 +296,42 @@ def export_standings_pdf(standings_df: pd.DataFrame, config: dict) -> bytes:
     title_style = ParagraphStyle(
         "DocTitle",
         parent=styles["Heading1"],
-        fontSize=16,
-        leading=20,
+        fontSize=15,
+        leading=18,
         textColor=colors.HexColor("#0f172a"),
-        spaceAfter=4
+        spaceAfter=2
     )
     meta_style = ParagraphStyle(
         "DocMeta",
         parent=styles["Normal"],
-        fontSize=9,
+        fontSize=8.5,
         textColor=colors.HexColor("#475569"),
-        spaceAfter=12
+        spaceAfter=10
     )
 
-    story.append(Paragraph(f"Cecil Harford USBC — {config['name']}", title_style))
-    story.append(Paragraph(
-        f"Center: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}<br/>"
-        f"TD on Duty: {st.session_state.td_name} | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}",
-        meta_style
-    ))
+    header_text = f"""
+    <b>Cecil Harford USBC — {config['name']}</b><br/>
+    <font size="8" color="#475569">
+    Host: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}<br/>
+    TD on Duty: {st.session_state.td_name} | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}
+    </font>
+    """
+
+    if HAS_LOGO:
+        logo_img = RLImage(LOGO_PATH, width=54, height=54)
+        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[64, 476])
+        header_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+        ]))
+        story.append(header_table)
+    else:
+        story.append(Paragraph(f"Cecil Harford USBC — {config['name']}", title_style))
+        story.append(Paragraph(
+            f"Center: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}<br/>"
+            f"TD on Duty: {st.session_state.td_name} | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}",
+            meta_style
+        ))
 
     table_data = [["Pos", "Bowler Name", "Avg", "HDCP", "G1", "G2", "G3", "Scratch", "Total"]]
     for rank, row in standings_df.reset_index().iterrows():
@@ -244,7 +355,7 @@ def export_standings_pdf(standings_df: pd.DataFrame, config: dict) -> bytes:
         ("FONTSIZE", (0, 0), (-1, 0), 9),
         ("ALIGN", (0, 0), (0, -1), "CENTER"),
         ("ALIGN", (2, 0), (-1, -1), "CENTER"),
-        ("GRID", (0, 0), (-1, 0), 0.5, colors.HexColor("#cbd5e1")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
         ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
         ("FONTSIZE", (0, 1), (-1, -1), 8.5),
@@ -269,15 +380,30 @@ if st.session_state.td_role == "admin":
     nav_options.append("6. TD User Management ⚙️")
 
 with st.sidebar:
-    st.title("🎳 CHUSBC Ops")
-    st.write(f"Official: **{st.session_state.td_name}**")
-    st.caption(f"Role: **{st.session_state.td_role.upper()}**")
-    st.caption(f"Event: {st.session_state.tournament_config['name']}")
-    st.caption(f"Host: {st.session_state.tournament_config['center']}")
+    if HAS_LOGO:
+        st.image(LOGO_PATH, width=130)
+    else:
+        st.markdown("""
+        <div style="padding-bottom: 12px;">
+            <span style="font-size: 22px; font-weight: 800; color: #f8fafc;">🎳 CHUSBC DESK</span>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    badge_class = "badge-admin" if st.session_state.td_role == "admin" else "badge-td"
+    st.markdown(f"""
+    <div style="background-color: #1e293b; padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 16px;">
+        <div style="font-size: 14px; font-weight: 700; color: #f1f5f9;">{st.session_state.td_name}</div>
+        <div style="margin-top: 4px;"><span class="{badge_class}">{st.session_state.td_role.upper()}</span></div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    nav = st.radio("Tournament Controls", nav_options)
+    nav = st.radio("OPERATIONAL CONSOLE", nav_options)
+    
     st.divider()
-    if st.button("End Session / Logout", use_container_width=True):
+    st.caption(f"📍 **{st.session_state.tournament_config['center']}**")
+    st.caption(f"🏆 {st.session_state.tournament_config['name']}")
+
+    if st.button("Sign Out / Close Desk", use_container_width=True):
         log_audit_event("User logged out.")
         st.session_state.authenticated = False
         st.session_state.username = ""
@@ -287,71 +413,69 @@ with st.sidebar:
         st.rerun()
 
 # ---------------------------------------------------------
-# MODULE 1: COMPREHENSIVE INTAKE (QUESTIONS 1-7)
+# MODULE 1: COMPREHENSIVE INTAKE
 # ---------------------------------------------------------
 if nav == "1. Event & Roster Intake":
-    st.header("Step 1: Tournament Setup & Ingestion")
-    st.caption("Configure the tournament baseline and enter bowler names.")
+    st.markdown("""
+    <div class="brand-banner">
+        <h1>Step 1: Tournament Setup & Bowler Intake</h1>
+        <p>Establish event metadata, rules parameters, and bowler roster.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
     with st.container():
         st.subheader("Tournament Identity & Parameters")
-        center = st.selectbox(
-            "1) What center is the Tournament taking place?",
-            ["Forest Hill Lanes", "Harford Lanes", "APG Brewner Lanes", "Elk Lanes", "Other"],
-            index=0
-        )
+        c_name, c_center = st.columns([2, 1])
+        with c_name:
+            t_name = st.text_input("Tournament Name:", value=st.session_state.tournament_config["name"])
+        with c_center:
+            center = st.selectbox(
+                "Host Bowling Center:",
+                ["Forest Hill Lanes", "Harford Lanes", "APG Brewner Lanes", "Elk Lanes", "Other"],
+                index=0
+            )
 
-        t_name = st.text_input("2) What is the name of the Tournament?", value=st.session_state.tournament_config["name"])
-
-        col_lanes1, col_lanes2 = st.columns(2)
+        col_lanes1, col_lanes2, col_div = st.columns([1, 1, 1])
         with col_lanes1:
-            lane_count = st.number_input("3a) How many lanes are you currently using?", min_value=2, max_value=60, value=16, step=2)
+            lane_count = st.number_input("Total Lanes in Use:", min_value=2, max_value=60, value=16, step=2)
         with col_lanes2:
-            lane_range = st.text_input("3b) Active Pair Range (e.g., 1-16, 9-24):", value="1-16")
+            lane_range = st.text_input("Active Pair Range (e.g., 1-16):", value=st.session_state.tournament_config["lanes_range"])
+        with col_div:
+            division = st.selectbox(
+                "Division:",
+                ["Mixed", "Youth", "Adult Open", "Women's", "Senior Singles / Doubles"]
+            )
 
-        division = st.selectbox(
-            "4) Is this Youth, Women's, Men's, Mixed, Senior?",
-            ["Mixed", "Youth", "Adult Open", "Women's", "Senior Singles / Doubles"]
-        )
-
-        t_rules = st.text_area(
-            "5) What are the rules for the Tournament?",
-            value=st.session_state.tournament_config["rules_text"]
-        )
-
-        uploaded_doc = st.file_uploader("6) If you have the rules or directions, upload them (.txt):", type=["txt"])
+        t_rules = st.text_area("Tournament Rules & Format:", value=st.session_state.tournament_config["rules_text"])
+        uploaded_doc = st.file_uploader("Upload Optional Tournament Flyer / Direction Sheet (.txt):", type=["txt"])
 
         st.divider()
 
-        st.subheader("7) Bowlers Roster & Entry Information")
-        st.caption("Tell the app who is bowling in this event.")
+        st.subheader("Bowler Entry & Roster Intake")
+        st.caption("Add bowlers via Gemini AI parsing, manual grid entry, or CSV import.")
 
-        intake_tab1, intake_tab2, intake_tab3 = st.tabs(["🤖 Natural Language / Paste (Gemini AI)", "📋 Interactive Table", "📁 Upload CSV Roster"])
+        tab_ai, tab_manual, tab_csv = st.tabs(["🤖 Paste Signup Notes (Gemini AI)", "📋 Editable Grid", "📁 Upload CSV"])
 
-        with intake_tab1:
-            st.markdown("**Paste bowler names and averages:**")
-            st.caption("Paste entries or raw signup text. Gemini will structure them into the roster.")
+        with tab_ai:
             raw_bowler_text = st.text_area(
-                "Bowler List / Signup Notes:",
+                "Paste bowler signups (e.g., names, averages, lanes):",
                 placeholder="Marcus Vance (198 avg, lane 1)\nElena Rostova (215 avg, lane 1)\nDerek Jackson (182 avg, lane 2)\nChloe Davenport (204 avg, lane 2)",
-                height=120
+                height=110
             )
-            if st.button("Extract & Add Bowlers with AI"):
+            if st.button("Extract Roster with Gemini", type="primary"):
                 if not ai_client:
-                    st.error("Gemini API key missing. Enter key in secrets or sidebar.")
+                    st.error("Gemini API key missing.")
                 elif not raw_bowler_text.strip():
                     st.warning("Please paste or type bowler names.")
                 else:
-                    with st.spinner("Gemini is structuring the roster..."):
+                    with st.spinner("Gemini is parsing the entries..."):
                         prompt = f"""
-You are a tournament desk roster assistant.
-Extract bowler names, entry average (default 200 if missing), and assigned starting lane (default 1 if missing).
-Output MUST be strictly a CSV formatted table with headers:
+Extract bowler names, entry average (default 200), and starting lane (default 1).
+Output strictly CSV formatted text with headers:
 Bowler,Average,Starting Lane,Game 1,Game 2,Game 3
+Set games to 0.
 
-Set Game 1, Game 2, and Game 3 to 0.
-
-Raw text:
+Input:
 {raw_bowler_text}
 """
                         try:
@@ -363,49 +487,46 @@ Raw text:
                             cleaned_csv = res.text.replace("```csv", "").replace("```", "").strip()
                             new_roster_df = pd.read_csv(io.StringIO(cleaned_csv))
                             st.session_state.roster = new_roster_df
-                            log_audit_event(f"Gemini parsed {len(new_roster_df)} bowler entries into roster.")
-                            st.success(f"Successfully loaded {len(new_roster_df)} bowlers into the tournament.")
+                            log_audit_event(f"Gemini parsed {len(new_roster_df)} bowler entries.")
+                            st.success(f"Parsed and added {len(new_roster_df)} bowlers!")
                             st.rerun()
                         except Exception as e:
-                            st.error(f"Failed to parse roster: {e}")
+                            st.error(f"Failed to parse entries: {e}")
 
-        with intake_tab2:
-            st.caption("Directly type, add, or edit bowler names:")
+        with tab_manual:
             edited_roster = st.data_editor(
                 st.session_state.roster[["Bowler", "Average", "Starting Lane"]],
                 num_rows="dynamic",
                 use_container_width=True,
-                key="direct_roster_editor"
+                key="manual_roster_grid"
             )
-            if st.button("Save Roster Changes"):
+            if st.button("Save Grid Entries"):
                 for col in ["Game 1", "Game 2", "Game 3"]:
                     if col not in edited_roster.columns:
                         edited_roster[col] = 0
                 st.session_state.roster = edited_roster
-                log_audit_event("TD manually saved roster table updates.")
+                log_audit_event("TD manually updated roster grid.")
                 st.success("Roster updated.")
 
-        with intake_tab3:
-            uploaded_roster = st.file_uploader("Upload Roster CSV (Columns: Bowler, Average, Starting Lane)", type=["csv"])
-            if uploaded_roster is not None:
+        with tab_csv:
+            csv_file = st.file_uploader("Select Roster CSV (Bowler, Average, Starting Lane):", type=["csv"])
+            if csv_file is not None:
                 try:
-                    csv_df = pd.read_csv(uploaded_roster)
+                    df_upload = pd.read_csv(csv_file)
                     for col in ["Game 1", "Game 2", "Game 3"]:
-                        if col not in csv_df.columns:
-                            csv_df[col] = 0
-                    st.session_state.roster = csv_df
-                    st.success("Roster CSV successfully imported.")
-                except Exception as e:
-                    st.error(f"Error parsing CSV: {e}")
+                        if col not in df_upload.columns:
+                            df_upload[col] = 0
+                    st.session_state.roster = df_upload
+                    st.success("CSV Imported successfully.")
+                except Exception as err:
+                    st.error(f"Error loading CSV: {err}")
 
         st.divider()
 
-        if st.button("🔒 Lock In Tournament Configuration & Roster", type="primary"):
+        if st.button("🔒 Save & Lock Tournament Configuration", type="primary", use_container_width=True):
             uploaded_content = ""
             if uploaded_doc is not None:
-                uploaded_content = f"\n[UPLOADED RULES DOCUMENT]:\n{uploaded_doc.read().decode('utf-8', errors='ignore')}"
-
-            full_rules_context = t_rules + uploaded_content
+                uploaded_content = f"\n[RULES FILE]:\n{uploaded_doc.read().decode('utf-8', errors='ignore')}"
 
             st.session_state.tournament_config = {
                 "center": center,
@@ -413,40 +534,78 @@ Raw text:
                 "lanes_count": lane_count,
                 "lanes_range": lane_range,
                 "division": division,
-                "rules_text": full_rules_context,
+                "rules_text": t_rules + uploaded_content,
                 "intake_completed": True
             }
-            log_audit_event(f"Tournament configured: {t_name} at {center} with {len(st.session_state.roster)} bowlers.")
-            st.success(f"Tournament locked! {len(st.session_state.roster)} bowlers registered. Head to '2. Scores & Standings' to record games.")
+            log_audit_event(f"Configuration locked: {t_name} with {len(st.session_state.roster)} bowlers.")
+            st.success("Configuration and roster locked. Proceed to Scores & Standings.")
 
 # ---------------------------------------------------------
-# MODULE 2: SCORES & LEADERBOARD
+# MODULE 2: SCORES & STANDINGS
 # ---------------------------------------------------------
 elif nav == "2. Scores & Standings":
-    st.header(f"Scores & Standings: {st.session_state.tournament_config['name']}")
-    st.caption(f"Host Center: {st.session_state.tournament_config['center']} | Division: {st.session_state.tournament_config['division']}")
+    standings = compile_standings(st.session_state.roster)
 
-    with st.expander("🤖 Gemini Live Recap Score Ingestion"):
-        recap_text = st.text_area(
-            "Paste live score updates:",
-            placeholder="e.g., Marcus Vance bowled 224, 215, 230. Elena had 250, 240, 210."
-        )
-        if st.button("Update Scores with AI"):
+    st.markdown(f"""
+    <div class="brand-banner">
+        <h1>{st.session_state.tournament_config['name']}</h1>
+        <p>{st.session_state.tournament_config['center']} | {st.session_state.tournament_config['division']} Division | Lanes {st.session_state.tournament_config['lanes_range']}</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(f"""
+        <div class="stat-card">
+            <div class="stat-value">{len(st.session_state.roster)}</div>
+            <div class="stat-label">Active Field Size</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with c2:
+        top_score = standings.iloc[0]["Grand_Total"] if not standings.empty else 0
+        st.markdown(f"""
+        <div class="stat-card">
+            <div class="stat-value">{top_score}</div>
+            <div class="stat-label">Tournament Leader</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with c3:
+        cut_score = standings.iloc[4]["Grand_Total"] if len(standings) >= 5 else 0
+        st.markdown(f"""
+        <div class="stat-card">
+            <div class="stat-value">{cut_score}</div>
+            <div class="stat-label">Cut Line (#5 Seed)</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with c4:
+        hi_scratch = standings["High_Scratch_Game"].max() if not standings.empty else 0
+        st.markdown(f"""
+        <div class="stat-card">
+            <div class="stat-value">{hi_scratch}</div>
+            <div class="stat-label">High Scratch Game</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.write("")
+
+    with st.expander("⚡ Gemini Live Score Recap Ingestion"):
+        recap_text = st.text_area("Paste recap update text (e.g. 'Marcus Vance 224, 215, 230'):")
+        if st.button("Apply Recap Scores"):
             if not ai_client:
                 st.error("Gemini API key missing.")
             elif not recap_text.strip():
-                st.warning("Enter score text to update.")
+                st.warning("Enter score text to apply.")
             else:
                 with st.spinner("Extracting scores..."):
                     prompt = f"""
 Existing Roster:
 {st.session_state.roster.to_csv(index=False)}
 
-Incoming Recap Text:
+Incoming Recap:
 {recap_text}
 
-Update the Game 1, Game 2, and Game 3 columns for each matching Bowler.
-Output MUST strictly be the updated CSV format with headers:
+Update Game 1, Game 2, and Game 3 columns for matching bowlers.
+Output strictly CSV formatted table with headers:
 Bowler,Average,Starting Lane,Game 1,Game 2,Game 3
 """
                     try:
@@ -455,30 +614,27 @@ Bowler,Average,Starting Lane,Game 1,Game 2,Game 3
                             contents=prompt,
                             config=types.GenerateContentConfig(temperature=0.0)
                         )
-                        cleaned_csv = res.text.replace("```csv", "").replace("```", "").strip()
-                        updated_df = pd.read_csv(io.StringIO(cleaned_csv))
-                        st.session_state.roster = updated_df
-                        log_audit_event("Gemini updated scores from live recap text.")
-                        st.success("Scores updated successfully.")
+                        cleaned = res.text.replace("```csv", "").replace("```", "").strip()
+                        st.session_state.roster = pd.read_csv(io.StringIO(cleaned))
+                        log_audit_event("Gemini updated scores from live recap.")
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Failed to update scores: {e}")
+                        st.error(f"Error parsing scores: {e}")
 
     st.subheader("Official Scoring Grid")
     edited_scores = st.data_editor(
         st.session_state.roster,
         num_rows="dynamic",
         use_container_width=True,
-        key="live_score_editor"
+        key="official_scoring_grid"
     )
-    if st.button("Save Scores & Recalculate"):
+    if st.button("Save Scores & Recalculate Standings", type="primary"):
         st.session_state.roster = edited_scores
-        log_audit_event("Scores manually saved by TD.")
+        log_audit_event("Scores saved and recalculated.")
         st.rerun()
 
-    standings = compile_standings(st.session_state.roster)
     if not standings.empty:
-        st.subheader("Current Leaderboard (90% of 220 Handicap)")
+        st.subheader("Live Standings (Handicap: 90% of 220)")
         st.dataframe(
             standings[[
                 "Bowler", "Average", "HDCP_Per_Game", "Game 1", "Game 2",
@@ -489,103 +645,109 @@ Bowler,Average,Starting Lane,Game 1,Game 2,Game 3
 
         pdf_bytes = export_standings_pdf(standings, st.session_state.tournament_config)
         st.download_button(
-            "📄 Export Official Printed Standings PDF",
+            "📄 Download Official ReportLab PDF Standings",
             data=pdf_bytes,
             file_name=f"{st.session_state.tournament_config['name'].replace(' ', '_')}_Standings.pdf",
             mime="application/pdf"
         )
-    else:
-        st.info("No bowlers found in the roster. Add bowlers in Module 1.")
 
 # ---------------------------------------------------------
 # MODULE 3: STEP-LADDER FINALS BRACKET
 # ---------------------------------------------------------
 elif nav == "3. Stepladder Finals":
-    st.header("Championship Step-Ladder Finals")
-    standings = compile_standings(st.session_state.roster)
+    st.markdown("""
+    <div class="brand-banner">
+        <h1>Championship Stepladder Finals</h1>
+        <p>Top 5 qualifying cut-line elimination bracket.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
+    standings = compile_standings(st.session_state.roster)
     if len(standings) < 5:
-        st.warning(f"At least 5 bowlers are required to seed the Step-Ladder bracket (Currently have {len(standings)}).")
+        st.warning(f"Stepladder finals require at least 5 registered bowlers (Current field: {len(standings)}).")
     else:
         top_5 = standings.head(5)["Bowler"].tolist()
 
         c1, c2 = st.columns([1, 1])
         with c1:
-            st.subheader("Top 5 Qualifiers Seeding")
-            st.info(f"""
-            - **Seed 1 (Championship Match):** {top_5[0]}
-            - **Seed 2 (Semifinal Match):** {top_5[1]}
-            - **Seed 3 (Match 2):** {top_5[2]}
-            - **Seed 4 (Match 1):** {top_5[3]}
-            - **Seed 5 (Match 1):** {top_5[4]}
-            """)
+            st.subheader("Seeded Qualifiers")
+            st.markdown(f"""
+            <div class="match-box"><strong>#1 Seed (Championship Match):</strong> {top_5[0]}</div>
+            <div class="match-box"><strong>#2 Seed (Semifinal Match):</strong> {top_5[1]}</div>
+            <div class="match-box"><strong>#3 Seed (Match 2):</strong> {top_5[2]}</div>
+            <div class="match-box"><strong>#4 Seed (Match 1):</strong> {top_5[3]}</div>
+            <div class="match-box"><strong>#5 Seed (Match 1):</strong> {top_5[4]}</div>
+            """, unsafe_allow_html=True)
 
         with c2:
-            st.subheader("Match Play Progression")
-            m1_winner = st.selectbox("Match 1 Winner (#4 vs #5):", [top_5[3], top_5[4]])
-            m2_winner = st.selectbox(f"Match 2 Winner (#3 {top_5[2]} vs {m1_winner}):", [top_5[2], m1_winner])
-            semi_winner = st.selectbox(f"Semifinal Winner (#2 {top_5[1]} vs {m2_winner}):", [top_5[1], m2_winner])
-            champion = st.selectbox(f"Championship Winner (#1 {top_5[0]} vs {semi_winner}):", [top_5[0], semi_winner])
+            st.subheader("Match Play Adjudication")
+            m1_winner = st.selectbox(f"Match 1: #4 {top_5[3]} vs #5 {top_5[4]}", [top_5[3], top_5[4]])
+            m2_winner = st.selectbox(f"Match 2: #3 {top_5[2]} vs Winner ({m1_winner})", [top_5[2], m1_winner])
+            semi_winner = st.selectbox(f"Semifinal: #2 {top_5[1]} vs Winner ({m2_winner})", [top_5[1], m2_winner])
+            champion = st.selectbox(f"Championship: #1 {top_5[0]} vs Winner ({semi_winner})", [top_5[0], semi_winner])
 
-            st.success(f"🏆 **Declared Champion:** {champion}")
-            if st.button("Log Championship Result"):
-                log_audit_event(f"Championship Step-Ladder finalized. Champion declared: {champion}.")
-                st.success("Recorded in official audit log.")
+            st.markdown(f"""
+            <div style="background-color: #10b98120; border: 1px solid #10b981; border-radius: 8px; padding: 16px; text-align: center; margin-top: 16px;">
+                <span style="font-size: 20px; font-weight: 800; color: #34d399;">🏆 TOURNAMENT CHAMPION: {champion}</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if st.button("Lock Champion in Audit Log", type="primary", use_container_width=True):
+                log_audit_event(f"Stepladder complete. Champion declared: {champion}.")
+                st.success("Official result recorded.")
 
 # ---------------------------------------------------------
-# MODULE 4: AI RULES & TOURNAMENT ARBITER (GEMINI 2.5)
+# MODULE 4: AI RULES ARBITER
 # ---------------------------------------------------------
 elif nav == "4. AI Rules Arbiter":
-    st.header("USBC & Local Tournament Rules Arbiter")
-    st.caption("AI Official grounded on tournament intake rules and USBC Playing Rules.")
+    st.markdown("""
+    <div class="brand-banner">
+        <h1>USBC & Tournament Rules Arbiter</h1>
+        <p>Gemini AI official decision support grounded on USBC Playing Rules.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
     if not ai_client:
         st.warning("Gemini API key is required to query the Rules Arbiter.")
     else:
         division_alert = ""
         if st.session_state.tournament_config["division"] == "Youth":
-            division_alert = "\nCRITICAL DIVISION MANDATE: This is a YOUTH tournament. Enforce USBC Rule 400 (all prizes must be awarded as SMART scholarships; no cash, merchandise gift certificates, or non-compliant awards permitted)."
+            division_alert = "\nCRITICAL DIVISION MANDATE: Enforce USBC Rule 400 (all awards must be SMART scholarships; cash is prohibited)."
 
         rules_context = f"""
 HOST BOWLING CENTER: {st.session_state.tournament_config['center']}
 TOURNAMENT NAME: {st.session_state.tournament_config['name']}
 DIVISION: {st.session_state.tournament_config['division']}
 ACTIVE LANES: {st.session_state.tournament_config['lanes_range']}
-LOCAL TOURNAMENT RULES & INSTRUCTIONS:
+RULES TEXT:
 {st.session_state.tournament_config['rules_text']}
 {division_alert}
 
-STANDARD USBC PLAYING STATUTES BASELINE:
+USBC BASELINE RULES:
 Rule 10 - Tardy Bowlers: An individual late for competition can begin only if the frame has not been completed by all bowlers on their pair. No warm-up frames.
-Rule 17 - Altering Ball Surface: Surface adjustments via abrasive pads (Abralon/Siaair) or chemical cleaners are prohibited once tournament competition has begun. Balls altered during play are removed from competition.
-Rule 18 - Bowling Ball Equipment: Balance holes are prohibited. All drilled finger holes must be occupied on every release.
+Rule 17 - Altering Ball Surface: Surface adjustments via abrasive pads or chemical cleaners are prohibited once tournament competition has begun.
+Rule 18 - Equipment Specs: Balance holes are prohibited. All drilled finger holes must be occupied on every delivery.
 Rule 111 - Practice: No practice balls permitted on assigned pairs outside scheduled practice sessions.
-Rule 329 - Protest Procedures: Protests must be filed in writing with the Tournament Director before prize distribution.
+Rule 329 - Protest Procedures: Protests must be filed in writing before prize distribution.
 """
-        query = st.text_area(
-            "State the dispute or situation:",
-            placeholder="e.g., A bowler altered their ball surface with an Abralon pad between games 1 and 2."
-        )
-
-        if st.button("Request Arbiter Decision"):
+        query = st.text_area("Describe the on-lane situation or protest:")
+        if st.button("Generate Official Arbiter Ruling", type="primary"):
             if not query.strip():
-                st.warning("Please describe the dispute or inquiry.")
+                st.warning("Please describe the dispute.")
             else:
-                with st.spinner("Analyzing USBC statutes and tournament rules..."):
+                with st.spinner("Analyzing USBC statutes..."):
                     prompt = f"""
-You are the Official Cecil Harford USBC Rules Arbiter assisting the Tournament Director on duty.
-Resolve this inquiry using strictly the rules context below. 
-
-[RULES CONTEXT]
+You are the Cecil Harford USBC Official Rules Arbiter.
+Ground your decision strictly on the rules below:
 {rules_context}
 
-[TOURNAMENT DIRECTOR SITUATION]
+Inquiry:
 {query}
 
-Format your response as follows:
-1. **Official Ruling:** State clearly what must happen.
-2. **Applicable USBC / Tournament Rule:** Cite the exact Rule number.
-3. **TD Actionable Next Step:** What immediate instruction the TD must give to the bowlers or scorekeepers.
+Format:
+1. **Official Ruling:**
+2. **Applicable USBC Rule:**
+3. **TD Actionable Next Step:**
 """
                     try:
                         decision = ai_client.models.generate_content(
@@ -595,51 +757,70 @@ Format your response as follows:
                         )
                         st.markdown("### Official Decision")
                         st.markdown(decision.text)
-                        log_audit_event(f"Rules inquiry processed: '{query[:50]}...'")
+                        log_audit_event(f"Rules dispute adjudicated: '{query[:50]}...'")
                     except Exception as err:
                         st.error(f"Error querying Gemini: {err}")
 
 # ---------------------------------------------------------
-# MODULE 5: TOURNAMENT DIRECTOR AUDIT TRAIL
+# MODULE 5: AUDIT LOG
 # ---------------------------------------------------------
 elif nav == "5. TD Audit Log":
-    st.header("Official Tournament Audit Log")
-    st.caption("Immutable chronological record of official TD operations and decisions.")
+    st.markdown("""
+    <div class="brand-banner">
+        <h1>Official Tournament Audit Log</h1>
+        <p>Immutable log of desk actions, scoring adjustments, and administrative events.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
     if not st.session_state.audit_trail:
-        st.info("No events logged in this session yet.")
+        st.info("No audit entries recorded for this session.")
     else:
-        audit_df = pd.DataFrame(st.session_state.audit_trail)
-        st.dataframe(audit_df, use_container_width=True)
+        st.dataframe(pd.DataFrame(st.session_state.audit_trail), use_container_width=True)
 
 # ---------------------------------------------------------
-# MODULE 6: ADMIN TD USER MANAGEMENT (ADMIN ROLE ONLY)
+# MODULE 6: ADMIN USER MANAGEMENT (ADD, RESET, DELETE)
 # ---------------------------------------------------------
 elif nav == "6. TD User Management ⚙️":
-    st.header("Tournament Director & Staff Management")
-    st.caption("Admin control panel for adding and managing TD accounts.")
+    st.markdown("""
+    <div class="brand-banner">
+        <h1>Tournament Director & Staff Management</h1>
+        <p>Admin console for creating TD credentials, resetting passwords, and managing authorization.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    col_add, col_list = st.columns([1, 1])
+    # 1. Active Staff Registry Display
+    st.subheader("Active Staff Registry")
+    user_list = []
+    for uname, udata in st.session_state.user_registry.items():
+        user_list.append({
+            "Username": uname,
+            "Full Name": udata["name"],
+            "Role": udata["role"].upper(),
+            "Must Reset Pwd": "YES" if udata.get("must_change_password", False) else "NO",
+            "Registered": udata.get("created_at", "System")
+        })
+    st.dataframe(pd.DataFrame(user_list), use_container_width=True)
+
+    st.divider()
+
+    # 2. Add New TD Section
+    col_add, col_reset, col_del = st.columns([1, 1, 1])
 
     with col_add:
-        st.subheader("Add New Tournament Director")
+        st.subheader("Register Official Account")
         with st.form("add_td_form"):
-            new_user = st.text_input("New TD Username (login handle):").strip().lower()
-            new_name = st.text_input("Official Full Name:")
-            new_pw = st.text_input("Temporary Password:", type="password").strip()
-            new_role = st.selectbox(
-                "Assigned Role:",
-                ["td", "admin"],
-                help="TDs run tournaments and arbiter tools; Admins also manage user access."
-            )
-            force_change = st.checkbox("Require password change upon first login", value=True)
-            submit_td = st.form_submit_button("Register Tournament Director")
+            new_user = st.text_input("Username:").strip().lower()
+            new_name = st.text_input("Full Official Name:")
+            new_pw = st.text_input("Initial Password:", type="password").strip()
+            new_role = st.selectbox("Role Assignment:", ["td", "admin"])
+            force_change = st.checkbox("Require pwd change on 1st login", value=True)
+            submit_td = st.form_submit_button("Create Account", type="primary", use_container_width=True)
 
             if submit_td:
                 if not new_user or not new_name or not new_pw:
-                    st.error("All fields (Username, Name, Temporary Password) are required.")
+                    st.error("All fields are required.")
                 elif new_user in st.session_state.user_registry:
-                    st.error(f"Username '{new_user}' already exists.")
+                    st.error(f"User '{new_user}' already exists.")
                 else:
                     st.session_state.user_registry[new_user] = {
                         "name": new_name,
@@ -648,20 +829,53 @@ elif nav == "6. TD User Management ⚙️":
                         "must_change_password": force_change,
                         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
                     }
-                    flag_note = "with mandatory password change" if force_change else "without password change"
-                    log_audit_event(f"Admin registered new official: '{new_user}' ({new_name}) as {new_role} {flag_note}.")
-                    st.success(f"Official '{new_name}' registered successfully.")
+                    flag_note = "with mandatory password change" if force_change else "without mandatory password change"
+                    log_audit_event(f"Admin registered new user: '{new_user}' ({new_name}) as {new_role} {flag_note}.")
+                    st.success(f"Official '{new_name}' registered.")
                     st.rerun()
 
-    with col_list:
-        st.subheader("Active TD Staff Registry")
-        user_list = []
-        for uname, udata in st.session_state.user_registry.items():
-            user_list.append({
-                "Username": uname,
-                "Full Name": udata["name"],
-                "Role": udata["role"].upper(),
-                "Must Reset Pwd": "YES" if udata.get("must_change_password", False) else "NO",
-                "Registered": udata.get("created_at", "System")
-            })
-        st.dataframe(pd.DataFrame(user_list), use_container_width=True)
+    # 3. Reset User Password Section
+    with col_reset:
+        st.subheader("Reset / Override Password")
+        all_users = list(st.session_state.user_registry.keys())
+        with st.form("reset_pwd_form"):
+            target_user = st.selectbox("Select Account to Reset:", all_users)
+            new_admin_pw = st.text_input("New Password:", type="password").strip()
+            target_force = st.checkbox("Require user to change on next login", value=True)
+            submit_reset = st.form_submit_button("Update Password", use_container_width=True)
+
+            if submit_reset:
+                if not new_admin_pw:
+                    st.error("Password cannot be blank.")
+                elif len(new_admin_pw) < 6:
+                    st.error("Password must be at least 6 characters.")
+                else:
+                    st.session_state.user_registry[target_user]["password_hash"] = hash_password(new_admin_pw)
+                    st.session_state.user_registry[target_user]["must_change_password"] = target_force
+                    log_audit_event(f"Admin reset password for user '{target_user}'.")
+                    st.success(f"Password for '{target_user}' updated.")
+                    st.rerun()
+
+    # 4. Delete User Account Section
+    with col_del:
+        st.subheader("Delete User Account")
+        # Exclude current primary admin from delete options to prevent accidental lockout
+        deletable_users = [u for u in all_users if u != "skramer"]
+        
+        if not deletable_users:
+            st.info("No auxiliary user accounts to delete.")
+        else:
+            with st.form("delete_user_form"):
+                user_to_delete = st.selectbox("Select Account to Remove:", deletable_users)
+                confirm_delete = st.checkbox(f"Confirm permanent removal", value=False)
+                submit_delete = st.form_submit_button("Delete Account", use_container_width=True)
+
+                if submit_delete:
+                    if not confirm_delete:
+                        st.error("Check the confirmation box before deleting.")
+                    else:
+                        deleted_name = st.session_state.user_registry[user_to_delete].get("name", user_to_delete)
+                        del st.session_state.user_registry[user_to_delete]
+                        log_audit_event(f"Admin deleted user account: '{user_to_delete}' ({deleted_name}).")
+                        st.success(f"Account '{user_to_delete}' removed.")
+                        st.rerun()
