@@ -9,6 +9,9 @@ import pandas as pd
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 from pypdf import PdfReader
+import qrcode
+from PIL import Image
+
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Image as RLImage
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -143,7 +146,6 @@ def get_db_connection():
 def fetch_users_df() -> pd.DataFrame:
     conn = get_db_connection()
     required_cols = ["username", "name", "password_hash", "role", "status", "must_change_password", "created_at"]
-    
     if conn is not None:
         try:
             df = conn.read(worksheet="Sheet1", ttl=0)
@@ -206,6 +208,114 @@ def write_archives_df(df: pd.DataFrame):
             return False
     return False
 
+# ---------------------------------------------------------
+# 3. INITIALIZE TOURNAMENT STATE & ROSTER
+# ---------------------------------------------------------
+if "tournament_config" not in st.session_state:
+    st.session_state.tournament_config = {
+        "center": "Forest Hill Lanes",
+        "name": "Cecil Harford Annual Championship",
+        "lanes_count": 16,
+        "lanes_range": "1-16",
+        "division": "Adult Open",
+        "rules_text": "Qualifying: 3 games across 3 pairs. Cut to top 5 for stepladder finals. Handicap based on 90% of 220 based on highest 2025-26 book average.",
+        "intake_completed": False
+    }
+
+if "roster" not in st.session_state:
+    st.session_state.roster = pd.DataFrame([
+        {"Bowler_ID": "CH-101", "Bowler": "Scott Kramer", "Average": 218, "Starting Lane": 1, "Game 1": 245, "Game 2": 238, "Game 3": 268, "Paid": True, "Checked_In": True},
+        {"Bowler_ID": "CH-102", "Bowler": "Dave Miller", "Average": 205, "Starting Lane": 1, "Game 1": 210, "Game 2": 195, "Game 3": 215, "Paid": True, "Checked_In": True},
+        {"Bowler_ID": "CH-103", "Bowler": "Chris Reynolds", "Average": 195, "Starting Lane": 2, "Game 1": 188, "Game 2": 220, "Game 3": 202, "Paid": False, "Checked_In": False},
+        {"Bowler_ID": "CH-104", "Bowler": "Marcus Vance", "Average": 198, "Starting Lane": 2, "Game 1": 224, "Game 2": 215, "Game 3": 201, "Paid": False, "Checked_In": False},
+        {"Bowler_ID": "CH-105", "Bowler": "Elena Rostova", "Average": 215, "Starting Lane": 3, "Game 1": 257, "Game 2": 248, "Game 3": 222, "Paid": True, "Checked_In": False},
+        {"Bowler_ID": "CH-106", "Bowler": "Derek Jackson", "Average": 182, "Starting Lane": 3, "Game 1": 178, "Game 2": 195, "Game 3": 210, "Paid": False, "Checked_In": False},
+    ])
+
+# Ensure Bowler_ID, Paid, and Checked_In columns exist
+for col, default in [("Bowler_ID", "CH-000"), ("Paid", False), ("Checked_In", False)]:
+    if col not in st.session_state.roster.columns:
+        st.session_state.roster[col] = default
+
+# ---------------------------------------------------------
+# 4. MOBILE-OPTIMIZED BOWLER SELF-CHECK-IN ROUTE (?mode=checkin)
+# ---------------------------------------------------------
+query_params = st.query_params
+if query_params.get("mode") == "checkin":
+    target_id = query_params.get("bowler_id", "")
+    roster_match = st.session_state.roster[st.session_state.roster["Bowler_ID"] == target_id]
+
+    st.columns([1, 2, 1])[1].write("")
+    with st.columns([1, 2, 1])[1]:
+        if HAS_LOGO:
+            st.image(LOGO_PATH, width=150)
+        
+        st.markdown(f"""
+        <div class="brand-banner" style="text-align: center;">
+            <h1 style="font-size: 22px;">🎳 CHUSBC Official Check-In</h1>
+            <p>{st.session_state.tournament_config['name']}<br/>{st.session_state.tournament_config['center']}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if roster_match.empty:
+            st.error("Invalid bowler check-in link. Please see the desk official.")
+        else:
+            bowler_info = roster_match.iloc[0]
+            bowler_name = bowler_info["Bowler"]
+            is_paid = bool(bowler_info["Paid"])
+            is_checked_in = bool(bowler_info["Checked_In"])
+            start_lane = int(bowler_info["Starting Lane"])
+            pair_partner = start_lane + 1 if start_lane % 2 != 0 else start_lane - 1
+            pair_display = f"Lanes {min(start_lane, pair_partner)} & {max(start_lane, pair_partner)}"
+
+            if not is_paid:
+                st.markdown(f"""
+                <div style="background-color: #ef444420; border: 2px solid #ef4444; border-radius: 10px; padding: 20px; text-align: center; margin-bottom: 20px;">
+                    <span style="font-size: 36px;">⚠️</span>
+                    <h2 style="color: #f87171; margin: 10px 0 4px 0; font-size: 20px;">Payment Required at Desk</h2>
+                    <p style="color: #fca5a5; font-size: 14px; margin: 0;">
+                        Hello <b>{bowler_name}</b>. Your entry fee must be collected at the check-in desk before your lane assignment can be issued.
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                if not is_checked_in:
+                    # Execute check-in
+                    match_idx = st.session_state.roster.index[st.session_state.roster["Bowler_ID"] == target_id].tolist()
+                    if match_idx:
+                        st.session_state.roster.loc[match_idx[0], "Checked_In"] = True
+
+                st.markdown(f"""
+                <div style="background-color: #10b98120; border: 2px solid #10b981; border-radius: 10px; padding: 20px; text-align: center; margin-bottom: 20px;">
+                    <span style="font-size: 40px;">✅</span>
+                    <h2 style="color: #34d399; margin: 10px 0 4px 0; font-size: 22px;">Check-In Confirmed!</h2>
+                    <p style="color: #94a3b8; font-size: 14px; margin: 0;">Welcome, <b>{bowler_name}</b></p>
+                </div>
+
+                <div class="match-box" style="text-align: center; font-size: 16px; padding: 18px;">
+                    <span style="color: #94a3b8; font-size: 13px; text-transform: uppercase; font-weight: 700;">Assigned Starting Pair</span>
+                    <div style="font-size: 32px; font-weight: 800; color: #38bdf8; margin: 6px 0;">{pair_display}</div>
+                    <span style="color: #f1f5f9; font-size: 14px;">Lead-off Lane: <b>Lane {start_lane}</b></span>
+                </div>
+
+                <div style="background-color: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 14px; margin-top: 14px;">
+                    <div style="display: flex; justify-content: space-between; font-size: 14px; color: #cbd5e1; margin-bottom: 6px;">
+                        <span>Verified Entering Avg:</span>
+                        <span style="font-weight: 700;">{bowler_info['Average']}</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; font-size: 14px; color: #cbd5e1;">
+                        <span>Entry Status:</span>
+                        <span style="color: #34d399; font-weight: 700;">PAID & OFFICIAL</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                st.caption("Keep this screen open for your starting pair reference. Good luck and high bowling!")
+
+    st.stop()
+
+# ---------------------------------------------------------
+# 5. TD AUTHENTICATION & LOGIN GATE
+# ---------------------------------------------------------
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "username" not in st.session_state:
@@ -227,9 +337,6 @@ def log_audit_event(action: str):
         "action": action
     })
 
-# ---------------------------------------------------------
-# LANDING SCREEN: LOGIN & SELF-REGISTRATION
-# ---------------------------------------------------------
 if not st.session_state.authenticated:
     st.columns([1, 2, 1])[1].write("")
     with st.columns([1, 2, 1])[1]:
@@ -351,7 +458,7 @@ if not st.session_state.authenticated:
     st.stop()
 
 # ---------------------------------------------------------
-# 3. GEMINI API SETUP & RESILIENT RETRY/FAILOVER WRAPPER
+# 6. GEMINI API CLIENT & RETRY FAILOVER ENGINE
 # ---------------------------------------------------------
 api_key = st.secrets.get("GEMINI_API_KEY", None)
 if not api_key:
@@ -388,31 +495,7 @@ def generate_with_failover(prompt: str, temperature: float = 0.0) -> str:
     raise last_exception
 
 # ---------------------------------------------------------
-# 4. TOURNAMENT INTAKE STATE
-# ---------------------------------------------------------
-if "tournament_config" not in st.session_state:
-    st.session_state.tournament_config = {
-        "center": "Forest Hill Lanes",
-        "name": "Cecil Harford Annual Championship",
-        "lanes_count": 16,
-        "lanes_range": "1-16",
-        "division": "Mixed",
-        "rules_text": "Qualifying: 3 games across 3 pairs. Cut to top 5 for stepladder finals. Handicap based on 90% of 220 based on highest 2025-26 book average.",
-        "intake_completed": False
-    }
-
-if "roster" not in st.session_state:
-    st.session_state.roster = pd.DataFrame([
-        {"Bowler": "Scott Kramer", "Average": 218, "Starting Lane": 1, "Game 1": 245, "Game 2": 238, "Game 3": 268},
-        {"Bowler": "Dave Miller", "Average": 205, "Starting Lane": 1, "Game 1": 210, "Game 2": 195, "Game 3": 215},
-        {"Bowler": "Chris Reynolds", "Average": 195, "Starting Lane": 2, "Game 1": 188, "Game 2": 220, "Game 3": 202},
-        {"Bowler": "Marcus Vance", "Average": 198, "Starting Lane": 2, "Game 1": 224, "Game 2": 215, "Game 3": 201},
-        {"Bowler": "Elena Rostova", "Average": 215, "Starting Lane": 3, "Game 1": 257, "Game 2": 248, "Game 3": 222},
-        {"Bowler": "Derek Jackson", "Average": 182, "Starting Lane": 3, "Game 1": 178, "Game 2": 195, "Game 3": 210},
-    ])
-
-# ---------------------------------------------------------
-# 5. DETERMINISTIC SCORING ENGINE
+# 7. DETERMINISTIC SCORING ENGINE & PDF GENERATOR
 # ---------------------------------------------------------
 def calculate_handicap(avg: int, base: int = 220, percentage: float = 0.90) -> int:
     if avg >= base:
@@ -444,9 +527,6 @@ def compile_standings(df: pd.DataFrame) -> pd.DataFrame:
     calc_df.index.name = "Rank"
     return calc_df
 
-# ---------------------------------------------------------
-# 6. REPORTLAB PDF STANDINGS GENERATOR
-# ---------------------------------------------------------
 def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name: str = "") -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
@@ -526,8 +606,23 @@ def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name
     buffer.seek(0)
     return buffer.getvalue()
 
+def generate_qr_image(url: str) -> io.BytesIO:
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=10,
+        border=3,
+    )
+    qr.add_data(url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="#0f172a", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
 # ---------------------------------------------------------
-# 7. SIDEBAR NAVIGATION
+# 8. SIDEBAR NAVIGATION
 # ---------------------------------------------------------
 nav_options = [
     "1. Event & Roster Intake",
@@ -579,17 +674,23 @@ with st.sidebar:
         st.rerun()
 
 # ---------------------------------------------------------
-# MODULE 1: COMPREHENSIVE INTAKE
+# MODULE 1: COMPREHENSIVE INTAKE & PAYMENT-GATED CHECK-IN TERMINAL
 # ---------------------------------------------------------
 if nav == "1. Event & Roster Intake":
     st.markdown("""
     <div class="brand-banner">
         <h1>Step 1: Tournament Setup & Bowler Intake</h1>
-        <p>Establish event metadata, rules parameters, and bowler roster.</p>
+        <p>Establish event metadata, rules parameters, payment audits, and QR check-in terminal.</p>
     </div>
     """, unsafe_allow_html=True)
 
-    with st.container():
+    intake_tab_settings, intake_tab_terminal, intake_tab_entry = st.tabs([
+        "⚙️ Event Settings & Rules PDF",
+        "💳 Desk Intake & Payment Terminal",
+        "📝 Roster Ingestion & Editing"
+    ])
+
+    with intake_tab_settings:
         st.subheader("Tournament Identity & Parameters")
         c_name, c_center = st.columns([2, 1])
         with c_name:
@@ -609,7 +710,8 @@ if nav == "1. Event & Roster Intake":
         with col_div:
             division = st.selectbox(
                 "Division:",
-                ["Mixed", "Youth", "Adult Open", "Women's", "Senior Singles / Doubles"]
+                ["Mixed", "Youth", "Adult Open", "Women's", "Senior Singles / Doubles"],
+                index=2
             )
 
         t_rules = st.text_area("Tournament Rules & Format:", value=st.session_state.tournament_config["rules_text"])
@@ -617,76 +719,6 @@ if nav == "1. Event & Roster Intake":
             "Upload Tournament Flyer / Rules Sheet (.pdf or .txt):", 
             type=["pdf", "txt"]
         )
-
-        st.divider()
-
-        st.subheader("Bowler Entry & Roster Intake")
-        st.caption("Add bowlers via Gemini AI parsing, manual grid entry, or CSV import.")
-
-        tab_ai, tab_manual, tab_csv = st.tabs(["🤖 Paste Signup Notes (Gemini AI)", "📋 Editable Grid", "📁 Upload CSV"])
-
-        with tab_ai:
-            raw_bowler_text = st.text_area(
-                "Paste bowler signups (e.g., names, averages, lanes):",
-                placeholder="Scott Kramer (218 avg, lane 1)\nDave Miller (205 avg, lane 1)\nChris Reynolds (195 avg, lane 2)\nMarcus Vance (198 avg, lane 2)",
-                height=110
-            )
-            if st.button("Extract Roster with Gemini", type="primary"):
-                if not ai_client:
-                    st.error("Gemini API key missing.")
-                elif not raw_bowler_text.strip():
-                    st.warning("Please paste or type bowler names.")
-                else:
-                    with st.spinner("Gemini is parsing the entries..."):
-                        prompt = f"""
-Extract bowler names, entry average (default 200), and starting lane (default 1).
-Output strictly CSV formatted text with headers:
-Bowler,Average,Starting Lane,Game 1,Game 2,Game 3
-Set games to 0.
-
-Input:
-{raw_bowler_text}
-"""
-                        try:
-                            raw_csv_text = generate_with_failover(prompt, temperature=0.0)
-                            cleaned_csv = raw_csv_text.replace("```csv", "").replace("```", "").strip()
-                            new_roster_df = pd.read_csv(io.StringIO(cleaned_csv))
-                            st.session_state.roster = new_roster_df
-                            log_audit_event(f"Gemini parsed {len(new_roster_df)} bowler entries.")
-                            st.success(f"Parsed and added {len(new_roster_df)} bowlers!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Failed to parse entries: {e}")
-
-        with tab_manual:
-            edited_roster = st.data_editor(
-                st.session_state.roster[["Bowler", "Average", "Starting Lane"]],
-                num_rows="dynamic",
-                use_container_width=True,
-                key="manual_roster_grid"
-            )
-            if st.button("Save Grid Entries"):
-                for col in ["Game 1", "Game 2", "Game 3"]:
-                    if col not in edited_roster.columns:
-                        edited_roster[col] = 0
-                st.session_state.roster = edited_roster
-                log_audit_event("TD manually updated roster grid.")
-                st.success("Roster updated.")
-
-        with tab_csv:
-            csv_file = st.file_uploader("Select Roster CSV (Bowler, Average, Starting Lane):", type=["csv"])
-            if csv_file is not None:
-                try:
-                    df_upload = pd.read_csv(csv_file)
-                    for col in ["Game 1", "Game 2", "Game 3"]:
-                        if col not in df_upload.columns:
-                            df_upload[col] = 0
-                    st.session_state.roster = df_upload
-                    st.success("CSV Imported successfully.")
-                except Exception as err:
-                    st.error(f"Error loading CSV: {err}")
-
-        st.divider()
 
         if st.button("🔒 Save & Lock Tournament Configuration", type="primary", use_container_width=True):
             uploaded_content = ""
@@ -715,7 +747,190 @@ Input:
                 "intake_completed": True
             }
             log_audit_event(f"Configuration locked: {t_name} with {len(st.session_state.roster)} bowlers.")
-            st.success("Configuration, roster, and tournament rules locked. Gemini Rules Arbiter is now armed with this tournament's specific rules!")
+            st.success("Configuration, roster, and tournament rules locked.")
+
+    # ---------------------------------------------------------
+    # TAB: DESK INTAKE & PAYMENT TERMINAL
+    # ---------------------------------------------------------
+    with intake_tab_terminal:
+        st.subheader("Payment Gate & QR Check-In Terminal")
+        st.caption("Bowlers present at the desk. Confirm payment before revealing the official check-in QR code.")
+
+        # Live terminal counters
+        total_bowlers = len(st.session_state.roster)
+        paid_bowlers = len(st.session_state.roster[st.session_state.roster["Paid"] == True])
+        checked_bowlers = len(st.session_state.roster[st.session_state.roster["Checked_In"] == True])
+
+        c_t1, c_t2, c_t3 = st.columns(3)
+        with c_t1:
+            st.markdown(f"""
+            <div class="stat-card">
+                <div class="stat-value">{total_bowlers}</div>
+                <div class="stat-label">Total Roster</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with c_t2:
+            st.markdown(f"""
+            <div class="stat-card">
+                <div class="stat-value" style="color: {'#34d399' if paid_bowlers == total_bowlers else '#fbbf24'};">{paid_bowlers} / {total_bowlers}</div>
+                <div class="stat-label">Paid Entries</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with c_t3:
+            st.markdown(f"""
+            <div class="stat-card">
+                <div class="stat-value" style="color: {'#34d399' if checked_bowlers == total_bowlers else '#38bdf8'};">{checked_bowlers} / {total_bowlers}</div>
+                <div class="stat-label">Confirmed On-Lane</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.write("")
+
+        # Bowler selection for desk terminal
+        bowler_names = st.session_state.roster["Bowler"].tolist()
+        search_query = st.selectbox("Search / Select Bowler at Desk:", ["-- Select Bowler Arriving at Desk --"] + bowler_names)
+
+        if search_query != "-- Select Bowler Arriving at Desk --":
+            b_row = st.session_state.roster[st.session_state.roster["Bowler"] == search_query].iloc[0]
+            b_id = str(b_row["Bowler_ID"])
+            b_paid = bool(b_row["Paid"])
+            b_checked = bool(b_row["Checked_In"])
+            b_lane = int(b_row["Starting Lane"])
+
+            st.write("")
+            col_info, col_actions = st.columns([1, 1])
+
+            with col_info:
+                st.markdown(f"""
+                <div class="match-box">
+                    <h3 style="margin: 0; color: #f8fafc;">{search_query}</h3>
+                    <div style="color: #94a3b8; font-size: 13px; margin: 4px 0 10px 0;">ID: <code>{b_id}</code> | Avg: <b>{b_row['Average']}</b> | Starting: <b>Lane {b_lane}</b></div>
+                    <div style="margin-top: 10px;">
+                        Payment Status: <b>{'🟢 PAID' if b_paid else '🔴 UNPAID'}</b><br/>
+                        Check-in Status: <b>{'🟢 CHECKED IN' if b_checked else '⚪ NOT CHECKED IN'}</b>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                if not b_paid:
+                    payment_type = st.radio("Select Payment Method Received:", ["Cash", "Check", "Venmo / Electronic"], horizontal=True)
+                    if st.button(f"Mark Paid ({payment_type}) & Unlock QR", type="primary", use_container_width=True):
+                        idx = st.session_state.roster.index[st.session_state.roster["Bowler_ID"] == b_id].tolist()
+                        if idx:
+                            st.session_state.roster.loc[idx[0], "Paid"] = True
+                            log_audit_event(f"Payment collected for {search_query} ({payment_type}).")
+                            st.success(f"Payment logged! Displaying QR code...")
+                            st.rerun()
+                else:
+                    st.success("Entry fee paid. Bowler is authorized for check-in.")
+                    if st.button("Mark as Unpaid (Revert)", use_container_width=True):
+                        idx = st.session_state.roster.index[st.session_state.roster["Bowler_ID"] == b_id].tolist()
+                        if idx:
+                            st.session_state.roster.loc[idx[0], "Paid"] = False
+                            st.session_state.roster.loc[idx[0], "Checked_In"] = False
+                            log_audit_event(f"Payment reverted to Unpaid for {search_query}.")
+                            st.rerun()
+
+            with col_actions:
+                if not b_paid:
+                    st.info("👈 Collect entry fee and click **'Mark Paid'** to generate this bowler's check-in QR code.")
+                else:
+                    # Construct check-in URL
+                    app_base_url = "https://bowling-tournament-app-lqhyyvug8k2zrhzbf9lswd.streamlit.app"
+                    checkin_url = f"{app_base_url}/?mode=checkin&bowler_id={b_id}"
+                    qr_buf = generate_qr_image(checkin_url)
+
+                    st.markdown(f"#### 📲 Have {search_query} Scan with Phone:")
+                    st.image(qr_buf, width=220)
+                    st.caption(f"Direct link: `{checkin_url}`")
+
+                    # Backup manual override button for TD
+                    if not b_checked:
+                        if st.button("Manual TD Check-In Override (No Phone)", use_container_width=True):
+                            idx = st.session_state.roster.index[st.session_state.roster["Bowler_ID"] == b_id].tolist()
+                            if idx:
+                                st.session_state.roster.loc[idx[0], "Checked_In"] = True
+                                log_audit_event(f"TD manually checked in {search_query}.")
+                                st.rerun()
+
+    # ---------------------------------------------------------
+    # TAB: ROSTER INGESTION & GRID
+    # ---------------------------------------------------------
+    with intake_tab_entry:
+        st.subheader("Bowler Entry & Roster Intake")
+        st.caption("Add bowlers via Gemini AI parsing, manual grid entry, or CSV import.")
+
+        tab_ai, tab_manual, tab_csv = st.tabs(["🤖 Paste Signup Notes (Gemini AI)", "📋 Editable Master Grid", "📁 Upload CSV"])
+
+        with tab_ai:
+            raw_bowler_text = st.text_area(
+                "Paste bowler signups (e.g., names, averages, lanes):",
+                placeholder="Scott Kramer (218 avg, lane 1)\nDave Miller (205 avg, lane 1)\nChris Reynolds (195 avg, lane 2)\nMarcus Vance (198 avg, lane 2)",
+                height=110
+            )
+            if st.button("Extract Roster with Gemini", type="primary"):
+                if not ai_client:
+                    st.error("Gemini API key missing.")
+                elif not raw_bowler_text.strip():
+                    st.warning("Please paste or type bowler names.")
+                else:
+                    with st.spinner("Gemini is parsing the entries..."):
+                        prompt = f"""
+Extract bowler names, entry average (default 200), and starting lane (default 1).
+Output strictly CSV formatted text with headers:
+Bowler,Average,Starting Lane,Game 1,Game 2,Game 3
+Set games to 0.
+
+Input:
+{raw_bowler_text}
+"""
+                        try:
+                            raw_csv_text = generate_with_failover(prompt, temperature=0.0)
+                            cleaned_csv = raw_csv_text.replace("```csv", "").replace("```", "").strip()
+                            new_roster_df = pd.read_csv(io.StringIO(cleaned_csv))
+                            new_roster_df["Bowler_ID"] = [f"CH-{100+i+1}" for i in range(len(new_roster_df))]
+                            new_roster_df["Paid"] = False
+                            new_roster_df["Checked_In"] = False
+                            st.session_state.roster = new_roster_df
+                            log_audit_event(f"Gemini parsed {len(new_roster_df)} bowler entries.")
+                            st.success(f"Parsed and added {len(new_roster_df)} bowlers!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to parse entries: {e}")
+
+        with tab_manual:
+            edited_roster = st.data_editor(
+                st.session_state.roster[["Bowler_ID", "Bowler", "Average", "Starting Lane", "Paid", "Checked_In"]],
+                num_rows="dynamic",
+                use_container_width=True,
+                key="manual_roster_grid"
+            )
+            if st.button("Save Roster Changes"):
+                for col in ["Game 1", "Game 2", "Game 3"]:
+                    if col not in edited_roster.columns:
+                        edited_roster[col] = 0
+                st.session_state.roster = edited_roster
+                log_audit_event("TD updated roster grid.")
+                st.success("Roster updated.")
+
+        with tab_csv:
+            csv_file = st.file_uploader("Select Roster CSV (Bowler, Average, Starting Lane):", type=["csv"])
+            if csv_file is not None:
+                try:
+                    df_upload = pd.read_csv(csv_file)
+                    for col in ["Game 1", "Game 2", "Game 3"]:
+                        if col not in df_upload.columns:
+                            df_upload[col] = 0
+                    if "Bowler_ID" not in df_upload.columns:
+                        df_upload["Bowler_ID"] = [f"CH-{100+i+1}" for i in range(len(df_upload))]
+                    if "Paid" not in df_upload.columns:
+                        df_upload["Paid"] = False
+                    if "Checked_In" not in df_upload.columns:
+                        df_upload["Checked_In"] = False
+                    st.session_state.roster = df_upload
+                    st.success("CSV Imported successfully.")
+                except Exception as err:
+                    st.error(f"Error loading CSV: {err}")
 
 # ---------------------------------------------------------
 # MODULE 2: SCORES & STANDINGS
@@ -783,7 +998,7 @@ Incoming Recap:
 
 Update Game 1, Game 2, and Game 3 columns for matching bowlers.
 Output strictly CSV formatted table with headers:
-Bowler,Average,Starting Lane,Game 1,Game 2,Game 3
+Bowler_ID,Bowler,Average,Starting Lane,Game 1,Game 2,Game 3,Paid,Checked_In
 """
                     try:
                         raw_csv_text = generate_with_failover(prompt, temperature=0.0)
@@ -795,8 +1010,11 @@ Bowler,Average,Starting Lane,Game 1,Game 2,Game 3
                         st.error(f"Error parsing scores: {e}")
 
     st.subheader("Official Scoring Grid")
+    display_scoring = st.session_state.roster[[
+        "Bowler_ID", "Bowler", "Average", "Starting Lane", "Paid", "Checked_In", "Game 1", "Game 2", "Game 3"
+    ]]
     edited_scores = st.data_editor(
-        st.session_state.roster,
+        display_scoring,
         num_rows="dynamic",
         use_container_width=True,
         key="official_scoring_grid"
