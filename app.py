@@ -468,7 +468,7 @@ def get_db_connection():
 
 def fetch_users_df() -> pd.DataFrame:
     conn = get_db_connection()
-    required_cols = ["username", "name", "password_hash", "role", "status", "must_change_password", "created_at"]
+    required_cols = ["username", "name", "email", "password_hash", "role", "status", "must_change_password", "created_at"]
     if conn is not None:
         try:
             df = conn.read(worksheet="Sheet1", ttl=0)
@@ -484,6 +484,7 @@ def fetch_users_df() -> pd.DataFrame:
     return pd.DataFrame([{
         "username": "skramer",
         "name": "Scott Kramer",
+        "email": "scottjk85@gmail.com",
         "password_hash": TARGET_ADMIN_LEGACY_HASH,
         "role": "admin",
         "status": "active",
@@ -600,7 +601,7 @@ def verify_td_pin(td_name: str, pin_str: str) -> bool:
         register_td_pin(td_name, pin_str)
     return is_valid
 
-def notify_admin_new_registration(requested_user: str, requested_name: str, requested_at: str):
+def notify_admin_new_registration(requested_user: str, requested_name: str, requested_email: str, requested_at: str):
     sender_email = st.secrets.get("EMAIL_SENDER", "")
     sender_password = st.secrets.get("EMAIL_APP_PASSWORD", "")
     target_admin = "scottjk85@gmail.com"
@@ -634,8 +635,12 @@ def notify_admin_new_registration(requested_user: str, requested_name: str, requ
                         <td style="padding: 8px 0; color: #0f172a; font-weight: bold;">{requested_name}</td>
                     </tr>
                     <tr>
-                        <td style="padding: 8px 0; color: #64748b; font-weight: bold;">Desired Username:</td>
+                        <td style="padding: 8px 0; color: #64748b; font-weight: bold;">Username:</td>
                         <td style="padding: 8px 0; color: #0284c7; font-family: monospace; font-size: 15px;">{requested_user}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; color: #64748b; font-weight: bold;">Email Address:</td>
+                        <td style="padding: 8px 0; color: #0f172a;">{requested_email}</td>
                     </tr>
                     <tr>
                         <td style="padding: 8px 0; color: #64748b; font-weight: bold;">Submitted At:</td>
@@ -664,6 +669,57 @@ def notify_admin_new_registration(requested_user: str, requested_name: str, requ
         return True
     except Exception as e:
         print(f"Failed to send admin registration alert: {e}")
+        return False
+
+def notify_user_account_approved(target_email: str, target_name: str, username: str):
+    sender_email = st.secrets.get("EMAIL_SENDER", "")
+    sender_password = st.secrets.get("EMAIL_APP_PASSWORD", "")
+
+    if not sender_email or not sender_password or not target_email:
+        return False
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "🎳 CHUSBC Tournament Desk: Account Approved!"
+        msg["From"] = f"CHUSBC Desk Alert <{sender_email}>"
+        msg["To"] = target_email
+
+        app_url = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
+
+        html_body = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; color: #0f172a; line-height: 1.6; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%); padding: 20px; border-radius: 10px; color: #ffffff; text-align: center;">
+                <h2 style="margin: 0; font-size: 20px;">🎳 Cecil Harford USBC</h2>
+                <p style="margin: 5px 0 0 0; color: #38bdf8; font-size: 14px;">Tournament Desk Operations Console</p>
+            </div>
+            
+            <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-top: 20px;">
+                <h3 style="margin-top: 0; color: #1e3a8a;">Your Account is Active!</h3>
+                <p>Hello <b>{target_name}</b>,</p>
+                <p>Your Tournament Director registration request for username <b>{username}</b> has been approved by the Administrator.</p>
+                
+                <div style="text-align: center; margin-top: 25px;">
+                    <a href="{app_url}" style="background-color: #10b981; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">
+                        Sign In to the Tournament Console
+                    </a>
+                </div>
+            </div>
+
+            <p style="color: #94a3b8; font-size: 12px; text-align: center; margin-top: 20px;">
+                If you have any questions, reach out to Central Desk administration.
+            </p>
+        </body>
+        </html>
+        """
+        msg.attach(MIMEText(html_body, "html"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, target_email, msg.as_string())
+        return True
+    except Exception as e:
+        print(f"Failed to send user approval email: {e}")
         return False
 
 # ---------------------------------------------------------
@@ -1145,191 +1201,6 @@ def resolve_bracket_match(b1_id: str, b2_id: str, game_col: str, bracket_type: s
         winner_id = b1_id if int(r1.get("Average", 0)) >= int(r2.get("Average", 0)) else b2_id
 
     return r1["Bowler"], t1, r2["Bowler"], t2, winner_id
-
-# ---------------------------------------------------------
-# SOP DOCUMENT GENERATORS (DOCX & PDF)
-# ---------------------------------------------------------
-def generate_first_time_td_guide() -> str:
-    if not ai_client:
-        return (
-            "1. T-60 Min: Connect external monitor to laptop. Extend display (Win+P). Open ?mode=kiosk on secondary display and hit F11.\n"
-            "2. T-45 Min: In Module 1 (Tab 2), ingest roster and run Automated Lane Balancer (handles up to 40 lanes, keeps teams together). Download printable PDF lane sheets.\n"
-            "3. T-30 Min: Post the Express Entrance QR (?mode=self_checkin) at the door. Pre-paid bowlers check in automatically; unpaid or bracket bowlers are routed to the desk.\n"
-            "4. T-15 Min: Floor TDs scan ?mode=scorer QR code on their phones, create their Argon2 4-digit PIN, and claim lane pairs.\n"
-            "5. Squad Active: Roving TDs snap overhead monitors with phone camera OCR, input scores, and lock with their secret PIN. Central Desk monitors verified lanes on the Radar Matrix.\n"
-            "6. Concourse TV & Bowler Portal: Cast ?mode=leaderboard on center TVs and let bowlers track ranks on ?mode=bowler_portal.\n"
-            "7. Financials & Archive: Use Financials & Payout Ledger to balance collections against lineage and export SMART forms. In Module 3, archive event."
-        )
-
-    prompt = f"""
-Write a clear, encouraging, step-by-step checklist for a Cecil Harford USBC board member who has NEVER run a tournament or used this software before.
-
-Current Event Context:
-- Event: {st.session_state.tournament_config['name']}
-- Host Center: {st.session_state.tournament_config['center']}
-- Division: {st.session_state.tournament_config['division']}
-- Active Pairs: {st.session_state.tournament_config['lanes_range']}
-- Format Mode: {st.session_state.tournament_config.get('format_mode', 'Standard')}
-
-Structure the guide into 6 numbered chronological steps including generating printable PDF lane sheets, the Express Entrance Self-Check-In QR (?mode=self_checkin) that routes bracket and unpaid bowlers to the desk, how floor TDs connect their phones to ?mode=scorer with Argon2 PIN concurrence, financial drawer reconciliation, and how bowlers view live standings via ?mode=bowler_portal.
-"""
-    try:
-        return generate_with_failover(prompt, temperature=0.1)
-    except Exception:
-        return (
-            "1. Setup external monitor on desk facing bowlers (?mode=kiosk, F11).\n"
-            "2. Ingest roster, balance lanes in Module 1, and download printable PDF lane sheets.\n"
-            "3. Post Express Self-Check-In QR (?mode=self_checkin) at entrance; handle unpaid and bracket entries at desk.\n"
-            "4. Roving TDs open ?mode=scorer on their phones, snap monitors with AI OCR, and set a 4-digit PIN.\n"
-            "5. Open ?mode=leaderboard on concourse TVs and share ?mode=bowler_portal for live bowler tracking.\n"
-            "6. Reconcile finances and archive event."
-        )
-
-def generate_sop_docx() -> io.BytesIO:
-    doc = Document()
-    for section in doc.sections:
-        section.top_margin = Inches(1.0)
-        section.bottom_margin = Inches(1.0)
-        section.left_margin = Inches(1.0)
-        section.right_margin = Inches(1.0)
-
-    PRIMARY = RGBColor(14, 58, 138)
-    SECONDARY = RGBColor(2, 132, 199)
-    TEXT_DARK = RGBColor(15, 23, 42)
-    MUTED = RGBColor(100, 116, 139)
-
-    style_normal = doc.styles['Normal']
-    style_normal.font.name = 'Calibri'
-    style_normal.font.size = Pt(11)
-    style_normal.font.color.rgb = TEXT_DARK
-    style_normal.paragraph_format.line_spacing = 1.15
-    style_normal.paragraph_format.space_after = Pt(6)
-
-    def set_cell_background(cell, hex_color):
-        tcPr = cell._tc.get_or_add_tcPr()
-        tcPr.append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="{hex_color}"/>'))
-
-    def set_cell_padding(cell, top=100, bottom=100, left=140, right=140):
-        tcPr = cell._tc.get_or_add_tcPr()
-        tcPr.append(parse_xml(
-            f'<w:tcMar {nsdecls("w")}>'
-            f'<w:top w:w="{top}" w:type="dxa"/><w:bottom w:w="{bottom}" w:type="dxa"/>'
-            f'<w:left w:w="{left}" w:type="dxa"/><w:right w:w="{right}" w:type="dxa"/>'
-            f'</w:tcMar>'
-        ))
-
-    p_org = doc.add_paragraph()
-    p_org.paragraph_format.space_after = Pt(2)
-    r_org = p_org.add_run("CECIL HARFORD UNITED STATES BOWLING CONGRESS")
-    r_org.font.size = Pt(11)
-    r_org.font.bold = True
-    r_org.font.color.rgb = SECONDARY
-
-    p_title = doc.add_paragraph()
-    p_title.paragraph_format.space_after = Pt(4)
-    r_title = p_title.add_run("Standard Operating Procedure: Tournament Desk Operations Console")
-    r_title.font.size = Pt(20)
-    r_title.font.bold = True
-    r_title.font.color.rgb = PRIMARY
-
-    p_meta = doc.add_paragraph()
-    p_meta.paragraph_format.space_after = Pt(14)
-    r_meta = p_meta.add_run(
-        f"Document Identifier: SOP-TD-2026-01 | Event: {st.session_state.tournament_config['name']}\n"
-        f"Generated from Live Console: {datetime.now().strftime('%B %d, %Y')} | Active Center: {st.session_state.tournament_config['center']}"
-    )
-    r_meta.font.size = Pt(9.5)
-    r_meta.font.color.rgb = MUTED
-
-    t_div = doc.add_table(rows=1, cols=1)
-    t_div.alignment = WD_TABLE_ALIGNMENT.CENTER
-    c_div = t_div.cell(0, 0)
-    c_div.width = Inches(6.5)
-    set_cell_background(c_div, "0E3A8A")
-    c_div.height = Pt(3)
-
-    doc.add_paragraph().paragraph_format.space_after = Pt(8)
-
-    h1 = doc.add_heading(level=1)
-    h1.add_run("1. Purpose & System Overview").font.color.rgb = PRIMARY
-    doc.add_paragraph(
-        f"This Standard Operating Procedure (SOP) standardizes tournament desk operations for the {st.session_state.tournament_config['name']} "
-        "and all official Cecil Harford USBC (CHUSBC) championship events. The platform utilizes Argon2id cryptographic authentication, "
-        "team-aware automated lane balancing up to 40 lanes, express entrance QR self-check-in, roving mobile TD scoring with PIN concurrence, and public concourse TV broadcasting."
-    )
-
-    h_novice = doc.add_heading(level=1)
-    h_novice.add_run("2. First-Time Tournament Director (TD) Quickstart Guide").font.color.rgb = PRIMARY
-    guide_text = generate_first_time_td_guide()
-    p_guide = doc.add_paragraph(guide_text)
-    p_guide.paragraph_format.space_after = Pt(8)
-
-    buf = io.BytesIO()
-    doc.save(buf)
-    buf.seek(0)
-    return buf
-
-def generate_sop_pdf() -> bytes:
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
-    styles = getSampleStyleSheet()
-    story = []
-
-    title_style = ParagraphStyle("SOPTitle", parent=styles["Heading1"], fontSize=15, leading=18, textColor=colors.HexColor("#0e3a8a"), spaceAfter=2)
-    h2_style = ParagraphStyle("SOPH2", parent=styles["Heading2"], fontSize=11, leading=14, textColor=colors.HexColor("#0284c7"), spaceBefore=6, spaceAfter=3)
-    body_style = ParagraphStyle("SOPBody", parent=styles["Normal"], fontSize=8, leading=11, textColor=colors.HexColor("#0f172a"), spaceAfter=4)
-
-    header_text = f"""
-    <b>Cecil Harford USBC — Tournament Desk Standard Operating Procedure</b><br/>
-    <font size="8" color="#475569">
-    Official Board Manual & First-Time TD Reference Guide | Event: {st.session_state.tournament_config['name']}<br/>
-    Host Center: {st.session_state.tournament_config['center']} | Effective: October 2026 | Document ID: SOP-TD-2026-01
-    </font>
-    """
-
-    if HAS_LOGO:
-        logo_img = RLImage(LOGO_PATH, width=48, height=48)
-        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[56, 484])
-        header_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
-        story.append(header_table)
-    else:
-        story.append(Paragraph("Cecil Harford USBC — Tournament Desk Standard Operating Procedure", title_style))
-        story.append(Spacer(1, 4))
-
-    story.append(Paragraph("1. First-Time Tournament Director (TD) Quickstart Walkthrough", h2_style))
-    story.append(Paragraph(
-        "<b>Step 1 (T-60 Setup):</b> Connect desk monitor to laptop (Win+P -> Extend). Open ?mode=kiosk on secondary monitor (F11). Open ?mode=leaderboard on concourse TVs.<br/>"
-        "<b>Step 2 (T-45 Roster & Balancing):</b> Ingest roster in Module 1. Use 'Automated Lane Balancer' to distribute bowlers across active lanes with team grouping. Print the PDF Lane Assignment Sheet.<br/>"
-        "<b>Step 3 (T-30 Entrance & Desk Check-In):</b> Post the Express Entrance QR (?mode=self_checkin). Pre-paid bowlers check in automatically; unpaid or bracket bowlers are directed to the desk.<br/>"
-        "<b>Step 4 (T-15 Floor Scorer Setup):</b> Floor TDs scan ?mode=scorer QR code on their phones, set an Argon2 4-digit PIN, and claim lane pairs.<br/>"
-        "<b>Step 5 (Scoring with PIN Concurrence):</b> Roving TDs input pair scores on mobile (or snap overhead screens with camera OCR) and enter their secret PIN to lock them.<br/>"
-        "<b>Step 6 (Financials & Finals):</b> Reconcile entries using the Financial Payout Ledger. Select match winners for top 5 stepladder, declare Champion, and archive event.",
-        body_style
-    ))
-
-    rules_table_data = [
-        ["Statute", "Mandatory Desk Enforcement"],
-        ["Rule 17: Altering Surface", "No abrasive pads or liquid cleaners once competition starts. Remove ball immediately; frames bowled post-adjustment incur zero scores."],
-        ["Rule 18: Equipment Specs", "Balance holes are prohibited. All drilled holes must be occupied by gripping fingers on delivery. Non-compliant balls must be removed."],
-        ["Rule 10: Tardy Bowlers", "Late bowlers begin in current frame if not completed by all on pair. No warm-up frames. Missed frames are scored zero."],
-        ["Rule 400: Youth SMART", "CRITICAL MANDATE: All prizes and awards in youth divisions must be deposited into the USBC SMART program. Zero cash/gift card policy."]
-    ]
-    t_rules = Table(rules_table_data, colWidths=[120, 420])
-    t_rules.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0284c7")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-    ]))
-    story.append(t_rules)
-    doc.build(story)
-    buffer.seek(0)
-    return buffer.getvalue()
 
 # ---------------------------------------------------------
 # 6A. EXTERNAL MONITOR / BOWLER KIOSK DISPLAY (?mode=kiosk)
@@ -2172,13 +2043,16 @@ if not st.session_state.authenticated:
                     st.caption("Apply for Tournament Director access. An administrator must approve your application.")
                     req_user = st.text_input("Desired Username:").strip().lower()
                     req_name = st.text_input("Full Name:").strip()
+                    req_email = st.text_input("Email Address (Required for Approval Notice):").strip().lower()
                     req_pwd = st.text_input("Desired Password:", type="password").strip()
                     submit_req = st.form_submit_button("Submit Registration for Approval", use_container_width=True)
 
                     if submit_req:
                         current_df = fetch_users_df()
-                        if not req_user or not req_name or not req_pwd:
-                            st.error("Username, Full Name, and Password are all required.")
+                        if not req_user or not req_name or not req_email or not req_pwd:
+                            st.error("Username, Full Name, Email, and Password are all required.")
+                        elif "@" not in req_email or "." not in req_email:
+                            st.error("Please enter a valid email address.")
                         elif len(req_pwd) < 6:
                             st.error("Password must be at least 6 characters.")
                         elif req_user in current_df["username"].values:
@@ -2188,6 +2062,7 @@ if not st.session_state.authenticated:
                             new_row = pd.DataFrame([{
                                 "username": req_user,
                                 "name": req_name,
+                                "email": req_email,
                                 "password_hash": hash_secret(req_pwd),
                                 "role": "td",
                                 "status": "pending",
@@ -2200,11 +2075,12 @@ if not st.session_state.authenticated:
                             notify_admin_new_registration(
                                 requested_user=req_user, 
                                 requested_name=req_name, 
+                                requested_email=req_email,
                                 requested_at=timestamp_str
                             )
 
-                            log_audit_event(f"New self-registration submitted: '{req_user}' ({req_name}).")
-                            st.success("Registration submitted! An administrator has been notified to review your account.")
+                            log_audit_event(f"New self-registration submitted: '{req_user}' ({req_name} - {req_email}).")
+                            st.success("Registration submitted! An administrator has been notified and you will receive an email once approved.")
 
     st.stop()
 
@@ -3945,6 +3821,7 @@ elif "TD User Management" in nav:
         for idx, row in pending_df.iterrows():
             uname = row["username"]
             real_name = row["name"]
+            user_email = row.get("email", "N/A")
             with st.container():
                 st.markdown(f"""
                 <div style="background-color: #1e293b; padding: 14px 18px; border-radius: 8px; border: 1.5px solid #ec489950; margin-bottom: 12px;">
@@ -3953,7 +3830,7 @@ elif "TD User Management" in nav:
                         <span class="badge-pending">PENDING APPROVAL</span>
                     </div>
                     <div style="font-size: 13px; color: #94a3b8; margin-top: 6px;">
-                        <strong>Submitted:</strong> {row.get('created_at', 'Recent')}
+                        <strong>Email:</strong> {user_email} | <strong>Submitted:</strong> {row.get('created_at', 'Recent')}
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -3969,8 +3846,13 @@ elif "TD User Management" in nav:
                             latest_df.loc[target_idx[0], "status"] = "active"
                             latest_df.loc[target_idx[0], "role"] = selected_role
                             write_users_df(latest_df)
+                            
+                            target_email = str(latest_df.loc[target_idx[0]].get("email", ""))
+                            if target_email:
+                                notify_user_account_approved(target_email, real_name, uname)
+
                         log_audit_event(f"Admin approved registration for '{uname}' ({real_name}) as {selected_role}.")
-                        st.success(f"Account '{uname}' approved.")
+                        st.success(f"Account '{uname}' approved and confirmation email sent!")
                         st.rerun()
                 with col_deny:
                     if st.button(f"Deny & Remove ({uname})", key=f"deny_{uname}", use_container_width=True):
@@ -3987,6 +3869,7 @@ elif "TD User Management" in nav:
     display_df = pd.DataFrame({
         "Username": active_df["username"],
         "Full Name": active_df["name"],
+        "Email": active_df.get("email", ""),
         "Role": active_df["role"].str.upper(),
         "Hash Type": active_df["password_hash"].apply(lambda h: "Argon2id" if str(h).startswith("$argon2") else "SHA-256 (Auto-Upgrades)"),
         "Must Reset Pwd": active_df["must_change_password"].apply(lambda x: "YES" if bool(x) else "NO"),
@@ -4003,6 +3886,7 @@ elif "TD User Management" in nav:
         with st.form("add_td_form"):
             new_user = st.text_input("Username:").strip().lower()
             new_name = st.text_input("Full Official Name:")
+            new_email = st.text_input("Email Address:").strip().lower()
             new_pw = st.text_input("Initial Password:", type="password").strip()
             new_role = st.selectbox("Role Assignment:", ["td", "admin"])
             force_change = st.checkbox("Require pwd change on 1st login", value=True)
@@ -4010,7 +3894,7 @@ elif "TD User Management" in nav:
 
             if submit_td:
                 latest_df = fetch_users_df()
-                if not new_user or not new_name or not new_pw:
+                if not new_user or not new_name or not new_email or not new_pw:
                     st.error("All fields are required.")
                 elif new_user in latest_df["username"].values:
                     st.error(f"User '{new_user}' already exists.")
@@ -4018,6 +3902,7 @@ elif "TD User Management" in nav:
                     new_entry = pd.DataFrame([{
                         "username": new_user,
                         "name": new_name,
+                        "email": new_email,
                         "password_hash": hash_secret(new_pw),
                         "role": new_role,
                         "status": "active",
