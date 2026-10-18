@@ -1147,6 +1147,155 @@ def resolve_bracket_match(b1_id: str, b2_id: str, game_col: str, bracket_type: s
     return r1["Bowler"], t1, r2["Bowler"], t2, winner_id
 
 # ---------------------------------------------------------
+# SOP DOCUMENT GENERATORS (DOCX & PDF)
+# ---------------------------------------------------------
+def generate_sop_docx() -> io.BytesIO:
+    doc = Document()
+    for section in doc.sections:
+        section.top_margin = Inches(1.0)
+        section.bottom_margin = Inches(1.0)
+        section.left_margin = Inches(1.0)
+        section.right_margin = Inches(1.0)
+
+    PRIMARY = RGBColor(14, 58, 138)
+    SECONDARY = RGBColor(2, 132, 199)
+    TEXT_DARK = RGBColor(15, 23, 42)
+    MUTED = RGBColor(100, 116, 139)
+
+    style_normal = doc.styles['Normal']
+    style_normal.font.name = 'Calibri'
+    style_normal.font.size = Pt(11)
+    style_normal.font.color.rgb = TEXT_DARK
+    style_normal.paragraph_format.line_spacing = 1.15
+    style_normal.paragraph_format.space_after = Pt(6)
+
+    def set_cell_background(cell, hex_color):
+        tcPr = cell._tc.get_or_add_tcPr()
+        tcPr.append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="{hex_color}"/>'))
+
+    def set_cell_padding(cell, top=100, bottom=100, left=140, right=140):
+        tcPr = cell._tc.get_or_add_tcPr()
+        tcPr.append(parse_xml(
+            f'<w:tcMar {nsdecls("w")}>'
+            f'<w:top w:w="{top}" w:type="dxa"/><w:bottom w:w="{bottom}" w:type="dxa"/>'
+            f'<w:left w:w="{left}" w:type="dxa"/><w:right w:w="{right}" w:type="dxa"/>'
+            f'</w:tcMar>'
+        ))
+
+    p_org = doc.add_paragraph()
+    p_org.paragraph_format.space_after = Pt(2)
+    r_org = p_org.add_run("CECIL HARFORD UNITED STATES BOWLING CONGRESS")
+    r_org.font.size = Pt(11)
+    r_org.font.bold = True
+    r_org.font.color.rgb = SECONDARY
+
+    p_title = doc.add_paragraph()
+    p_title.paragraph_format.space_after = Pt(4)
+    r_title = p_title.add_run("Standard Operating Procedure: Tournament Desk Operations Console")
+    r_title.font.size = Pt(20)
+    r_title.font.bold = True
+    r_title.font.color.rgb = PRIMARY
+
+    p_meta = doc.add_paragraph()
+    p_meta.paragraph_format.space_after = Pt(14)
+    r_meta = p_meta.add_run(
+        f"Document Identifier: SOP-TD-2026-01 | Event: {st.session_state.tournament_config['name']}\n"
+        f"Generated from Live Console: {datetime.now().strftime('%B %d, %Y')} | Active Center: {st.session_state.tournament_config['center']}"
+    )
+    r_meta.font.size = Pt(9.5)
+    r_meta.font.color.rgb = MUTED
+
+    t_div = doc.add_table(rows=1, cols=1)
+    t_div.alignment = WD_TABLE_ALIGNMENT.CENTER
+    c_div = t_div.cell(0, 0)
+    c_div.width = Inches(6.5)
+    set_cell_background(c_div, "0E3A8A")
+    c_div.height = Pt(3)
+
+    doc.add_paragraph().paragraph_format.space_after = Pt(8)
+
+    h1 = doc.add_heading(level=1)
+    h1.add_run("1. Purpose & System Overview").font.color.rgb = PRIMARY
+    doc.add_paragraph(
+        f"This Standard Operating Procedure (SOP) standardizes tournament desk operations for the {st.session_state.tournament_config['name']} "
+        "and all official Cecil Harford USBC (CHUSBC) championship events. The platform utilizes Argon2id cryptographic authentication, "
+        "team-aware automated lane balancing up to 40 lanes, express entrance QR self-check-in, roving mobile TD scoring with PIN concurrence, and public concourse TV broadcasting."
+    )
+
+    h_novice = doc.add_heading(level=1)
+    h_novice.add_run("2. First-Time Tournament Director (TD) Quickstart Guide").font.color.rgb = PRIMARY
+    guide_text = generate_first_time_td_guide()
+    p_guide = doc.add_paragraph(guide_text)
+    p_guide.paragraph_format.space_after = Pt(8)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf
+
+def generate_sop_pdf() -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    story = []
+
+    title_style = ParagraphStyle("SOPTitle", parent=styles["Heading1"], fontSize=15, leading=18, textColor=colors.HexColor("#0e3a8a"), spaceAfter=2)
+    h2_style = ParagraphStyle("SOPH2", parent=styles["Heading2"], fontSize=11, leading=14, textColor=colors.HexColor("#0284c7"), spaceBefore=6, spaceAfter=3)
+    body_style = ParagraphStyle("SOPBody", parent=styles["Normal"], fontSize=8, leading=11, textColor=colors.HexColor("#0f172a"), spaceAfter=4)
+
+    header_text = f"""
+    <b>Cecil Harford USBC — Tournament Desk Standard Operating Procedure</b><br/>
+    <font size="8" color="#475569">
+    Official Board Manual & First-Time TD Reference Guide | Event: {st.session_state.tournament_config['name']}<br/>
+    Host Center: {st.session_state.tournament_config['center']} | Effective: October 2026 | Document ID: SOP-TD-2026-01
+    </font>
+    """
+
+    if HAS_LOGO:
+        logo_img = RLImage(LOGO_PATH, width=48, height=48)
+        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[56, 484])
+        header_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
+        story.append(header_table)
+    else:
+        story.append(Paragraph("Cecil Harford USBC — Tournament Desk Standard Operating Procedure", title_style))
+        story.append(Spacer(1, 4))
+
+    story.append(Paragraph("1. First-Time Tournament Director (TD) Quickstart Walkthrough", h2_style))
+    story.append(Paragraph(
+        "<b>Step 1 (T-60 Setup):</b> Connect desk monitor to laptop (Win+P -> Extend). Open ?mode=kiosk on secondary monitor (F11). Open ?mode=leaderboard on concourse TVs.<br/>"
+        "<b>Step 2 (T-45 Roster & Balancing):</b> Ingest roster in Module 1. Use 'Automated Lane Balancer' to distribute bowlers across active lanes with team grouping. Print the PDF Lane Assignment Sheet.<br/>"
+        "<b>Step 3 (T-30 Entrance & Desk Check-In):</b> Post the Express Entrance QR (?mode=self_checkin). Pre-paid bowlers check in automatically; unpaid or bracket bowlers are directed to the desk.<br/>"
+        "<b>Step 4 (T-15 Floor Scorer Setup):</b> Floor TDs scan ?mode=scorer QR code on their phones, set an Argon2 4-digit PIN, and claim lane pairs.<br/>"
+        "<b>Step 5 (Scoring with PIN Concurrence):</b> Roving TDs input pair scores on mobile (or snap overhead screens with camera OCR) and enter their secret PIN to lock them.<br/>"
+        "<b>Step 6 (Financials & Finals):</b> Reconcile entries using the Financial Payout Ledger. Select match winners for top 5 stepladder, declare Champion, and archive event.",
+        body_style
+    ))
+
+    rules_table_data = [
+        ["Statute", "Mandatory Desk Enforcement"],
+        ["Rule 17: Altering Surface", "No abrasive pads or liquid cleaners once competition starts. Remove ball immediately; frames bowled post-adjustment incur zero scores."],
+        ["Rule 18: Equipment Specs", "Balance holes are prohibited. All drilled holes must be occupied by gripping fingers on delivery. Non-compliant balls must be removed."],
+        ["Rule 10: Tardy Bowlers", "Late bowlers begin in current frame if not completed by all on pair. No warm-up frames. Missed frames are scored zero."],
+        ["Rule 400: Youth SMART", "CRITICAL MANDATE: All prizes and awards in youth divisions must be deposited into the USBC SMART program. Zero cash/gift card policy."]
+    ]
+    t_rules = Table(rules_table_data, colWidths=[120, 420])
+    t_rules.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0284c7")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    story.append(t_rules)
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+# ---------------------------------------------------------
 # 6A. EXTERNAL MONITOR / BOWLER KIOSK DISPLAY (?mode=kiosk)
 # ---------------------------------------------------------
 query_params = st.query_params
