@@ -543,7 +543,7 @@ def notify_admin_new_registration(requested_user: str, requested_name: str, requ
         return False
 
 # ---------------------------------------------------------
-# 4. LANE BALANCER & HOUSE MATRIX LOGIC (UP TO 40 LANES)
+# 4. TEAM-AWARE LANE BALANCER & HOUSE MATRIX (UP TO 40 LANES)
 # ---------------------------------------------------------
 def parse_active_pairs(range_str: str, max_lanes: int = 40):
     lanes = set()
@@ -588,34 +588,62 @@ def parse_active_pairs(range_str: str, max_lanes: int = 40):
             
     return unique_pairs
 
-def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list, max_per_pair: int = 5, shuffle: bool = True):
+def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list, max_per_pair: int = 5, shuffle: bool = True, group_by_team: bool = True):
+    """
+    Distributes bowlers across pairs. If group_by_team is True, keeps all members
+    sharing the same 'Team_Name' grouped together on the exact same lane pair.
+    """
     if roster_df.empty or not pairs:
         return roster_df, "No roster or lane pairs provided."
 
-    total_bowlers = len(roster_df)
-    total_capacity = len(pairs) * max_per_pair
-
-    if total_bowlers > total_capacity:
-        return roster_df, f"Capacity exceeded! {total_bowlers} bowlers cannot fit on {len(pairs)} pairs with a max of {max_per_pair} per pair (Capacity: {total_capacity})."
-
     updated_df = roster_df.copy()
-    indices = list(updated_df.index)
+    if "Team_Name" not in updated_df.columns:
+        updated_df["Team_Name"] = "Singles"
+
+    updated_df["Team_Name"] = updated_df["Team_Name"].fillna("Singles").astype(str)
+
+    # 1. Group Bowlers into Units (Teams or Individuals)
+    if group_by_team:
+        team_groups = {}
+        for idx, row in updated_df.iterrows():
+            t_name = str(row["Team_Name"]).strip()
+            unit_key = t_name if t_name and t_name.lower() not in ["singles", "open", "none", ""] else f"Indiv_{idx}"
+            if unit_key not in team_groups:
+                team_groups[unit_key] = []
+            team_groups[unit_key].append(idx)
+        units = list(team_groups.values())
+    else:
+        units = [[idx] for idx in updated_df.index]
+
+    total_bowlers = len(updated_df)
+    total_capacity = len(pairs) * max_per_pair
+    if total_bowlers > total_capacity:
+        return roster_df, f"Capacity exceeded! {total_bowlers} bowlers cannot fit on {len(pairs)} pairs (Max capacity: {total_capacity})."
+
+    for u in units:
+        if len(u) > max_per_pair:
+            sample_name = updated_df.loc[u[0], 'Team_Name']
+            return roster_df, f"Team '{sample_name}' has {len(u)} bowlers, which exceeds the max capacity of {max_per_pair} bowlers per pair. Increase 'Max Bowlers per Pair' to at least {len(u)}."
+
     if shuffle:
-        random.shuffle(indices)
+        random.shuffle(units)
 
+    # 2. Assign Units to Lane Pairs using Best-Fit Density
     pair_buckets = {p: [] for p in pairs}
-    pair_cycle = list(pairs)
-
-    b_idx = 0
-    while b_idx < len(indices):
-        for p in pair_cycle:
-            if b_idx >= len(indices):
+    for unit in units:
+        unit_size = len(unit)
+        assigned = False
+        sorted_pairs = sorted(pairs, key=lambda p: len(pair_buckets[p]))
+        for p in sorted_pairs:
+            if len(pair_buckets[p]) + unit_size <= max_per_pair:
+                pair_buckets[p].extend(unit)
+                assigned = True
                 break
-            if len(pair_buckets[p]) < max_per_pair:
-                row_idx = indices[b_idx]
-                pair_buckets[p].append(row_idx)
-                b_idx += 1
+                
+        if not assigned:
+            return roster_df, "Unable to fit teams evenly across the active pairs without splitting. Try opening more lane pairs or increasing Max Bowlers per Pair."
 
+    # 3. Assign Starting Lane within Pair (Odd/Even alternating lead-offs)
     for p, row_indices in pair_buckets.items():
         lane_odd, lane_even = p
         for order_on_pair, r_idx in enumerate(row_indices):
@@ -623,8 +651,7 @@ def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list, max_per_pair: int = 
             updated_df.loc[r_idx, "Starting Lane"] = int(assigned_lane)
 
     updated_df["Starting Lane"] = pd.to_numeric(updated_df["Starting Lane"], errors="coerce").fillna(1).astype(int)
-    updated_df = updated_df.sort_values(by=["Starting Lane", "Bowler"]).reset_index(drop=True)
-    
+    updated_df = updated_df.sort_values(by=["Starting Lane", "Team_Name", "Bowler"]).reset_index(drop=True)
     return updated_df, None
 
 # ---------------------------------------------------------
@@ -1124,7 +1151,7 @@ def generate_first_time_td_guide() -> str:
     if not ai_client:
         return (
             "1. T-60 Min: Connect external monitor to laptop. Extend display (Win+P). Open ?mode=kiosk on secondary display and hit F11.\n"
-            "2. T-45 Min: In Module 1 (Tab 2), ingest roster and run Automated Lane Balancer (handles up to 40 lanes).\n"
+            "2. T-45 Min: In Module 1 (Tab 2), ingest roster and run Automated Lane Balancer (handles up to 40 lanes, keeps teams together).\n"
             "3. T-30 Min: As bowlers arrive, select name in Module 1 (Tab 3), collect fee, click 'Mark Paid & Display on Customer Screen'.\n"
             "4. T-15 Min: Go to Module 4 (Brackets & Pots), seed 8-bowler brackets ($25/$10/$5) and enroll side pot bowlers.\n"
             "5. Squad Active: In Module 2, enter or paste scores. Standings and brackets advance automatically.\n"
@@ -1143,7 +1170,7 @@ Current Event Context:
 
 Structure the guide into 6 numbered chronological steps:
 1. T-60 Min: Hardware & Kiosk Display Setup (HDMI cable, extending screen, opening ?mode=kiosk, pressing F11).
-2. T-45 Min: Roster Ingestion & Automated 40-Lane Balancing.
+2. T-45 Min: Roster Ingestion & Automated 40-Lane Balancing (ensuring teams of 4 or 5 stay together on the same pair).
 3. T-30 Min: The Bowler Walk-Up Dance (selecting bowler, collecting cash/check/Venmo, clicking 'Mark Paid & Display', bowler scanning QR).
 4. T-15 Min: Brackets & Side Pots.
 5. During Competition: Score Entry (how to paste recap sheets or enter scores).
@@ -1156,7 +1183,7 @@ Keep the language direct, actionable, friendly, and free of unnecessary technica
     except Exception:
         return (
             "1. Setup external monitor on desk facing bowlers (?mode=kiosk, F11).\n"
-            "2. Ingest roster and balance lanes across pairs in Module 1.\n"
+            "2. Ingest roster and balance lanes across pairs in Module 1 (grouping teammates together).\n"
             "3. Take payments and push check-in QR codes to bowler screen.\n"
             "4. Seed 8-bowler brackets and side pots in Module 4.\n"
             "5. Post game scores in Module 2.\n"
@@ -1385,7 +1412,7 @@ def generate_sop_docx() -> io.BytesIO:
     doc.add_paragraph(
         f"This Standard Operating Procedure (SOP) standardizes tournament desk operations for the {st.session_state.tournament_config['name']} "
         "and all official Cecil Harford USBC (CHUSBC) championship events. The platform is configured with presets for all eight CHUSBC tournaments, "
-        "supporting multi-tier desk operations, automated lane balancing up to 40 lanes, handicap calculations, and cloud archiving."
+        "supporting multi-tier desk operations, team-aware automated lane balancing up to 40 lanes, handicap calculations, and cloud archiving."
     )
 
     h2 = doc.add_heading(level=1)
@@ -1421,6 +1448,8 @@ def generate_sop_docx() -> io.BytesIO:
             set_cell_background(cell, "F8FAFC" if row_idx % 2 == 1 else "FFFFFF")
             set_cell_padding(cell, 100, 100, 140, 140)
             p = cell.paragraphs[0]
+            p.paragraph_format.line_spacing = 1.1
+            p.paragraph_format.space_after = Pt(2)
             r = p.add_run(val)
             r.font.size = Pt(9.5)
 
@@ -1492,7 +1521,7 @@ def generate_sop_pdf() -> bytes:
     story.append(Paragraph("1. First-Time Tournament Director (TD) Quickstart Walkthrough", h2_style))
     story.append(Paragraph(
         "<b>Step 1 (T-60 Setup):</b> Connect external monitor to laptop. Extend display (Win+P). Go to Module 1 -> Tab 3 -> click 'Open External Bowler Kiosk Window'. Drag to secondary monitor facing bowlers, press F11.<br/>"
-        "<b>Step 2 (T-45 Roster & Balancing):</b> Ingest roster in Module 1. Use the 'Automated Lane Balancer' tab to distribute bowlers across active lanes (supports up to 40 lanes) with alternating odd/even lead-off.<br/>"
+        "<b>Step 2 (T-45 Roster & Balancing):</b> Ingest roster in Module 1. Use the 'Automated Lane Balancer' tab to distribute bowlers across active lanes (supports up to 40 lanes) with team grouping and alternating odd/even lead-off.<br/>"
         "<b>Step 3 (T-30 Bowler Line):</b> Select bowler in Module 1 -> Tab 3. Collect fee, click 'Mark Paid & Display on Customer Screen'. Bowler scans QR code on kiosk screen. Click 'Reset External Display'.<br/>"
         "<b>Step 4 (T-15 Brackets):</b> Go to Module 4. Select division, click 'Generate & Seed Brackets'. Brackets auto-seed and advance as scores are entered.<br/>"
         "<b>Step 5 (Scoring):</b> Go to Module 2. Paste center recap into Gemini Live Score Ingestion, click 'Apply Recap Scores' -> 'Save Scores & Recalculate Standings'.<br/>"
@@ -1705,8 +1734,8 @@ if nav == "1. Event & Roster Intake":
             st.success("Tournament settings locked & backed up to cloud.")
 
     with intake_tab_entry:
-        st.subheader("Bowler Roster & Automated 40-Lane Balancer")
-        st.caption("Ingest bowlers via photo/scan, text notes, CSV, or balance your field across up to 40 lanes automatically.")
+        st.subheader("Bowler Roster & Team-Aware 40-Lane Balancer")
+        st.caption("Ingest bowlers via photo/scan, text notes, CSV, or balance your field across up to 40 lanes while keeping teams together.")
 
         tab_scan, tab_ai, tab_csv, tab_manual, tab_balancer = st.tabs([
             "📸 Scan/Photo Clipboard (AI)",
@@ -1750,7 +1779,7 @@ Rules:
 3. 'Average': Numeric entering average (default 200 if missing).
 4. 'Starting Lane': Assigned lane number (default 1).
 5. 'Division': e.g., Senior A/B, Scratch, Handicap, or Regular.
-6. 'Team_Name': Team name or partner if doubles/team.
+6. 'Team_Name': Team name or partner name if doubles/team (default 'Singles').
 7. 'Paid': True if checkmark or cash notation; otherwise False.
 Output strictly CSV formatted table without markdown code fences.
 """
@@ -1780,7 +1809,7 @@ Output strictly CSV formatted table without markdown code fences.
         with tab_ai:
             raw_bowler_text = st.text_area(
                 "Paste bowler signups (e.g. USBC ID, names, averages, teams, divisions):",
-                placeholder="11-12345 Scott Kramer (218 avg, Team Striking Power)\n11-23456 Dave Miller (205 avg, Senior 60-64)\nChris Reynolds (195 avg)",
+                placeholder="11-12345 Scott Kramer (218 avg, Team Striking Power)\n11-23456 Dave Miller (205 avg, Team Striking Power)\nChris Reynolds (195 avg, Team Brunswick Boys)",
                 height=110
             )
             if st.button("Extract Roster with Gemini", type="primary"):
@@ -1856,10 +1885,10 @@ Input:
                 st.success("Roster updated & saved to cloud.")
 
         with tab_balancer:
-            st.markdown("### 🎳 Automated Lane Balancer & House Matrix (Up to 40 Lanes)")
-            st.caption("Distribute bowlers evenly across active pairs with alternating odd/even lead-off balancing and capacity caps.")
+            st.markdown("### 🎳 Team-Aware Automated Lane Balancer & House Matrix (Up to 40 Lanes)")
+            st.caption("Distribute bowlers across pairs while keeping all teammates grouped together on the exact same lane pair.")
 
-            col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
+            col_b1, col_b2, col_b3, col_b4 = st.columns([2, 1, 1, 1])
             with col_b1:
                 custom_range = st.text_input(
                     "Active Lane Range (supports commas and hyphens):",
@@ -1867,8 +1896,10 @@ Input:
                     placeholder="e.g. 1-40 or 1-16, 21-36"
                 )
             with col_b2:
-                max_capacity = st.selectbox("Max Bowlers per Pair:", [4, 5, 6], index=1)
+                max_capacity = st.selectbox("Max Bowlers per Pair:", [4, 5, 6, 8, 10], index=1, help="Choose 5 for 1 team per pair, or 8/10 for two 4- or 5-person teams head-to-head.")
             with col_b3:
+                group_teams = st.checkbox("👥 Group Teammates", value=True, help="Keeps bowlers with the same 'Team_Name' together on the same pair.")
+            with col_b4:
                 shuffle_draw = st.checkbox("🎲 Blind Random Draw", value=True)
 
             parsed_pairs = parse_active_pairs(custom_range, max_lanes=40)
@@ -1894,7 +1925,8 @@ Input:
                             st.session_state.roster,
                             parsed_pairs,
                             max_per_pair=max_capacity,
-                            shuffle=shuffle_draw
+                            shuffle=shuffle_draw,
+                            group_by_team=group_teams
                         )
                         if err:
                             st.error(err)
@@ -1907,8 +1939,8 @@ Input:
                                 st.session_state.roster,
                                 st.session_state.brackets
                             )
-                            log_audit_event(f"Automated lane balancing executed across {len(parsed_pairs)} pairs for {field_size} bowlers.")
-                            st.success(f"Successfully balanced {field_size} bowlers across {len(parsed_pairs)} lane pairs!")
+                            log_audit_event(f"Automated team-aware lane balancing executed across {len(parsed_pairs)} pairs for {field_size} bowlers.")
+                            st.success(f"Successfully balanced {field_size} bowlers across {len(parsed_pairs)} lane pairs with team assignments locked!")
                             st.rerun()
 
             if not st.session_state.roster.empty and parsed_pairs:
@@ -1932,9 +1964,10 @@ Input:
                         else:
                             for _, b in bowlers_on_pair.iterrows():
                                 paid_icon = "🟢" if b["Paid"] else "🔴"
+                                team_tag = f" <span style='color:#38bdf8;'>[{b.get('Team_Name', 'Singles')}]</span>" if b.get('Team_Name') and b.get('Team_Name') != "Singles" else ""
                                 st.markdown(f"""
                                 <div style="font-size: 12px; color: #f8fafc; margin-bottom: 2px;">
-                                    {paid_icon} <b>L{b['Starting Lane']}:</b> {b['Bowler']} <span style="color: #94a3b8;">({b['Average']})</span>
+                                    {paid_icon} <b>L{b['Starting Lane']}:</b> {b['Bowler']}{team_tag} <span style="color: #94a3b8;">({b['Average']})</span>
                                 </div>
                                 """, unsafe_allow_html=True)
                             st.markdown("</div>", unsafe_allow_html=True)
@@ -2177,8 +2210,6 @@ USBC ID,Bowler,Average,Starting Lane,Division,Team_Name,Game 1,Game 2,Game 3,Pai
 
     if not standings.empty:
         st.subheader("Live Official Standings")
-        
-        # Multi-division filtering for Senior Singles or Classified Events
         divisions_present = standings["Division"].dropna().unique().tolist() if "Division" in standings.columns else []
         if len(divisions_present) > 1:
             selected_div_filter = st.selectbox("Filter Standings by Division:", ["All Divisions"] + divisions_present)
@@ -2681,7 +2712,7 @@ Rules & Architecture:
 - Payment gate: Unpaid bowlers are locked from check-in until TD marks paid (Cash/Check/Venmo) and pushes to customer screen.
 - Scoring: Deterministic {int(st.session_state.tournament_config.get('hdcp_pct', 0.90)*100)}% of {st.session_state.tournament_config.get('hdcp_base', 220)} HDCP, cut to top 5 stepladder, permanent archiving to Google Sheets.
 - Side Action: 8-bowler single elimination brackets ($25 1st, $10 2nd, $5 expense) and high-game pots ($10 entry).
-- House Matrix: Automated balancing across up to 40 lanes.
+- House Matrix: Team-aware automated balancing across up to 40 lanes.
 
 User Question:
 {coach_question}
