@@ -633,6 +633,49 @@ def generate_with_failover(prompt: str, temperature: float = 0.0) -> str:
 
     raise last_exception
 
+def generate_first_time_td_guide() -> str:
+    """Uses Gemini to generate clear, plain-English instructions for a first-time TD."""
+    if not ai_client:
+        return (
+            "1. T-60 Min: Connect external monitor to laptop. Extend display (Win+P). Open ?mode=kiosk on the secondary display and hit F11.\n"
+            "2. T-45 Min: Go to Module 1 (Tab 2). Ingest bowlers via Clipboard Camera OCR snapshot or by pasting text notes.\n"
+            "3. T-30 Min: As bowlers arrive, pick their name in Module 1 (Tab 3), collect entry fee, click 'Mark Paid & Display on Customer Screen'. Bowler scans QR.\n"
+            "4. T-15 Min: Go to Module 4 (Brackets & Pots), generate 8-bowler brackets ($25/$10/$5) and check off side pot participants.\n"
+            "5. Squad Active: In Module 2, enter or paste scores. Standings and brackets advance automatically.\n"
+            "6. Finals & Archive: In Module 3, select match winners for the top-5 stepladder, declare Champion, and click 'Archive Tournament' to permanently save to Google Sheets."
+        )
+
+    prompt = f"""
+Write a clear, encouraging, step-by-step checklist for a Cecil Harford USBC board member who has NEVER run a tournament or used this software before.
+
+Current Event Context:
+- Host Center: {st.session_state.tournament_config['center']}
+- Event: {st.session_state.tournament_config['name']}
+- Division: {st.session_state.tournament_config['division']}
+- Active Pairs: {st.session_state.tournament_config['lanes_range']}
+
+Structure the guide into 6 numbered chronological steps:
+1. T-60 Min: Hardware & Kiosk Display Setup (HDMI cable, extending screen, opening ?mode=kiosk, pressing F11).
+2. T-45 Min: Roster Ingestion (how to snap photo of clipboard or paste signup notes).
+3. T-30 Min: The Bowler Walk-Up Dance (selecting bowler, collecting cash/check/Venmo, clicking 'Mark Paid & Display', bowler scanning QR).
+4. T-15 Min: Brackets & Side Pots (how to click generate brackets and enroll bowlers).
+5. During Competition: Score Entry (how to paste center recap sheets or type scores).
+6. Finals & Closeout: Stepladder Finals & 1-click archiving to Google Sheets.
+
+Keep the language direct, actionable, friendly, and free of unnecessary technical jargon.
+"""
+    try:
+        return generate_with_failover(prompt, temperature=0.1)
+    except Exception:
+        return (
+            "1. Setup external monitor on desk facing bowlers (?mode=kiosk, F11).\n"
+            "2. Ingest roster via photo OCR or text paste in Module 1.\n"
+            "3. Take payments and push check-in QR codes to bowler screen.\n"
+            "4. Seed 8-bowler brackets and side pots in Module 4.\n"
+            "5. Post game scores in Module 2.\n"
+            "6. Run stepladder and archive event in Module 3."
+        )
+
 # ---------------------------------------------------------
 # 7. DETERMINISTIC SCORING ENGINE & PDF GENERATOR
 # ---------------------------------------------------------
@@ -828,7 +871,7 @@ def generate_sop_docx() -> io.BytesIO:
     p_meta = doc.add_paragraph()
     p_meta.paragraph_format.space_after = Pt(14)
     r_meta = p_meta.add_run(
-        f"Document Identifier: SOP-TD-2026-01 | Audience: Board of Directors & Tournament Assistants\n"
+        f"Document Identifier: SOP-TD-2026-01 | Audience: Board of Directors & First-Time Tournament Directors\n"
         f"Generated from Live Console: {datetime.now().strftime('%B %d, %Y')} | Active Center: {st.session_state.tournament_config['center']}"
     )
     r_meta.font.size = Pt(9.5)
@@ -854,12 +897,12 @@ def generate_sop_docx() -> io.BytesIO:
     )
     doc.add_paragraph(
         "The system operates across three synchronized tiers:\n"
-        "• Tournament Director (TD) Console: The master administrative workstation running on the desk laptop. Used by officials to establish tournament settings, ingest rosters, collect entry fees, update scores, adjudicate rules disputes, run stepladder finals, and archive results.\n"
-        "• Customer Kiosk Monitor (?mode=kiosk): A dedicated, full-screen display facing the registration queue. Communicates via a local server file bridge (/tmp/chusbc_kiosk_state.json) to display association welcome boards and real-time bowler check-in cards with high-contrast QR codes.\n"
-        "• Bowler Smartphone Portal (?mode=checkin): A lightweight web app accessed when a bowler scans their personalized QR code. Confirms on-lane arrival and locks their assigned lane pair without requiring account creation or mobile app installation."
+        "• Tournament Director (TD) Console: Master administrative workstation running on the desk laptop.\n"
+        "• Customer Kiosk Monitor (?mode=kiosk): Secondary monitor facing registration line displaying welcome screens and live QR codes.\n"
+        "• Bowler Smartphone Portal (?mode=checkin): Contactless mobile interface loaded upon scanning QR code to confirm on-lane arrival."
     )
 
-    # 2. Hardware
+    # 2. Hardware Matrix
     h2 = doc.add_heading(level=1)
     h2.add_run("2. Hardware Configuration & Station Setup").font.color.rgb = PRIMARY
     doc.add_paragraph("Desk staff must arrive at the host facility at least 60 minutes prior to squad practice to configure equipment:")
@@ -900,29 +943,36 @@ def generate_sop_docx() -> io.BytesIO:
 
     doc.add_paragraph().paragraph_format.space_after = Pt(6)
 
-    # 3. Step-by-Step
+    # 3. Dynamic Gemini First-Time TD Guide
+    h_novice = doc.add_heading(level=1)
+    h_novice.add_run("3. First-Time Tournament Director (TD) Quickstart Guide").font.color.rgb = PRIMARY
+    guide_text = generate_first_time_td_guide()
+    p_guide = doc.add_paragraph(guide_text)
+    p_guide.paragraph_format.space_after = Pt(8)
+
+    # 4. Standard Operational Phases
     h3 = doc.add_heading(level=1)
-    h3.add_run("3. Standard Tournament Day Operating Procedure").font.color.rgb = PRIMARY
+    h3.add_run("4. Standard Tournament Day Operating Phases").font.color.rgb = PRIMARY
 
     phases = [
         ("Phase 1: Event Calibration & Rules Locking",
          "1. Sign in to the console using your administrative or staff credentials.\n"
          "2. Navigate to Module 1: 'Event & Roster Intake' -> Tab 1: '⚙️ Event Settings & Rules PDF'.\n"
          "3. Fill in: Tournament Name, Host Bowling Center, Total Lanes, Active Pair Range (e.g., 1-16), and Division.\n"
-         "4. Upload the tournament flyer PDF or paste tournament rules (handicap base, cut lines, roll-off provisions).\n"
+         "4. Upload tournament flyer PDF or paste tournament rules.\n"
          "5. Click 'Save & Lock Tournament Configuration' to lock parameters and index rules context for the AI Arbiter."),
 
         ("Phase 2: Bowler Roster Ingestion",
          "Switch to Tab 2: '📝 Roster Ingestion & Editing'. Board members may ingest bowlers through any of four methods:\n"
-         "• Method A (Camera/Photo OCR): Select '📸 Scan/Photo Clipboard (AI)'. Take a snapshot of the paper clipboard using the laptop or tablet camera. Click 'Extract Bowlers from Photo with Gemini'.\n"
-         "• Method B (AI Text Parser): Select '🤖 Paste Signup Notes (Gemini AI)'. Paste unformatted text (e.g., '11-12345 Scott Kramer 218 avg lane 1') and click 'Extract Roster with Gemini'.\n"
-         "• Method C (CSV Import): Select '📁 Upload CSV'. Upload a roster sheet containing USBC ID, Bowler, Average, and Starting Lane.\n"
-         "• Method D (Master Grid Entry): Select '📋 Editable Master Grid' for direct walk-in registration. Type directly into the grid and click 'Save Roster Changes'."),
+         "• Camera OCR: Select '📸 Scan/Photo Clipboard (AI)'. Take a snapshot of the paper sheet and click 'Extract Bowlers with Gemini'.\n"
+         "• AI Text Parser: Select '🤖 Paste Signup Notes (Gemini AI)'. Paste unformatted text and click 'Extract Roster with Gemini'.\n"
+         "• CSV Import: Select '📁 Upload CSV' with columns: USBC ID, Bowler, Average, Starting Lane.\n"
+         "• Master Grid Entry: Select '📋 Editable Master Grid' for direct walk-in registration."),
 
         ("Phase 3: Customer Kiosk Launch",
          "1. Switch to Tab 3: '💳 Desk Intake & Payment Terminal'.\n"
          "2. Click the link button: '🖥️ Open External Bowler Kiosk Window'.\n"
-         "3. Drag the new window to the external monitor and press F11 for fullscreen.\n"
+         "3. Drag the new window to the external monitor facing bowlers and press F11 for fullscreen.\n"
          "4. Confirm the kiosk displays the Cecil Harford USBC logo and idle welcome board with the live checked-in counter."),
 
         ("Phase 4: Bowler Intake & Payment Gate",
@@ -930,10 +980,10 @@ def generate_sop_docx() -> io.BytesIO:
          "1. Locate the bowler in the 'Search / Select Bowler at Desk' dropdown.\n"
          "2. Verify payment received (Cash, Check, or Venmo/Electronic).\n"
          "3. Click 'Mark Paid & Display on Customer Screen'.\n"
-         "4. The customer monitor updates within 2 seconds to display the bowler's Welcome Card: Name, USBC ID, Verified Entering Average, Starting Lane Pair, and Check-In QR Code.\n"
+         "4. The customer monitor updates within 2 seconds to display the bowler's Welcome Card and QR Code.\n"
          "5. The bowler scans the QR code with their phone camera to confirm check-in.\n"
          "6. Manual Override: If the bowler has no smartphone, click 'Manual TD Check-In Override (No Phone)'.\n"
-         "7. Click '🔄 Reset External Display (Show Welcome)' when the bowler departs to ready the screen for the next participant."),
+         "7. Click '🔄 Reset External Display (Show Welcome)' when the bowler departs for the next participant."),
 
         ("Phase 5: Side Action Enrollment (Brackets & Side Pots)",
          "Navigate to Module 4: 'Side Action: Brackets & Pots 💰':\n"
@@ -961,9 +1011,9 @@ def generate_sop_docx() -> io.BytesIO:
         p = doc.add_paragraph(p_body)
         p.paragraph_format.space_after = Pt(6)
 
-    # 4. Rules
+    # 5. Rules
     h4 = doc.add_heading(level=1)
-    h4.add_run("4. Rules Arbitration & Youth Compliance Guidelines").font.color.rgb = PRIMARY
+    h4.add_run("5. Rules Arbitration & Youth Compliance Guidelines").font.color.rgb = PRIMARY
     doc.add_paragraph("Desk officials must enforce USBC Playing Rules consistently. Consult Module 5 ('AI Rules Arbiter') for on-lane protests:")
 
     t_rules = doc.add_table(rows=5, cols=2)
@@ -1003,14 +1053,14 @@ def generate_sop_docx() -> io.BytesIO:
 
     doc.add_paragraph().paragraph_format.space_after = Pt(6)
 
-    # 5. Troubleshooting
+    # 6. Troubleshooting
     h5 = doc.add_heading(level=1)
-    h5.add_run("5. Contingency Procedures & Troubleshooting").font.color.rgb = PRIMARY
+    h5.add_run("6. Contingency Procedures & Troubleshooting").font.color.rgb = PRIMARY
     doc.add_paragraph(
         "• Kiosk Screen Does Not Update: The external kiosk tab communicates with the TD Console via an automated local file bridge (/tmp/chusbc_kiosk_state.json) polling every 2 seconds. If the external screen does not change within 3 seconds, click '🔄 Reset External Display (Show Welcome)', re-select the bowler on the TD laptop, and click '📺 Push to Customer Screen'.\n"
         "• Bowler Phone Camera Cannot Read QR: In low-light bowling centers, increase the external monitor brightness. If the phone still fails to focus, click 'Manual TD Check-In Override (No Phone)' on the TD console to confirm check-in instantly.\n"
         "• Internet Outage / Connection Drop: The application maintains in-memory session persistence. Do not force-refresh the primary browser window. If internet disconnects, switch to a mobile phone cellular hotspot immediately to resume Google Sheets cloud archiving.\n"
-        "• Staff Account Password Reset: Board administrators can reset official credentials directly in Module 8: 'TD User Management ⚙️'."
+        "• Staff Account Password Reset: Board administrators can reset official credentials directly in Module 9: 'TD User Management ⚙️'."
     )
 
     buf = io.BytesIO()
@@ -1027,73 +1077,71 @@ def generate_sop_pdf() -> bytes:
     title_style = ParagraphStyle(
         "SOPTitle",
         parent=styles["Heading1"],
-        fontSize=16,
-        leading=19,
+        fontSize=15,
+        leading=18,
         textColor=colors.HexColor("#0e3a8a"),
         spaceAfter=2
     )
     h2_style = ParagraphStyle(
         "SOPH2",
         parent=styles["Heading2"],
-        fontSize=12,
-        leading=15,
+        fontSize=11,
+        leading=14,
         textColor=colors.HexColor("#0284c7"),
-        spaceBefore=8,
-        spaceAfter=4
+        spaceBefore=6,
+        spaceAfter=3
     )
     body_style = ParagraphStyle(
         "SOPBody",
         parent=styles["Normal"],
-        fontSize=8.5,
-        leading=11.5,
+        fontSize=8,
+        leading=11,
         textColor=colors.HexColor("#0f172a"),
-        spaceAfter=5
+        spaceAfter=4
     )
 
     header_text = f"""
     <b>Cecil Harford USBC — Tournament Desk Standard Operating Procedure</b><br/>
     <font size="8" color="#475569">
-    Official Board Manual & Reference Guide | Live Center: {st.session_state.tournament_config['center']}<br/>
+    Official Board Manual & First-Time TD Reference Guide | Center: {st.session_state.tournament_config['center']}<br/>
     Effective Date: October 2026 | Document ID: SOP-TD-2026-01
     </font>
     """
 
     if HAS_LOGO:
-        logo_img = RLImage(LOGO_PATH, width=50, height=50)
-        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[60, 480])
+        logo_img = RLImage(LOGO_PATH, width=48, height=48)
+        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[56, 484])
         header_table.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
         ]))
         story.append(header_table)
     else:
         story.append(Paragraph("Cecil Harford USBC — Tournament Desk Standard Operating Procedure", title_style))
-        story.append(Spacer(1, 6))
+        story.append(Spacer(1, 4))
 
-    story.append(Paragraph("1. Purpose & System Overview", h2_style))
+    story.append(Paragraph("1. First-Time Tournament Director (TD) Quickstart Walkthrough", h2_style))
     story.append(Paragraph(
-        "This Standard Operating Procedure (SOP) standardizes tournament desk operations for all Cecil Harford USBC (CHUSBC) events. "
-        "The synchronized platform operates across 3 tiers: (1) TD Console for administrative oversight, (2) Customer Kiosk Display (?mode=kiosk) "
-        "for real-time bowler QR presentations, and (3) Bowler Smartphone Portal (?mode=checkin) for verified on-lane check-in.",
+        "<b>Step 1 (T-60 Setup):</b> Connect external monitor to laptop. Extend display (Win+P). Go to Module 1 -> Tab 3 -> click 'Open External Bowler Kiosk Window'. Drag to secondary monitor facing bowlers, press F11.<br/>"
+        "<b>Step 2 (T-45 Roster):</b> Go to Module 1 -> Tab 2. Snap photo of paper clipboard with 'Scan/Photo Clipboard (AI)' or paste signup list into 'Paste Signup Notes'. Verify in master grid.<br/>"
+        "<b>Step 3 (T-30 Bowler Line):</b> Select bowler in Module 1 -> Tab 3. Collect fee, click 'Mark Paid & Display on Customer Screen'. Bowler scans QR code on kiosk screen. Click 'Reset External Display'.<br/>"
+        "<b>Step 4 (T-15 Brackets):</b> Go to Module 4. Select division, click 'Generate & Seed Brackets'. Brackets auto-seed and advance as scores are entered.<br/>"
+        "<b>Step 5 (Scoring):</b> Go to Module 2. Paste center recap into Gemini Live Score Ingestion, click 'Apply Recap Scores' -> 'Save Scores & Recalculate Standings'.<br/>"
+        "<b>Step 6 (Finals & Archive):</b> Go to Module 3. Select match winners for top 5 stepladder, declare Champion, and click 'Archive Tournament & Save Official PDF'.",
         body_style
     ))
 
-    story.append(Paragraph("2. Station Setup & Operating Phases", h2_style))
+    story.append(Paragraph("2. System Architecture & Dual-Screen Operation", h2_style))
     story.append(Paragraph(
-        "<b>Phase 1 (Setup):</b> Lock tournament flyer, active lanes, and rules context in Module 1.<br/>"
-        "<b>Phase 2 (Roster):</b> Ingest field via Camera OCR, text parsing, CSV upload, or master grid.<br/>"
-        "<b>Phase 3 (Kiosk):</b> Launch ?mode=kiosk on secondary monitor facing bowlers (F11 fullscreen).<br/>"
-        "<b>Phase 4 (Check-In):</b> Verify payment -> Push to Customer Screen -> Bowler scans QR with phone.<br/>"
-        "<b>Phase 5 (Side Action):</b> Seed 8-bowler brackets ($25/$10/$5) and high-game pot pools.<br/>"
-        "<b>Phase 6 (Scoring):</b> Apply 90% of 220 handicap, rank field, and print vector PDF standings.<br/>"
-        "<b>Phase 7 (Finals):</b> Seed top 5 stepladder, crown champion, and archive directly to Google Sheets.",
+        "The platform synchronizes three live tiers: (1) <b>TD Console</b> for private desk oversight, (2) <b>Customer Kiosk (?mode=kiosk)</b> "
+        "for bowler QR presentations via local disk signaling (/tmp/chusbc_kiosk_state.json), and (3) <b>Bowler Smartphone Portal (?mode=checkin)</b> for instant on-lane check-in.",
         body_style
     ))
 
     story.append(Paragraph("3. USBC Statutory Enforcement Matrix", h2_style))
     rules_table_data = [
         ["Statute", "Mandatory Desk Enforcement"],
-        ["Rule 17: Altering Surface", "No abrasive pads or liquid cleaners once competition starts. Remove ball immediately; frames bowled with altered ball post-adjustment incur zero scores."],
+        ["Rule 17: Altering Surface", "No abrasive pads or liquid cleaners once competition starts. Remove ball immediately; frames bowled post-adjustment incur zero scores."],
         ["Rule 18: Equipment Specs", "Balance holes are prohibited. All drilled holes must be occupied by gripping fingers on delivery. Non-compliant balls must be removed."],
         ["Rule 10: Tardy Bowlers", "Late bowlers begin in the current frame if not completed by all on pair. No warm-up frames. Missed frames are scored zero."],
         ["Rule 400: Youth SMART", "CRITICAL MANDATE: All prizes and awards in youth divisions must be deposited into the USBC SMART program. Zero cash/gift card policy."]
@@ -1107,8 +1155,8 @@ def generate_sop_pdf() -> bytes:
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
     ]))
     story.append(t_rules)
     doc.build(story)
@@ -2097,9 +2145,52 @@ elif nav == "7. Board SOP & Staff Manual 📖":
     st.markdown("""
     <div class="brand-banner">
         <h1>Board Standard Operating Procedure (SOP)</h1>
-        <p>Dynamic tournament desk operations manual. Updates automatically with system enhancements.</p>
+        <p>Dynamic tournament desk operations manual and novice TD quickstart guide.</p>
     </div>
     """, unsafe_allow_html=True)
+
+    # 1. Interactive Gemini Live TD Coach
+    with st.expander("🤖 Ask Gemini: Live Desk Operations & Onboarding Coach", expanded=True):
+        st.markdown("Have a question about what button to click, how to handle a payment, or what to do if you're stuck? Ask here:")
+        coach_question = st.text_input("Enter your desk ops question (e.g., 'A bowler arrived late in game 1, what do I click?'):", placeholder="Type your tournament question...")
+        
+        if st.button("Get Instant Instructions from Gemini", type="primary"):
+            if not ai_client:
+                st.warning("Gemini API key is required.")
+            elif not coach_question.strip():
+                st.warning("Please type a question.")
+            else:
+                with st.spinner("Consulting CHUSBC Desk Manual..."):
+                    coach_prompt = f"""
+You are the Cecil Harford USBC (CHUSBC) Tournament Desk Operations AI Coach.
+Your goal is to guide a novice Tournament Director or volunteer who has NEVER used this software before.
+
+Current Tournament Setup:
+- Center: {st.session_state.tournament_config['center']}
+- Event: {st.session_state.tournament_config['name']}
+- Division: {st.session_state.tournament_config['division']}
+- Active Lanes: {st.session_state.tournament_config['lanes_range']}
+- Current Field Size: {len(st.session_state.roster)} bowlers
+
+Rules & Architecture:
+- 3 tiers: TD Console, External Kiosk (?mode=kiosk), and Bowler Mobile Check-in (?mode=checkin).
+- Payment gate: Unpaid bowlers are locked from check-in until TD marks paid (Cash/Check/Venmo) and pushes to customer screen.
+- Scoring: Deterministic 90% of 220 HDCP, cut to top 5 stepladder, permanent archiving to Google Sheets.
+- Side Action: 8-bowler single elimination brackets ($25 1st, $10 2nd, $5 expense) and high-game pots ($10 entry).
+
+User Question:
+{coach_question}
+
+Format your response in simple, numbered, crystal-clear steps telling the official EXACTLY where to navigate and what to click. Keep it encouraging and direct.
+"""
+                    try:
+                        reply = generate_with_failover(coach_prompt, temperature=0.1)
+                        st.markdown("### 📋 Instructions from AI Coach:")
+                        st.markdown(reply)
+                    except Exception as err:
+                        st.error(f"Error querying AI Coach: {err}")
+
+    st.divider()
 
     st.markdown("### 📥 Official Document Export")
     st.caption("Generate and download the complete board procedural manual in editable Microsoft Word (.docx) or print-ready PDF format:")
@@ -2128,14 +2219,52 @@ elif nav == "7. Board SOP & Staff Manual 📖":
 
     st.markdown("### 📋 Interactive Operating Manual")
 
-    with st.expander("1. Purpose & Three-Tier Architecture", expanded=True):
+    with st.expander("⭐ First-Time TD Step-by-Step Guide ('Day in the Life')", expanded=True):
+        st.markdown("""
+        ### Chronological Checklist for First-Time Desk Officials:
+
+        1. **T-60 Minutes (Physical Setup & Kiosk Screen)**
+           * Connect the secondary monitor to your laptop with an HDMI or USB-C cable.
+           * On Windows, press `Win + P` and choose **Extend**. (Mac: Displays $\\rightarrow$ Extended Desktop).
+           * Open your browser and log into the console.
+           * Navigate to **Module 1: Event & Roster Intake** $\\rightarrow$ Tab 3: **💳 Desk Intake & Payment Terminal**[cite: 5].
+           * Click **🖥️ Open External Bowler Kiosk Window**[cite: 5]. Drag that new tab to the monitor facing bowlers and press **F11** for fullscreen.
+
+        2. **T-45 Minutes (Roster Intake)**
+           * In Module 1, go to Tab 2: **📝 Roster Ingestion & Editing**.
+           * **Paper Clipboard?** Snap a photo under **📸 Scan/Photo Clipboard (AI)** and click **Extract Bowlers with Gemini**.
+           * **Text List?** Paste it under **🤖 Paste Signup Notes (Gemini AI)**.
+           * Check the **📋 Editable Master Grid** to verify names, USBC IDs, averages, and lane assignments.
+
+        3. **T-30 Minutes (Bowler Arrival & The 3-Click Check-In Dance)**
+           * As each bowler steps up to the desk, stay on **Module 1 $\\rightarrow$ Tab 3**[cite: 5]:
+             1. Select their name from the **Search / Select Bowler at Desk** dropdown[cite: 4, 5].
+             2. Collect their entry fee and click **Mark Paid (Cash/Check/Venmo) & Display on Customer Screen**[cite: 5].
+             3. Look at the bowler monitor: their Welcome Card and QR code appear immediately[cite: 4, 5]. Tell the bowler: *"Point your phone camera at the QR code on the screen."*[cite: 4]
+             4. Once checked in, click **🔄 Reset External Display (Show Welcome)** for the next bowler[cite: 5].
+
+        4. **T-15 Minutes (Brackets & Side Pots)**
+           * Go to **Module 4: Side Action: Brackets & Pots 💰**.
+           * Choose Scratch or Handicap, pick how many brackets to seed, and click **🎲 Generate & Seed Brackets**. The software randomly seeds 8-person single-elimination trees automatically.
+
+        5. **Squad Competition (Scoring)**
+           * Go to **Module 2: Scores & Standings**.
+           * Paste center scoring recap sheets into **⚡ Gemini Live Score Recap Ingestion**, or type scores into the **Official Scoring Grid**.
+           * Click **Save Scores & Recalculate Standings**. Standings, cuts, and brackets update automatically!
+
+        6. **End of Tournament (Stepladder & Permanent Archive)**
+           * Go to **Module 3: Stepladder Finals**.
+           * The top 5 cut qualifiers are seeded automatically. Select match winners as they finish, crown the Champion, and click **📦 Archive Tournament & Save Official PDF** to permanently preserve the tournament to Google Sheets.
+        """)
+
+    with st.expander("1. Purpose & Three-Tier Architecture"):
         st.markdown("""
         This Standard Operating Procedure governs desk operations across all Cecil Harford USBC championship and youth events.
         
         The platform synchronizes three live touchpoints:
         * **Tournament Director (TD) Console:** Private desk workstation for configuration, rosters, payments, and scoring.
-        * **Customer Kiosk Monitor (`?mode=kiosk`):** Full-screen secondary monitor facing bowlers, displaying the welcome banner and dynamic QR codes.
-        * **Bowler Smartphone Portal (`?mode=checkin`):** Contactless mobile screen confirming on-lane arrival and lane pair assignments.
+        * **Customer Kiosk Monitor (`?mode=kiosk`):** Full-screen secondary monitor facing bowlers, displaying the welcome banner and dynamic QR codes[cite: 4, 5].
+        * **Bowler Smartphone Portal (`?mode=checkin`):** Contactless mobile screen confirming on-lane arrival and lane pair assignments[cite: 4].
         """)
 
     with st.expander("2. Station Hardware & Physical Setup"):
@@ -2145,23 +2274,12 @@ elif nav == "7. Board SOP & Staff Manual 📖":
         | Component | Position | Operational Role |
         | :--- | :--- | :--- |
         | **TD Laptop** | Behind desk | Main workstation running the TD Console. |
-        | **External Monitor** | Facing registration queue | Connected via HDMI/USB-C running `?mode=kiosk` in fullscreen (**F11**). |
+        | **External Monitor** | Facing registration queue | Connected via HDMI/USB-C running `?mode=kiosk` in fullscreen (**F11**)[cite: 5]. |
         | **Cash Box** | Beside TD laptop (secure) | Holds entry cash, checks, and side action funds. Must balance with the terminal audit log. |
         | **Network Hotspot** | Tested before queue opens | Backup internet access if bowling center guest Wi-Fi is congested. |
         """)
 
-    with st.expander("3. 7-Phase Operating Workflow"):
-        st.markdown("""
-        1. **Phase 1 (Setup):** Lock tournament flyer, active lanes, and rules context in Module 1.
-        2. **Phase 2 (Roster Ingestion):** Ingest field via Camera OCR snapshot, AI unformatted text parser, CSV upload, or master grid.
-        3. **Phase 3 (Kiosk Launch):** Open `?mode=kiosk` on the secondary monitor facing bowlers and press **F11**.
-        4. **Phase 4 (Check-In):** Verify payment received $\\rightarrow$ click **Mark Paid & Display on Customer Screen** $\\rightarrow$ bowler scans QR code with phone.
-        5. **Phase 5 (Side Action):** Seed 8-bowler brackets ($25 1st, $10 2nd, $5 expense) and high-game pot pools.
-        6. **Phase 6 (Scoring):** Apply 90% of 220 handicap, rank field, and print vector PDF standings.
-        7. **Phase 7 (Finals & Archiving):** Seed top 5 stepladder, crown champion, and click **Archive Tournament & Save Official PDF** to commit permanently to Google Sheets.
-        """)
-
-    with st.expander("4. USBC Rules Arbitration Matrix"):
+    with st.expander("3. USBC Rules Arbitration Matrix"):
         st.markdown("""
         | USBC Statute | Rule Mandate | Mandatory Desk Enforcement Protocol |
         | :--- | :--- | :--- |
@@ -2171,10 +2289,10 @@ elif nav == "7. Board SOP & Staff Manual 📖":
         | **Rule 400** | **Youth SMART** | **CRITICAL MANDATE:** All prizes and awards in youth divisions must be deposited into the USBC SMART program. Zero cash/gift card policy. |
         """)
 
-    with st.expander("5. Troubleshooting Playbook"):
+    with st.expander("4. Troubleshooting Playbook"):
         st.markdown("""
-        * **Kiosk Screen Does Not Update:** Click **🔄 Reset External Display (Show Welcome)**, re-select bowler, and click **📺 Push to Customer Screen**. If needed, click into the kiosk window and press **F5**.
-        * **Phone Camera Won't Scan QR:** Increase external monitor brightness. If the phone still fails to focus, click **Manual TD Check-In Override (No Phone)** on the TD console.
+        * **Kiosk Screen Does Not Update:** Click **🔄 Reset External Display (Show Welcome)**, re-select bowler, and click **📺 Push to Customer Screen**[cite: 5]. If needed, click into the kiosk window and press **F5**.
+        * **Phone Camera Won't Scan QR:** Increase external monitor brightness. If the phone still fails to focus, click **Manual TD Check-In Override (No Phone)** on the TD console[cite: 5].
         * **Wi-Fi Outage:** Do **not** close or hard-refresh the browser tab. Turn on smartphone cellular hotspot, connect the laptop Wi-Fi, and continue operations normally.
         """)
 
