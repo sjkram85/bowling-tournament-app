@@ -17,6 +17,10 @@ from pypdf import PdfReader
 import qrcode
 from PIL import Image
 
+# Argon2 Cryptographic Hashing
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError, InvalidHashError
+
 # Word document generation
 import docx
 from docx import Document
@@ -55,6 +59,15 @@ PRIMARY_MODEL = "gemini-3.8-flash"
 FALLBACK_MODELS = ["gemini-3.7-flash", "gemini-3.5-flash"]
 
 KIOSK_FILE_PATH = os.path.join("/tmp", "chusbc_kiosk_state.json")
+
+# Initialize Argon2id Password Hasher
+ph = PasswordHasher(
+    time_cost=2,
+    memory_cost=65536,
+    parallelism=2,
+    hash_len=32,
+    salt_len=16
+)
 
 def read_kiosk_state():
     if os.path.exists(KIOSK_FILE_PATH):
@@ -397,15 +410,38 @@ CHUSBC_PRESET_PROFILES = {
 }
 
 # ---------------------------------------------------------
-# 3. GOOGLE SHEETS & CLOUD PERSISTENCE
+# 3. ARGON2 CRYPTOGRAPHIC ENGINE & CLOUD PERSISTENCE
 # ---------------------------------------------------------
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.strip().encode("utf-8")).hexdigest()
+def hash_secret(secret_str: str) -> str:
+    """Hashes a password or 4-digit PIN using Argon2id."""
+    return ph.hash(str(secret_str).strip())
 
-TARGET_ADMIN_HASH = "7e754bbef03e005db3d5089312104526685ba227e7f8e77a1fc9b6460fae2b1b"
+def verify_secret(stored_hash: str, plain_secret: str) -> tuple[bool, bool]:
+    """
+    Verifies a secret against an Argon2id hash (or legacy SHA-256 hash).
+    Returns (is_valid, needs_rehash).
+    """
+    if not stored_hash or not plain_secret:
+        return False, False
 
-def hash_pin(pin_str: str) -> str:
-    return hashlib.sha256(str(pin_str).strip().encode("utf-8")).hexdigest()
+    clean_secret = str(plain_secret).strip()
+    stored_hash = str(stored_hash).strip()
+
+    # Check if stored_hash is an Argon2 hash
+    if stored_hash.startswith("$argon2"):
+        try:
+            ph.verify(stored_hash, clean_secret)
+            return True, ph.check_needs_rehash(stored_hash)
+        except (VerifyMismatchError, InvalidHashError):
+            return False, False
+    else:
+        # Fallback for legacy 64-char SHA-256 hashes (migrates to Argon2 on success)
+        legacy_sha = hashlib.sha256(clean_secret.encode("utf-8")).hexdigest()
+        if stored_hash == legacy_sha:
+            return True, True
+        return False, False
+
+TARGET_ADMIN_LEGACY_HASH = "7e754bbef03e005db3d5089312104526685ba227e7f8e77a1fc9b6460fae2b1b"
 
 def get_db_connection():
     try:
@@ -431,7 +467,7 @@ def fetch_users_df() -> pd.DataFrame:
     return pd.DataFrame([{
         "username": "skramer",
         "name": "Scott Kramer",
-        "password_hash": TARGET_ADMIN_HASH,
+        "password_hash": TARGET_ADMIN_LEGACY_HASH,
         "role": "admin",
         "status": "active",
         "must_change_password": False,
@@ -525,11 +561,12 @@ def clear_active_tournament_state():
     return False
 
 def register_td_pin(td_name: str, pin_str: str) -> bool:
+    """Registers or updates a TD's 4-digit PIN using Argon2id."""
     if not td_name or len(str(pin_str).strip()) < 4:
         return False
     if "td_pins" not in st.session_state:
         st.session_state.td_pins = {}
-    st.session_state.td_pins[td_name.strip()] = hash_pin(pin_str)
+    st.session_state.td_pins[td_name.strip()] = hash_secret(pin_str)
     write_active_tournament_state(
         st.session_state.tournament_config,
         st.session_state.roster,
@@ -538,11 +575,15 @@ def register_td_pin(td_name: str, pin_str: str) -> bool:
     return True
 
 def verify_td_pin(td_name: str, pin_str: str) -> bool:
+    """Validates the entered PIN against the stored Argon2id hash (auto-migrating legacy SHA-256)."""
     pins = st.session_state.get("td_pins", {})
     stored_hash = pins.get(td_name.strip(), "")
     if not stored_hash:
         return False
-    return stored_hash == hash_pin(pin_str)
+    is_valid, needs_rehash = verify_secret(stored_hash, pin_str)
+    if is_valid and needs_rehash:
+        register_td_pin(td_name, pin_str)
+    return is_valid
 
 def notify_admin_new_registration(requested_user: str, requested_name: str, requested_at: str):
     sender_email = st.secrets.get("EMAIL_SENDER", "")
@@ -766,7 +807,7 @@ def generate_qr_image(url: str) -> io.BytesIO:
     return buf
 
 # ---------------------------------------------------------
-# 10. DETERMINISTIC SCORING ENGINE & DYNAMIC HANDICAP
+# 10. DETERMINISTIC SCORING ENGINE, DYNAMIC HANDICAP & PDF RASTERS
 # ---------------------------------------------------------
 def calculate_handicap(avg: int, base: int = None, percentage: float = None) -> int:
     if base is None:
@@ -807,6 +848,120 @@ def compile_standings(df: pd.DataFrame) -> pd.DataFrame:
     calc_df.index.name = "Rank"
     return calc_df
 
+def export_lane_assignments_pdf(roster_df: pd.DataFrame, config: dict) -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    story = []
+
+    title_style = ParagraphStyle(
+        "RosterTitle",
+        parent=styles["Heading1"],
+        fontSize=15,
+        leading=18,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=2
+    )
+    meta_style = ParagraphStyle(
+        "RosterMeta",
+        parent=styles["Normal"],
+        fontSize=8.5,
+        textColor=colors.HexColor("#475569"),
+        spaceAfter=12
+    )
+
+    header_text = f"""
+    <b>Cecil Harford USBC — Lane Assignment & Concourse Check-In Roster</b><br/>
+    <font size="8" color="#475569">
+    Event: {config['name']} | Center: {config['center']} | Division: {config['division']}<br/>
+    Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')} | TD on Duty: {st.session_state.get('td_name', 'Official')}
+    </font>
+    """
+
+    if HAS_LOGO:
+        logo_img = RLImage(LOGO_PATH, width=50, height=50)
+        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[60, 480])
+        header_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        story.append(header_table)
+    else:
+        story.append(Paragraph(f"Cecil Harford USBC — Lane Assignment Roster", title_style))
+        story.append(Paragraph(header_text, meta_style))
+
+    if roster_df.empty:
+        story.append(Paragraph("<b>No bowlers currently registered in roster.</b>", styles["Normal"]))
+    else:
+        df_sorted = roster_df.copy()
+        if "Starting Lane" not in df_sorted.columns:
+            df_sorted["Starting Lane"] = 1
+        df_sorted["Starting Lane"] = pd.to_numeric(df_sorted["Starting Lane"], errors="coerce").fillna(1).astype(int)
+        
+        df_sorted["Pair_Low"] = df_sorted["Starting Lane"].apply(lambda l: l if l % 2 != 0 else l - 1)
+        df_sorted["Pair_High"] = df_sorted["Pair_Low"] + 1
+        df_sorted["Pair_Label"] = df_sorted.apply(lambda r: f"Lanes {int(r['Pair_Low'])} & {int(r['Pair_High'])}", axis=1)
+
+        grouped = df_sorted.groupby(["Pair_Low", "Pair_Label"])
+
+        for _, group_df in sorted(grouped, key=lambda x: x[0]):
+            pair_name = group_df.iloc[0]["Pair_Label"]
+            
+            p_header_style = ParagraphStyle(
+                "PairHeader",
+                parent=styles["Heading2"],
+                fontSize=10.5,
+                leading=13,
+                textColor=colors.white,
+                spaceBefore=6,
+                spaceAfter=4
+            )
+            
+            pair_table_data = [[Paragraph(f"<b>{pair_name}</b>", p_header_style), "", "", "", "", "", ""]]
+            pair_table_data.append(["Lane", "Bowler Name", "Team / Affiliation", "Avg", "Paid", "Check-in", "Game Scores (G1 / G2 / G3)"])
+
+            for _, row in group_df.sort_values(by=["Starting Lane", "Bowler"]).iterrows():
+                lane = str(row["Starting Lane"])
+                b_name = str(row["Bowler"])
+                team = str(row.get("Team_Name", "Singles"))
+                if team.lower() in ["singles", "none", "nan", ""]:
+                    team = "Singles"
+                avg = str(row["Average"])
+                paid = "Yes" if bool(row.get("Paid", False)) else "[  ]"
+                checked = "Yes" if bool(row.get("Checked_In", False)) else "[  ]"
+                
+                pair_table_data.append([
+                    lane,
+                    b_name,
+                    team,
+                    avg,
+                    paid,
+                    checked,
+                    "___ / ___ / ___"
+                ])
+
+            pt = Table(pair_table_data, colWidths=[32, 130, 110, 32, 38, 48, 150])
+            pt.setStyle(TableStyle([
+                ("SPAN", (0, 0), (6, 0)),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+                ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#0284c7")),
+                ("TEXTCOLOR", (0, 1), (-1, 1), colors.white),
+                ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("ALIGN", (0, 0), (0, -1), "CENTER"),
+                ("ALIGN", (3, 0), (5, -1), "CENTER"),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                ("ROWBACKGROUNDS", (0, 2), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ]))
+            story.append(pt)
+            story.append(Spacer(1, 8))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
 def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name: str = "") -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
@@ -834,7 +989,7 @@ def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name
     <b>Cecil Harford USBC — {config['name']}</b><br/>
     <font size="8" color="#475569">
     Host: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}{champ_str}<br/>
-    TD on Duty: {st.session_state.td_name} | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}
+    TD on Duty: {st.session_state.get('td_name', 'Official')} | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}
     </font>
     """
 
@@ -850,7 +1005,7 @@ def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name
         story.append(Paragraph(f"Cecil Harford USBC — {config['name']}", title_style))
         story.append(Paragraph(
             f"Center: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}{champ_str}<br/>"
-            f"TD on Duty: {st.session_state.td_name} | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}",
+            f"TD on Duty: {st.session_state.get('td_name', 'Official')} | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}",
             meta_style
         ))
 
@@ -998,6 +1153,12 @@ if query_params.get("mode") == "kiosk":
 # 6B. MOBILE-OPTIMIZED BOWLER SELF-CHECK-IN ROUTE (?mode=checkin)
 # ---------------------------------------------------------
 if query_params.get("mode") == "checkin":
+    cloud_state = fetch_active_tournament_state()
+    if cloud_state:
+        st.session_state.tournament_config = cloud_state["config"]
+        st.session_state.roster = pd.DataFrame(cloud_state["roster"])
+        st.session_state.brackets = cloud_state.get("brackets", [])
+
     target_id = query_params.get("usbc_id", "")
     roster_match = st.session_state.roster[st.session_state.roster["USBC ID"].astype(str) == str(target_id)]
 
@@ -1070,7 +1231,182 @@ if query_params.get("mode") == "checkin":
     st.stop()
 
 # ---------------------------------------------------------
-# 6C. PIN-SECURED ROVING MOBILE TD SCORER PORTAL (?mode=scorer)
+# 6C. ENTRANCE QR AUTOMATED SELF-CHECK-IN & BRACKET ROUTING (?mode=self_checkin)
+# ---------------------------------------------------------
+if query_params.get("mode") == "self_checkin":
+    st.markdown("""
+    <style>
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+        .block-container { padding-top: 1.2rem; max-width: 580px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    cloud_state = fetch_active_tournament_state()
+    if cloud_state:
+        st.session_state.tournament_config = cloud_state["config"]
+        st.session_state.roster = pd.DataFrame(cloud_state["roster"])
+        st.session_state.brackets = cloud_state.get("brackets", [])
+
+    if HAS_LOGO:
+        st.image(LOGO_PATH, width=130)
+
+    st.markdown(f"""
+    <div class="brand-banner" style="text-align: center;">
+        <h1 style="font-size: 22px;">🎳 Express Entrance Check-In</h1>
+        <p>{st.session_state.tournament_config['name']}<br/>Host: {st.session_state.tournament_config['center']}</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.session_state.roster.empty:
+        st.info("Tournament roster is currently being initialized by the desk. Please stand by or see the desk official.")
+        st.stop()
+
+    bowler_list = sorted(st.session_state.roster["Bowler"].dropna().unique().tolist())
+    selected_name = st.selectbox("1. Select Your Name:", ["-- Tap to Find Your Name --"] + bowler_list)
+    wants_brackets = st.radio(
+        "2. Do you want to enter Side Brackets or High-Game Pots today?",
+        ["No — Just check me in for the tournament", "Yes — I want to enter Brackets / Side Pots"],
+        index=0
+    )
+
+    if selected_name != "-- Tap to Find Your Name --":
+        if st.button("Complete Check-In", type="primary", use_container_width=True):
+            b_row = st.session_state.roster[st.session_state.roster["Bowler"] == selected_name].iloc[0]
+            is_paid = bool(b_row.get("Paid", False))
+            b_usbc = str(b_row.get("USBC ID", ""))
+            start_lane = int(pd.to_numeric(b_row.get("Starting Lane", 1), errors="coerce") or 1)
+            pair_partner = start_lane + 1 if start_lane % 2 != 0 else start_lane - 1
+            pair_display = f"Lanes {min(start_lane, pair_partner)} & {max(start_lane, pair_partner)}"
+
+            if not is_paid:
+                st.markdown(f"""
+                <div style="background-color: #ef444420; border: 2px solid #ef4444; border-radius: 12px; padding: 22px; text-align: center; margin-top: 16px;">
+                    <span style="font-size: 38px;">💳</span>
+                    <h2 style="color: #f87171; margin: 8px 0 6px 0; font-size: 21px;">Please Visit the Check-In Desk</h2>
+                    <p style="color: #fca5a5; font-size: 15px; margin: 0;">
+                        Welcome, <b>{selected_name}</b>! Our system shows a balance due for your entry fee. Please see the Tournament Director at the desk to complete payment and receive your lane assignment.
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+            elif "Yes" in wants_brackets:
+                # Mark checked in since they paid entry fee, but direct them to the desk for brackets
+                match_idx = st.session_state.roster.index[st.session_state.roster["Bowler"] == selected_name].tolist()
+                if match_idx and not bool(b_row.get("Checked_In", False)):
+                    st.session_state.roster.loc[match_idx[0], "Checked_In"] = True
+                    write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
+
+                st.markdown(f"""
+                <div style="background-color: #f59e0b20; border: 2px solid #f59e0b; border-radius: 12px; padding: 22px; text-align: center; margin-top: 16px;">
+                    <span style="font-size: 38px;">💰</span>
+                    <h2 style="color: #fde047; margin: 8px 0 6px 0; font-size: 21px;"> Checked In! See Desk for Brackets</h2>
+                    <p style="color: #fef08a; font-size: 15px; margin: 0;">
+                        Your tournament entry is <b>PAID</b> and you are checked in on <b>{pair_display} (Lane {start_lane})</b>.<br/><br/>
+                        <b>Next Step:</b> Please head to the Tournament Desk now to buy into today's <b>8-Bowler Brackets & Side Pots</b> before squad practice begins!
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                match_idx = st.session_state.roster.index[st.session_state.roster["Bowler"] == selected_name].tolist()
+                if match_idx and not bool(b_row.get("Checked_In", False)):
+                    st.session_state.roster.loc[match_idx[0], "Checked_In"] = True
+                    write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
+
+                detected_base = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
+                portal_url = f"{detected_base}/?mode=bowler_portal"
+
+                st.markdown(f"""
+                <div style="background-color: #10b98120; border: 2px solid #10b981; border-radius: 12px; padding: 22px; text-align: center; margin-top: 16px;">
+                    <span style="font-size: 42px;">✅</span>
+                    <h2 style="color: #34d399; margin: 8px 0 4px 0; font-size: 23px;">You Are Checked In!</h2>
+                    <p style="color: #cbd5e1; font-size: 14px; margin: 0;">{selected_name} (USBC ID: {b_usbc})</p>
+                </div>
+
+                <div class="match-box" style="text-align: center; margin-top: 14px; padding: 20px;">
+                    <span style="color: #94a3b8; font-size: 13px; text-transform: uppercase; font-weight: 700;">Your Starting Pair</span>
+                    <div style="font-size: 36px; font-weight: 900; color: #38bdf8; margin: 6px 0;">{pair_display}</div>
+                    <span style="color: #f1f5f9; font-size: 15px;">Lead-off Delivery: <b>Lane {start_lane}</b> | Entering Avg: <b>{b_row['Average']}</b></span>
+                </div>
+                """, unsafe_allow_html=True)
+                st.link_button("📊 Open Live Bowler Standings & Portal", portal_url, use_container_width=True)
+
+    st.stop()
+
+# ---------------------------------------------------------
+# 6D. READ-ONLY BOWLER LIVE PORTAL (?mode=bowler_portal)
+# ---------------------------------------------------------
+if query_params.get("mode") == "bowler_portal":
+    st.markdown("""
+    <style>
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+        .block-container { padding-top: 1.2rem; max-width: 620px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    cloud_state = fetch_active_tournament_state()
+    if cloud_state:
+        st.session_state.tournament_config = cloud_state["config"]
+        st.session_state.roster = pd.DataFrame(cloud_state["roster"])
+        st.session_state.brackets = cloud_state.get("brackets", [])
+
+    st.markdown(f"""
+    <div style="background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%); border: 1.5px solid #38bdf8; border-radius: 12px; padding: 18px; text-align: center; margin-bottom: 16px;">
+        <span style="color: #38bdf8; font-size: 12px; font-weight: 800; letter-spacing: 1px;">LIVE BOWLER PORTAL (READ-ONLY)</span>
+        <h2 style="color: #f8fafc; margin: 4px 0 0 0; font-size: 21px;">{st.session_state.tournament_config['name']}</h2>
+        <div style="color: #cbd5e1; font-size: 13px; margin-top: 4px;">Host Center: <b>{st.session_state.tournament_config['center']}</b></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.session_state.roster.empty:
+        st.info("Standings will appear once squad play begins.")
+        st.stop()
+
+    standings = compile_standings(st.session_state.roster)
+    bowler_names = sorted(st.session_state.roster["Bowler"].dropna().unique().tolist())
+    selected_bowler = st.selectbox("Select Your Name to View Personal Tracker:", ["-- View Full Leaderboard Only --"] + bowler_names)
+
+    if selected_bowler != "-- View Full Leaderboard Only --":
+        b_Rank_df = standings[standings["Bowler"] == selected_bowler]
+        if not b_Rank_df.empty:
+            b_stat = b_Rank_df.iloc[0]
+            curr_rank = b_Rank_df.index[0]
+            s_lane = int(pd.to_numeric(b_stat.get("Starting Lane", 1), errors="coerce") or 1)
+            p_lane = s_lane + 1 if s_lane % 2 != 0 else s_lane - 1
+            cut_val = standings.iloc[4]["Grand_Total"] if len(standings) >= 5 else 0
+            diff_cut = int(b_stat["Grand_Total"]) - int(cut_val)
+            diff_str = f"+{diff_cut} above #5 Cut" if diff_cut >= 0 else f"{diff_cut} from #5 Cut"
+
+            st.markdown(f"""
+            <div class="match-box" style="text-align: center;">
+                <span style="font-size: 12px; color: #94a3b8; text-transform: uppercase; font-weight: 800;">Current Standing</span>
+                <div style="font-size: 34px; font-weight: 900; color: #38bdf8; margin: 4px 0;">Rank #{curr_rank} <span style="font-size: 16px; color: #34d399;">({diff_str})</span></div>
+                <div style="font-size: 15px; color: #f8fafc; margin-top: 6px;">
+                    Assigned Pair: <b>Lanes {min(s_lane, p_lane)} & {max(s_lane, p_lane)}</b> (Lead-off Lane {s_lane}) | Team: <b>{b_stat.get('Team_Name', 'Singles')}</b>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            c_g1, c_g2, c_g3, c_tot = st.columns(4)
+            with c_g1:
+                st.metric("Game 1", int(b_stat["Game 1"]))
+            with c_g2:
+                st.metric("Game 2", int(b_stat["Game 2"]))
+            with c_g3:
+                st.metric("Game 3", int(b_stat["Game 3"]))
+            with c_tot:
+                st.metric("Total w/ HDCP", int(b_stat["Grand_Total"]), delta=f"{int(b_stat['Total_HDCP'])} HDCP")
+
+    st.subheader("🏆 Live Tournament Standings")
+    cols_ view = [c for c in ["Bowler", "Team_Name", "Starting Lane", "Game 1", "Game 2", "Game 3", "Total_HDCP", "Grand_Total"] if c in standings.columns]
+    st.dataframe(standings[cols_view], use_container_width=True)
+    if st.button("🔄 Refresh Live Standings", use_container_width=True):
+        st.rerun()
+
+    st.stop()
+
+# ---------------------------------------------------------
+# 6E. PIN-SECURED ROVING MOBILE TD SCORER PORTAL (?mode=scorer)
 # ---------------------------------------------------------
 if query_params.get("mode") == "scorer":
     st.markdown("""
@@ -1093,7 +1429,7 @@ if query_params.get("mode") == "scorer":
 
     st.markdown(f"""
     <div style="background: linear-gradient(135deg, #0284c7 0%, #0f172a 100%); border: 1.5px solid #38bdf8; border-radius: 12px; padding: 16px; text-align: center; margin-bottom: 16px;">
-        <span style="color: #38bdf8; font-size: 12px; font-weight: 800; letter-spacing: 1px;">CHUSBC SECURE FLOOR SCORER</span>
+        <span style="color: #38bdf8; font-size: 12px; font-weight: 800; letter-spacing: 1px;">CHUSBC SECURE FLOOR SCORER (ARGON2)</span>
         <h2 style="color: #f8fafc; margin: 4px 0 0 0; font-size: 20px;">{st.session_state.tournament_config['name']}</h2>
         <div style="color: #cbd5e1; font-size: 13px; margin-top: 4px;">Host Center: <b>{st.session_state.tournament_config['center']}</b></div>
     </div>
@@ -1107,7 +1443,7 @@ if query_params.get("mode") == "scorer":
             td_name_in = st.text_input("Enter Your Name (TD on Floor):", placeholder="e.g. Dave Miller, Chris Reynolds").strip()
             
             existing_pins = st.session_state.get("td_pins", {})
-            st.caption("Establish or enter your 4-digit PIN for on-lane concurrence:")
+            st.caption("Establish or enter your 4-digit PIN (secured with Argon2id):")
             pin_in = st.text_input("4-Digit Security PIN:", type="password", max_chars=6).strip()
             
             submit_td = st.form_submit_button("Authenticate & Start Scoring", type="primary", use_container_width=True)
@@ -1123,7 +1459,7 @@ if query_params.get("mode") == "scorer":
                             st.stop()
                     else:
                         register_td_pin(td_name_in, pin_in)
-                        st.toast(f"Security PIN locked for {td_name_in}!", icon="🔐")
+                        st.toast(f"Argon2 Security PIN locked for {td_name_in}!", icon="🔐")
                     
                     st.session_state.mobile_scorer_td = td_name_in
                     st.rerun()
@@ -1132,7 +1468,7 @@ if query_params.get("mode") == "scorer":
     st.markdown(f"""
     <div style="display: flex; justify-content: space-between; align-items: center; background-color: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 10px 14px; margin-bottom: 14px;">
         <span style="font-size: 13.5px; color: #cbd5e1;">Official: <b style="color: #38bdf8;">{st.session_state.mobile_scorer_td}</b></span>
-        <span style="font-size: 12px; color: #34d399; font-weight: 700;">🔐 PIN VERIFIED</span>
+        <span style="font-size: 12px; color: #34d399; font-weight: 700;">🔐 ARGON2 VERIFIED</span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1248,7 +1584,7 @@ if query_params.get("mode") == "scorer":
 
                     st.session_state.roster = working_df
                     write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
-                    log_audit_event(f"Mobile TD '{st.session_state.mobile_scorer_td}' verified Game {selected_game_num} on Lanes {lane_odd}-{lane_even} with PIN concurrence.")
+                    log_audit_event(f"Mobile TD '{st.session_state.mobile_scorer_td}' verified Game {selected_game_num} on Lanes {lane_odd}-{lane_even} with Argon2 PIN concurrence.")
                     st.success(f"✅ Game {selected_game_num} on {selected_pair_label} verified with PIN and locked!")
                     time.sleep(1.0)
                     st.rerun()
@@ -1256,7 +1592,7 @@ if query_params.get("mode") == "scorer":
     st.stop()
 
 # ---------------------------------------------------------
-# 6D. PUBLIC CONCOURSE & TV LEADERBOARD DISPLAY (?mode=leaderboard)
+# 6F. PUBLIC CONCOURSE & TV LEADERBOARD DISPLAY (?mode=leaderboard)
 # ---------------------------------------------------------
 if query_params.get("mode") == "leaderboard":
     st.markdown("""
@@ -1381,7 +1717,6 @@ if query_params.get("mode") == "leaderboard":
         </div>
         """, unsafe_allow_html=True)
     else:
-        # Table Header
         st.markdown("""
         <div style="display: flex; background-color: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px 14px; color: #94a3b8; font-size: 12.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">
             <div style="width: 60px;">Pos</div>
@@ -1440,12 +1775,11 @@ if query_params.get("mode") == "leaderboard":
                 </div>
                 """, unsafe_allow_html=True)
 
-    # Concourse Auto-Refresh Every 12 Seconds
     time.sleep(12.0)
     st.rerun()
 
 # ---------------------------------------------------------
-# 7. TD AUTHENTICATION & LOGIN GATE
+# 7. TD AUTHENTICATION & LOGIN GATE (ARGON2ID)
 # ---------------------------------------------------------
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -1479,7 +1813,7 @@ if not st.session_state.authenticated:
         if st.session_state.pending_password_change:
             st.markdown("""
             <div class="brand-banner">
-                <h1>🔒 Account Activation</h1>
+                <h1>🔒 Account Activation (Argon2)</h1>
                 <p>Welcome to Cecil Harford USBC Tournament Desk. Please establish your personal password.</p>
             </div>
             """, unsafe_allow_html=True)
@@ -1497,12 +1831,12 @@ if not st.session_state.authenticated:
                         u = st.session_state.username
                         idx = users_df.index[users_df["username"] == u].tolist()
                         if idx:
-                            users_df.loc[idx[0], "password_hash"] = hash_password(new_pwd)
+                            users_df.loc[idx[0], "password_hash"] = hash_secret(new_pwd)
                             users_df.loc[idx[0], "must_change_password"] = False
                             write_users_df(users_df)
                         st.session_state.pending_password_change = False
                         st.session_state.authenticated = True
-                        log_audit_event(f"User '{u}' completed initial password change.")
+                        log_audit_event(f"User '{u}' completed initial password change (Argon2id).")
                         st.rerun()
         else:
             st.markdown("""
@@ -1525,12 +1859,18 @@ if not st.session_state.authenticated:
                         match_row = users_df[users_df["username"] == username_input]
 
                         authenticated_match = False
+                        needs_upgrade = False
                         if not match_row.empty:
                             stored_hash = str(match_row.iloc[0]["password_hash"])
-                            if stored_hash == hash_password(password_input):
-                                authenticated_match = True
+                            authenticated_match, needs_upgrade = verify_secret(stored_hash, password_input)
 
                         if is_skramer or authenticated_match:
+                            if needs_upgrade and not match_row.empty:
+                                idx_u = users_df.index[users_df["username"] == username_input].tolist()
+                                if idx_u:
+                                    users_df.loc[idx_u[0], "password_hash"] = hash_secret(password_input)
+                                    write_users_df(users_df)
+
                             user_data = match_row.iloc[0] if not match_row.empty else {
                                 "name": "Scott Kramer",
                                 "role": "admin",
@@ -1577,7 +1917,7 @@ if not st.session_state.authenticated:
                             new_row = pd.DataFrame([{
                                 "username": req_user,
                                 "name": req_name,
-                                "password_hash": hash_password(req_pwd),
+                                "password_hash": hash_secret(req_pwd),
                                 "role": "td",
                                 "status": "pending",
                                 "must_change_password": False,
@@ -1833,11 +2173,11 @@ def generate_first_time_td_guide() -> str:
     if not ai_client:
         return (
             "1. T-60 Min: Connect external monitor to laptop. Extend display (Win+P). Open ?mode=kiosk on secondary display and hit F11.\n"
-            "2. T-45 Min: In Module 1 (Tab 2), ingest roster and run Automated Lane Balancer (handles up to 40 lanes, keeps teams together).\n"
-            "3. T-30 Min: As bowlers arrive, select name in Module 1 (Tab 3), collect fee, click 'Mark Paid & Display on Customer Screen'.\n"
-            "4. T-15 Min: Floor TDs scan ?mode=scorer QR code on their phones, create their 4-digit PIN, and claim lane pairs.\n"
+            "2. T-45 Min: In Module 1 (Tab 2), ingest roster and run Automated Lane Balancer (handles up to 40 lanes, keeps teams together). Download printable PDF lane sheets.\n"
+            "3. T-30 Min: Post the Express Entrance QR (?mode=self_checkin) at the door. Pre-paid bowlers check in automatically; unpaid or bracket bowlers are routed to the desk.\n"
+            "4. T-15 Min: Floor TDs scan ?mode=scorer QR code on their phones, create their Argon2 4-digit PIN, and claim lane pairs.\n"
             "5. Squad Active: Roving TDs snap overhead monitors with phone camera OCR, input scores, and lock with their secret PIN. Central Desk monitors verified lanes on the Radar Matrix.\n"
-            "6. Concourse TV: Cast or open ?mode=leaderboard on the center bar or overhead TVs for live spectator scores.\n"
+            "6. Concourse TV & Bowler Portal: Cast ?mode=leaderboard on center TVs and let bowlers track ranks on ?mode=bowler_portal.\n"
             "7. Finals & Archive: In Module 3, run stepladder finals, declare Champion, and click 'Archive Tournament' to store in Google Sheets."
         )
 
@@ -1851,17 +2191,17 @@ Current Event Context:
 - Active Pairs: {st.session_state.tournament_config['lanes_range']}
 - Format Mode: {st.session_state.tournament_config.get('format_mode', 'Standard')}
 
-Structure the guide into 6 numbered chronological steps including how floor TDs connect their phones to ?mode=scorer, snap overhead scoring screens with camera OCR, sign score submissions with PIN concurrence, how Central Desk monitors the live Lane Radar Matrix, and how to beam the Public Concourse Leaderboard (?mode=leaderboard) to house TVs.
+Structure the guide into 6 numbered chronological steps including generating printable PDF lane sheets, the Express Entrance Self-Check-In QR (?mode=self_checkin) that routes bracket and unpaid bowlers to the desk, how floor TDs connect their phones to ?mode=scorer with Argon2 PIN concurrence, and how bowlers view live standings via ?mode=bowler_portal.
 """
     try:
         return generate_with_failover(prompt, temperature=0.1)
     except Exception:
         return (
             "1. Setup external monitor on desk facing bowlers (?mode=kiosk, F11).\n"
-            "2. Ingest roster and balance lanes across pairs in Module 1.\n"
-            "3. Take payments and push check-in QR codes to bowler screen.\n"
+            "2. Ingest roster, balance lanes in Module 1, and download printable PDF lane sheets.\n"
+            "3. Post Express Self-Check-In QR (?mode=self_checkin) at entrance; handle unpaid and bracket entries at desk.\n"
             "4. Roving TDs open ?mode=scorer on their phones, snap monitors with AI OCR, and set a 4-digit PIN.\n"
-            "5. Open ?mode=leaderboard on concourse/bar TVs for live spectator standings.\n"
+            "5. Open ?mode=leaderboard on concourse TVs and share ?mode=bowler_portal for live bowler tracking.\n"
             "6. Run stepladder and archive event in Module 3."
         )
 
@@ -1937,53 +2277,12 @@ def generate_sop_docx() -> io.BytesIO:
     h1.add_run("1. Purpose & System Overview").font.color.rgb = PRIMARY
     doc.add_paragraph(
         f"This Standard Operating Procedure (SOP) standardizes tournament desk operations for the {st.session_state.tournament_config['name']} "
-        "and all official Cecil Harford USBC (CHUSBC) championship events. The platform is configured with presets for all eight CHUSBC tournaments, "
-        "supporting multi-tier desk operations, team-aware automated lane balancing up to 40 lanes, roving mobile TD scoring with secret PIN concurrence, public concourse TV broadcasting, and cloud archiving."
+        "and all official Cecil Harford USBC (CHUSBC) championship events. The platform utilizes Argon2id cryptographic authentication, "
+        "team-aware automated lane balancing up to 40 lanes, express entrance QR self-check-in, roving mobile TD scoring with PIN concurrence, and public concourse TV broadcasting."
     )
 
-    h2 = doc.add_heading(level=1)
-    h2.add_run("2. Hardware Configuration & Station Setup").font.color.rgb = PRIMARY
-    doc.add_paragraph("Desk staff must arrive at the host facility at least 60 minutes prior to squad practice to configure equipment:")
-
-    t_hw = doc.add_table(rows=6, cols=3)
-    t_hw.alignment = WD_TABLE_ALIGNMENT.CENTER
-    hw_headers = ["Component", "Physical Position", "Operational Role"]
-    hw_widths = [Inches(1.8), Inches(1.9), Inches(2.8)]
-
-    for i, title in enumerate(hw_headers):
-        cell = t_hw.cell(0, i)
-        cell.width = hw_widths[i]
-        set_cell_background(cell, "0E3A8A")
-        set_cell_padding(cell, 120, 120, 140, 140)
-        p = cell.paragraphs[0]
-        r = p.add_run(title)
-        r.bold = True
-        r.font.color.rgb = RGBColor(255, 255, 255)
-        r.font.size = Pt(10)
-
-    hw_rows = [
-        ("TD Laptop", "Behind desk, facing official only", "Main operational workstation. Keep browser logged into the TD Console."),
-        ("External Desk Monitor", "Facing bowler registration queue", "Connected via HDMI/USB-C as 'Extended Display'. Runs ?mode=kiosk in fullscreen (F11)."),
-        ("Concourse / Bar TVs", "Overhead center concourse", "Connected via Chromecast or smart TV browser running ?mode=leaderboard for live spectator standings."),
-        ("Cash Box & Receipts", "Beside TD Laptop (secure)", "Holds cash entries, checks, and side pot pools. Must balance against console totals."),
-        ("Network / Hotspot", "Pre-tested before queue opens", "Ensure connection stability. Keep a staff cellular hotspot on standby for failover.")
-    ]
-    for row_idx, row_data in enumerate(hw_rows, start=1):
-        for col_idx, val in enumerate(row_data):
-            cell = t_hw.cell(row_idx, col_idx)
-            cell.width = hw_widths[col_idx]
-            set_cell_background(cell, "F8FAFC" if row_idx % 2 == 1 else "FFFFFF")
-            set_cell_padding(cell, 100, 100, 140, 140)
-            p = cell.paragraphs[0]
-            p.paragraph_format.line_spacing = 1.1
-            p.paragraph_format.space_after = Pt(2)
-            r = p.add_run(val)
-            r.font.size = Pt(9.5)
-
-    doc.add_paragraph().paragraph_format.space_after = Pt(6)
-
     h_novice = doc.add_heading(level=1)
-    h_novice.add_run("3. First-Time Tournament Director (TD) Quickstart Guide").font.color.rgb = PRIMARY
+    h_novice.add_run("2. First-Time Tournament Director (TD) Quickstart Guide").font.color.rgb = PRIMARY
     guide_text = generate_first_time_td_guide()
     p_guide = doc.add_paragraph(guide_text)
     p_guide.paragraph_format.space_after = Pt(8)
@@ -2048,10 +2347,10 @@ def generate_sop_pdf() -> bytes:
     story.append(Paragraph("1. First-Time Tournament Director (TD) Quickstart Walkthrough", h2_style))
     story.append(Paragraph(
         "<b>Step 1 (T-60 Setup):</b> Connect desk monitor to laptop (Win+P -> Extend). Open ?mode=kiosk on secondary monitor (F11). Open ?mode=leaderboard on concourse TVs.<br/>"
-        "<b>Step 2 (T-45 Roster & Balancing):</b> Ingest roster in Module 1. Use the 'Automated Lane Balancer' tab to distribute bowlers across active lanes with team grouping.<br/>"
-        "<b>Step 3 (T-30 Bowler Line):</b> Select bowler in Module 1 -> Tab 3. Collect fee, click 'Mark Paid & Display on Customer Screen'. Bowler scans QR code on kiosk screen.<br/>"
-        "<b>Step 4 (T-15 Floor Scorer Setup):</b> Floor TDs scan ?mode=scorer QR code on their phones, set a 4-digit PIN, and claim lane pairs.<br/>"
-        "<b>Step 5 (Scoring with PIN Concurrence):</b> Roving TDs input pair scores on mobile (or snap overhead screens with camera OCR) and enter their secret PIN to lock them. Central Desk tracks verification in Module 2 Lane Radar Matrix.<br/>"
+        "<b>Step 2 (T-45 Roster & Balancing):</b> Ingest roster in Module 1. Use 'Automated Lane Balancer' to distribute bowlers across active lanes with team grouping. Print the PDF Lane Assignment Sheet.<br/>"
+        "<b>Step 3 (T-30 Entrance & Desk Check-In):</b> Post the Express Entrance QR (?mode=self_checkin). Pre-paid bowlers check in automatically; unpaid or bracket bowlers are directed to the desk.<br/>"
+        "<b>Step 4 (T-15 Floor Scorer Setup):</b> Floor TDs scan ?mode=scorer QR code on their phones, set an Argon2 4-digit PIN, and claim lane pairs.<br/>"
+        "<b>Step 5 (Scoring with PIN Concurrence):</b> Roving TDs input pair scores on mobile (or snap overhead screens with camera OCR) and enter their secret PIN to lock them.<br/>"
         "<b>Step 6 (Finals & Archive):</b> Go to Module 3. Select match winners for top 5 stepladder, declare Champion, and click 'Archive Tournament & Save Official PDF'.",
         body_style
     ))
@@ -2180,8 +2479,8 @@ if nav == "1. Event & Roster Intake":
     intake_tab_settings, intake_tab_entry, intake_tab_terminal, intake_tab_pins = st.tabs([
         "⚙️ Event Settings & CHUSBC Presets",
         "📝 Roster Ingestion & 40-Lane Balancing",
-        "💳 Desk Intake & Payment Terminal",
-        "🔐 Floor TD PIN Registry"
+        "💳 Desk Intake & Entrance QR Posters",
+        "🔐 Floor TD PIN Registry (Argon2)"
     ])
 
     with intake_tab_settings:
@@ -2446,7 +2745,7 @@ Input:
             field_size = len(st.session_state.roster)
 
             st.markdown(f"""
-            <div style="background-color: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 12px 16px; margin-label: 12px 0; font-size: 14px;">
+            <div style="background-color: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 12px 16px; margin: 12px 0; font-size: 14px;">
                 Active Pairs: <b>{len(parsed_pairs)} pairs</b> ({len(parsed_pairs)*2} lanes) | 
                 Current Roster: <b>{field_size} bowlers</b> | 
                 Max Capacity: <b>{total_capacity} bowlers</b> | 
@@ -2482,6 +2781,17 @@ Input:
                             st.success(f"Successfully balanced {field_size} bowlers across {len(parsed_pairs)} lane pairs with team assignments locked!")
                             st.rerun()
 
+            if not st.session_state.roster.empty:
+                st.write("")
+                pdf_roster_bytes = export_lane_assignments_pdf(st.session_state.roster, st.session_state.tournament_config)
+                st.download_button(
+                    "📄 Download Printable PDF Lane Assignment Roster (Grouped by Pair & Team)",
+                    data=pdf_roster_bytes,
+                    file_name=f"{st.session_state.tournament_config['name'].replace(' ', '_')}_Lane_Assignments.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+
             if not st.session_state.roster.empty and parsed_pairs:
                 st.markdown("#### 📍 Active House Layout Matrix")
                 matrix_cols = st.columns(4)
@@ -2512,21 +2822,33 @@ Input:
                             st.markdown("</div>", unsafe_allow_html=True)
 
     with intake_tab_terminal:
-        st.subheader("Payment Gate & QR Check-In Terminal")
-        st.caption("Bowlers present at the desk. Confirm payment before revealing the official check-in QR code.")
+        st.subheader("Payment Gate, Entrance QR & Check-In Terminal")
+        st.caption("Manage desk walk-ups, customer-facing monitor displays, and entrance self-check-in QR codes.")
 
         detected_base = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
         kiosk_launch_url = f"{detected_base}/?mode=kiosk"
+        self_checkin_url = f"{detected_base}/?mode=self_checkin"
+        bowler_portal_url = f"{detected_base}/?mode=bowler_portal"
 
-        col_kiosk_btn, col_kiosk_clear = st.columns([2, 1])
-        with col_kiosk_btn:
-            st.link_button("🖥️ Open External Bowler Kiosk Window", kiosk_launch_url, use_container_width=True)
-            st.caption("Drag that window to the monitor facing the bowlers and press F11 for fullscreen.")
-        with col_kiosk_clear:
-            if st.button("🔄 Reset External Display (Show Welcome)", use_container_width=True):
+        col_qr1, col_qr2, col_qr3 = st.columns(3)
+        with col_qr1:
+            st.markdown("##### 🚪 Entrance Self-Check-In QR")
+            st.image(generate_qr_image(self_checkin_url), width=140)
+            st.link_button("🔗 Open Entrance Check-In", self_checkin_url, use_container_width=True)
+            st.caption("Pre-paid bowlers auto-check in; unpaid or bracket bowlers are directed to desk.")
+        with col_qr2:
+            st.markdown("##### 📊 Bowler Live Portal QR")
+            st.image(generate_qr_image(bowler_portal_url), width=140)
+            st.link_button("🔗 Open Bowler Portal", bowler_portal_url, use_container_width=True)
+            st.caption("Read-only portal for bowlers to view their rank, lane, and scores.")
+        with col_qr3:
+            st.markdown("##### 🖥️ Desk Customer Monitor")
+            st.link_button("🖥️ Launch Customer Kiosk", kiosk_launch_url, use_container_width=True)
+            if st.button("🔄 Reset Customer Screen", use_container_width=True):
                 clear_kiosk_state()
                 log_audit_event("TD reset customer kiosk display to idle banner.")
                 st.rerun()
+            st.caption("Drag to secondary monitor facing the bowler line (F11).")
 
         st.divider()
 
@@ -2655,15 +2977,16 @@ Input:
                                 st.rerun()
 
     with intake_tab_pins:
-        st.subheader("🔐 Floor TD Security PIN Registry")
+        st.subheader("🔐 Floor TD Security PIN Registry (Argon2id)")
         st.caption("Manage secret 4-digit PINs assigned to roving board members for on-lane score signing and concurrence.")
 
         current_pins = st.session_state.get("td_pins", {})
         if current_pins:
             st.markdown("#### Authorized Floor Officials (Active Tournament):")
             pin_rows = []
-            for td_n in current_pins.keys():
-                pin_rows.append({"Floor Official": td_n, "PIN Status": "🟢 Established & Locked"})
+            for td_n, p_hash in current_pins.items():
+                algo = "Argon2id" if str(p_hash).startswith("$argon2") else "SHA-256 (Legacy)"
+                pin_rows.append({"Floor Official": td_n, "Encryption": algo, "PIN Status": "🟢 Established & Locked"})
             st.dataframe(pd.DataFrame(pin_rows), use_container_width=True)
         else:
             st.info("No floor officials have established a PIN yet for this tournament.")
@@ -2673,15 +2996,15 @@ Input:
         with st.form("admin_pin_override_form"):
             override_name = st.text_input("Official Full Name:", placeholder="e.g. Dave Miller").strip()
             new_pin = st.text_input("Assign / Reset 4-Digit PIN:", type="password", max_chars=6).strip()
-            submit_override = st.form_submit_button("Lock / Reset Official PIN", type="primary", use_container_width=True)
+            submit_override = st.form_submit_button("Lock / Reset Official PIN (Argon2id)", type="primary", use_container_width=True)
 
             if submit_override:
                 if not override_name or len(new_pin) < 4:
                     st.error("Official name and at least 4 digits required.")
                 else:
                     register_td_pin(override_name, new_pin)
-                    log_audit_event(f"Admin reset security PIN for floor official '{override_name}'.")
-                    st.success(f"Security PIN for '{override_name}' updated and synchronized!")
+                    log_audit_event(f"Admin reset Argon2id security PIN for floor official '{override_name}'.")
+                    st.success(f"Security PIN for '{override_name}' hashed with Argon2id and synchronized!")
                     st.rerun()
 
 # ---------------------------------------------------------
@@ -2707,7 +3030,7 @@ elif nav == "2. Scores & Standings":
             scorer_qr = generate_qr_image(scorer_url)
             st.image(scorer_qr, caption="Scan with phone camera to score lanes", width=160)
             st.link_button("📲 Open Mobile Scorer Portal", scorer_url, use_container_width=True)
-            st.caption("Floor officials enter scores with Camera Snapshot OCR & PIN concurrence.")
+            st.caption("Floor officials enter scores with Camera Snapshot OCR & Argon2 PIN concurrence.")
 
     with col_deploy_l:
         with st.expander("📺 Concourse TV & Overhead Leaderboard", expanded=False):
@@ -3362,11 +3685,9 @@ Current Tournament Setup:
 - Current Field Size: {len(st.session_state.roster)} bowlers
 
 Rules & Architecture:
-- 4 tiers: TD Console, External Kiosk (?mode=kiosk), Bowler Mobile Check-in (?mode=checkin), Mobile Floor Scorer (?mode=scorer), and Public Concourse Leaderboard (?mode=leaderboard).
-- Payment gate: Unpaid bowlers are locked from check-in until TD marks paid (Cash/Check/Venmo) and pushes to customer screen.
-- Scoring: Deterministic {int(st.session_state.tournament_config.get('hdcp_pct', 0.90)*100)}% of {st.session_state.tournament_config.get('hdcp_base', 220)} HDCP, cut to top 5 stepladder, permanent archiving to Google Sheets.
-- Floor Scorers: Roving TDs input & verify scores at lanes via ?mode=scorer with camera snapshot OCR and secret 4-digit PIN concurrence; Central Desk tracks status via Lane Radar Matrix.
-- House Matrix: Team-aware automated balancing across up to 40 lanes.
+- 6 tiers: TD Console, External Kiosk (?mode=kiosk), Express Entrance Self-Check-In (?mode=self_checkin), Read-Only Bowler Portal (?mode=bowler_portal), Mobile Floor Scorer (?mode=scorer), and Public Concourse Leaderboard (?mode=leaderboard).
+- Cryptographic Security: Argon2id password and 4-digit PIN hashing.
+- Payment & Bracket Gate: Pre-paid bowlers check in automatically at the door unless they want brackets; unpaid or bracket bowlers are directed to the desk.
 
 User Question:
 {coach_question}
@@ -3420,12 +3741,12 @@ elif nav == "8. TD Audit Log":
         st.dataframe(pd.DataFrame(st.session_state.audit_trail), use_container_width=True)
 
 # ---------------------------------------------------------
-# MODULE 9: ADMIN USER MANAGEMENT
+# MODULE 9: ADMIN USER MANAGEMENT (ARGON2ID)
 # ---------------------------------------------------------
 elif "TD User Management" in nav:
     st.markdown("""
     <div class="brand-banner">
-        <h1>Tournament Director & Staff Management</h1>
+        <h1>Tournament Director & Staff Management (Argon2id)</h1>
         <p>Admin console synchronized with Google Sheets for permanent account storage.</p>
     </div>
     """, unsafe_allow_html=True)
@@ -3442,7 +3763,7 @@ elif "TD User Management" in nav:
             real_name = row["name"]
             with st.container():
                 st.markdown(f"""
-                <div style="background-color: #1e293b; padding: 14px 18px; border-radius: 8px; border: 1px solid #ec489950; margin-bottom: 12px;">
+                <div style="background-color: #1e293b; padding: 14px 18px; border-radius: 8px; border: 1.5px solid #ec489950; margin-bottom: 12px;">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <span style="font-size: 16px; font-weight: 700; color: #f8fafc;">{real_name} (<code style="color: #38bdf8;">{uname}</code>)</span>
                         <span class="badge-pending">PENDING APPROVAL</span>
@@ -3483,6 +3804,7 @@ elif "TD User Management" in nav:
         "Username": active_df["username"],
         "Full Name": active_df["name"],
         "Role": active_df["role"].str.upper(),
+        "Hash Type": active_df["password_hash"].apply(lambda h: "Argon2id" if str(h).startswith("$argon2") else "SHA-256 (Auto-Upgrades)"),
         "Must Reset Pwd": active_df["must_change_password"].apply(lambda x: "YES" if bool(x) else "NO"),
         "Registered": active_df["created_at"]
     })
@@ -3500,7 +3822,7 @@ elif "TD User Management" in nav:
             new_pw = st.text_input("Initial Password:", type="password").strip()
             new_role = st.selectbox("Role Assignment:", ["td", "admin"])
             force_change = st.checkbox("Require pwd change on 1st login", value=True)
-            submit_td = st.form_submit_button("Create Account Directly", type="primary", use_container_width=True)
+            submit_td = st.form_submit_button("Create Account Directly (Argon2)", type="primary", use_container_width=True)
 
             if submit_td:
                 latest_df = fetch_users_df()
@@ -3512,7 +3834,7 @@ elif "TD User Management" in nav:
                     new_entry = pd.DataFrame([{
                         "username": new_user,
                         "name": new_name,
-                        "password_hash": hash_password(new_pw),
+                        "password_hash": hash_secret(new_pw),
                         "role": new_role,
                         "status": "active",
                         "must_change_password": force_change,
@@ -3521,8 +3843,8 @@ elif "TD User Management" in nav:
                     updated_df = pd.concat([latest_df, new_entry], ignore_index=True)
                     write_users_df(updated_df)
                     flag_note = "with mandatory password change" if force_change else "without mandatory password change"
-                    log_audit_event(f"Admin registered new user: '{new_user}' ({new_name}) as {new_role} {flag_note}.")
-                    st.success(f"Official '{new_name}' registered.")
+                    log_audit_event(f"Admin registered new user: '{new_user}' ({new_name}) as {new_role} {flag_note} (Argon2id).")
+                    st.success(f"Official '{new_name}' registered with Argon2id.")
                     st.rerun()
 
     with col_reset:
@@ -3532,7 +3854,7 @@ elif "TD User Management" in nav:
             target_user = st.selectbox("Select Account to Reset:", active_users)
             new_admin_pw = st.text_input("New Password:", type="password").strip()
             target_force = st.checkbox("Require user to change on next login", value=True)
-            submit_reset = st.form_submit_button("Update Password", use_container_width=True)
+            submit_reset = st.form_submit_button("Update Password (Argon2)", use_container_width=True)
 
             if submit_reset:
                 if not new_admin_pw:
@@ -3543,11 +3865,11 @@ elif "TD User Management" in nav:
                     latest_df = fetch_users_df()
                     target_idx = latest_df.index[latest_df["username"] == target_user].tolist()
                     if target_idx:
-                        latest_df.loc[target_idx[0], "password_hash"] = hash_password(new_admin_pw)
+                        latest_df.loc[target_idx[0], "password_hash"] = hash_secret(new_admin_pw)
                         latest_df.loc[target_idx[0], "must_change_password"] = target_force
                         write_users_df(latest_df)
-                    log_audit_event(f"Admin reset password for user '{target_user}'.")
-                    st.success(f"Password for '{target_user}' updated.")
+                    log_audit_event(f"Admin reset password for user '{target_user}' (Argon2id).")
+                    st.success(f"Password for '{target_user}' updated with Argon2id.")
                     st.rerun()
 
     with col_del:
@@ -3604,7 +3926,7 @@ if st.session_state.authenticated and st.session_state.session_initialized:
                 preset_q = "A bowler just used an Abralon pad to sand their ball between game 1 and game 2. What is the mandatory penalty under USBC Rule 17?"
         with col_q2:
             if st.button("Weight Holes (R18)", use_container_width=True, key="quick_r18"):
-                preset_q = "An opponent protests that a bowler has an extra un-gripped balance hole in their ball. What does USBC Rule 18 require?"
+                preset_q = "An opponent protests that a bowler has an unfilled balance hole or a hole without a gripping finger. What does USBC Rule 18 require?"
             if st.button("Youth SMART (R400)", use_container_width=True, key="quick_r400"):
                 preset_q = "Can a youth bowler receive cash or a gift card prize in this event under USBC Rule 400?"
 
