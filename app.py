@@ -130,7 +130,7 @@ TARGET_ADMIN_HASH = "7e754bbef03e005db3d5089312104526685ba227e7f8e77a1fc9b6460fa
 if "user_registry" not in st.session_state:
     st.session_state.user_registry = {}
 
-# Ensure skramer is initialized and approved
+# Ensure skramer is initialized and active
 if "skramer" not in st.session_state.user_registry:
     st.session_state.user_registry["skramer"] = {
         "name": "Scott Kramer",
@@ -138,8 +138,7 @@ if "skramer" not in st.session_state.user_registry:
         "role": "admin",
         "status": "active",
         "must_change_password": False,
-        "created_at": "Primary Admin",
-        "note": "Primary Association Administrator"
+        "created_at": "Primary Admin"
     }
 
 if "authenticated" not in st.session_state:
@@ -220,7 +219,6 @@ if not st.session_state.authenticated:
                                   user_info.get("password_hash") == hash_password(password_input))
 
                         if is_skramer or is_reg:
-                            # Verify approval status
                             user_status = user_info.get("status", "active")
                             if user_status == "pending":
                                 st.warning("Your account registration is currently pending review by an Administrator.")
@@ -243,14 +241,13 @@ if not st.session_state.authenticated:
                 with st.form("td_self_register"):
                     st.caption("Apply for Tournament Director access. An administrator must approve your application.")
                     req_user = st.text_input("Desired Username:").strip().lower()
-                    req_name = st.text_input("Full Legal / Association Name:").strip()
+                    req_name = st.text_input("Full Name:").strip()
                     req_pwd = st.text_input("Desired Password:", type="password").strip()
-                    req_note = st.text_area("Affiliation / Role Details:", placeholder="e.g., Harford Lanes TD, USBC Bronze Coach, Youth Committee").strip()
                     submit_req = st.form_submit_button("Submit Registration for Approval", use_container_width=True)
 
                     if submit_req:
                         if not req_user or not req_name or not req_pwd:
-                            st.error("Username, Name, and Password are all required.")
+                            st.error("Username, Full Name, and Password are all required.")
                         elif len(req_pwd) < 6:
                             st.error("Password must be at least 6 characters.")
                         elif req_user in st.session_state.user_registry:
@@ -262,8 +259,7 @@ if not st.session_state.authenticated:
                                 "role": "td",
                                 "status": "pending",
                                 "must_change_password": False,
-                                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                "note": req_note
+                                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
                             }
                             log_audit_event(f"New self-registration submitted: '{req_user}' ({req_name}). Pending approval.")
                             st.success("Registration submitted! An administrator will review and approve your account.")
@@ -860,7 +856,7 @@ elif "6. TD User Management" in nav:
                         <span class="badge-pending">PENDING APPROVAL</span>
                     </div>
                     <div style="font-size: 13px; color: #94a3b8; margin-top: 6px;">
-                        <strong>Submitted:</strong> {udata.get('created_at', 'Recent')} | <strong>Note:</strong> {udata.get('note', 'No note provided')}
+                        <strong>Submitted:</strong> {udata.get('created_at', 'Recent')}
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -893,8 +889,7 @@ elif "6. TD User Management" in nav:
                 "Full Name": udata["name"],
                 "Role": udata["role"].upper(),
                 "Must Reset Pwd": "YES" if udata.get("must_change_password", False) else "NO",
-                "Registered": udata.get("created_at", "System"),
-                "Note": udata.get("note", "")
+                "Registered": udata.get("created_at", "System")
             })
     st.dataframe(pd.DataFrame(active_list), use_container_width=True)
 
@@ -925,8 +920,7 @@ elif "6. TD User Management" in nav:
                         "role": new_role,
                         "status": "active",
                         "must_change_password": force_change,
-                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "note": "Created directly by Admin"
+                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
                     }
                     flag_note = "with mandatory password change" if force_change else "without mandatory password change"
                     log_audit_event(f"Admin registered new user: '{new_user}' ({new_name}) as {new_role} {flag_note}.")
