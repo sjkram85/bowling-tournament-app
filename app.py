@@ -4,6 +4,7 @@ import time
 import math
 import json
 import base64
+import random
 import hashlib
 from datetime import datetime
 import pandas as pd
@@ -253,10 +254,12 @@ if "roster" not in st.session_state:
     st.session_state.roster = pd.DataFrame([
         {"USBC ID": "11-12345", "Bowler": "Scott Kramer", "Average": 218, "Starting Lane": 1, "Game 1": 245, "Game 2": 238, "Game 3": 268, "Paid": True, "Checked_In": True},
         {"USBC ID": "11-23456", "Bowler": "Dave Miller", "Average": 205, "Starting Lane": 1, "Game 1": 210, "Game 2": 195, "Game 3": 215, "Paid": True, "Checked_In": True},
-        {"USBC ID": "11-34567", "Bowler": "Chris Reynolds", "Average": 195, "Starting Lane": 2, "Game 1": 188, "Game 2": 220, "Game 3": 202, "Paid": False, "Checked_In": False},
-        {"USBC ID": "11-45678", "Bowler": "Marcus Vance", "Average": 198, "Starting Lane": 2, "Game 1": 224, "Game 2": 215, "Game 3": 201, "Paid": False, "Checked_In": False},
+        {"USBC ID": "11-34567", "Bowler": "Chris Reynolds", "Average": 195, "Starting Lane": 2, "Game 1": 188, "Game 2": 220, "Game 3": 202, "Paid": True, "Checked_In": False},
+        {"USBC ID": "11-45678", "Bowler": "Marcus Vance", "Average": 198, "Starting Lane": 2, "Game 1": 224, "Game 2": 215, "Game 3": 201, "Paid": True, "Checked_In": False},
         {"USBC ID": "11-56789", "Bowler": "Elena Rostova", "Average": 215, "Starting Lane": 3, "Game 1": 257, "Game 2": 248, "Game 3": 222, "Paid": True, "Checked_In": False},
-        {"USBC ID": "11-67890", "Bowler": "Derek Jackson", "Average": 182, "Starting Lane": 3, "Game 1": 178, "Game 2": 195, "Game 3": 210, "Paid": False, "Checked_In": False},
+        {"USBC ID": "11-67890", "Bowler": "Derek Jackson", "Average": 182, "Starting Lane": 3, "Game 1": 178, "Game 2": 195, "Game 3": 210, "Paid": True, "Checked_In": False},
+        {"USBC ID": "11-78901", "Bowler": "Jason Taylor", "Average": 210, "Starting Lane": 4, "Game 1": 202, "Game 2": 235, "Game 3": 198, "Paid": True, "Checked_In": False},
+        {"USBC ID": "11-89012", "Bowler": "Sarah Jenkins", "Average": 188, "Starting Lane": 4, "Game 1": 195, "Game 2": 204, "Game 3": 212, "Paid": True, "Checked_In": False},
     ])
 
 if "Bowler_ID" in st.session_state.roster.columns and "USBC ID" not in st.session_state.roster.columns:
@@ -266,6 +269,9 @@ if "Bowler_ID" in st.session_state.roster.columns and "USBC ID" not in st.sessio
 for col, default in [("USBC ID", "N/A"), ("Paid", False), ("Checked_In", False)]:
     if col not in st.session_state.roster.columns:
         st.session_state.roster[col] = default
+
+if "brackets" not in st.session_state:
+    st.session_state.brackets = []
 
 def generate_qr_image(url: str) -> io.BytesIO:
     qr = qrcode.QRCode(
@@ -298,7 +304,6 @@ if query_params.get("mode") == "kiosk":
     </style>
     """, unsafe_allow_html=True)
 
-    # Read state directly from disk to guarantee cross-tab synchronization
     active_card = read_kiosk_state()
     detected_base = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
 
@@ -309,7 +314,6 @@ if query_params.get("mode") == "kiosk":
             with col_l2:
                 st.image(LOGO_PATH, width=160)
 
-        # 1. Active Check-in View on Customer Monitor
         if active_card is not None:
             b_name = active_card["name"]
             b_usbc = active_card["usbc_id"]
@@ -344,7 +348,6 @@ if query_params.get("mode") == "kiosk":
             """, unsafe_allow_html=True)
 
         else:
-            # 2. Idle Welcome View on Customer Monitor
             total = len(st.session_state.roster)
             checked = len(st.session_state.roster[st.session_state.roster["Checked_In"] == True])
             st.markdown(f"""
@@ -733,6 +736,33 @@ def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name
     buffer.seek(0)
     return buffer.getvalue()
 
+def resolve_bracket_match(b1_id: str, b2_id: str, game_col: str, bracket_type: str, roster_df: pd.DataFrame):
+    row1 = roster_df[roster_df["USBC ID"].astype(str) == str(b1_id)]
+    row2 = roster_df[roster_df["USBC ID"].astype(str) == str(b2_id)]
+    
+    if row1.empty or row2.empty:
+        return "-", 0, "-", 0, None
+
+    r1, r2 = row1.iloc[0], row2.iloc[0]
+    s1 = int(pd.to_numeric(r1.get(game_col, 0), errors="coerce") or 0)
+    s2 = int(pd.to_numeric(r2.get(game_col, 0), errors="coerce") or 0)
+    
+    if bracket_type == "Handicap":
+        h1 = calculate_handicap(int(pd.to_numeric(r1.get("Average", 200), errors="coerce") or 200))
+        h2 = calculate_handicap(int(pd.to_numeric(r2.get("Average", 200), errors="coerce") or 200))
+        t1, t2 = s1 + h1, s2 + h2
+    else:
+        t1, t2 = s1, s2
+
+    if t1 > t2:
+        winner_id = b1_id
+    elif t2 > t1:
+        winner_id = b2_id
+    else:
+        winner_id = b1_id if int(r1.get("Average", 0)) >= int(r2.get("Average", 0)) else b2_id
+
+    return r1["Bowler"], t1, r2["Bowler"], t2, winner_id
+
 # ---------------------------------------------------------
 # 8. SIDEBAR NAVIGATION
 # ---------------------------------------------------------
@@ -740,16 +770,17 @@ nav_options = [
     "1. Event & Roster Intake",
     "2. Scores & Standings",
     "3. Stepladder Finals",
-    "4. AI Rules Arbiter",
-    "5. Past Tournaments Archive 📂",
-    "6. TD Audit Log"
+    "4. Side Action: Brackets & Pots 💰",
+    "5. AI Rules Arbiter",
+    "6. Past Tournaments Archive 📂",
+    "7. TD Audit Log"
 ]
 
 users_df = fetch_users_df()
 pending_count = len(users_df[users_df["status"] == "pending"])
 
 if st.session_state.td_role == "admin":
-    label = f"7. TD User Management ⚙️ ({pending_count} pending)" if pending_count > 0 else "7. TD User Management ⚙️"
+    label = f"8. TD User Management ⚙️ ({pending_count} pending)" if pending_count > 0 else "8. TD User Management ⚙️"
     nav_options.append(label)
 
 with st.sidebar:
@@ -1024,7 +1055,6 @@ Input:
         st.subheader("Payment Gate & QR Check-In Terminal")
         st.caption("Bowlers present at the desk. Confirm payment before revealing the official check-in QR code.")
 
-        # Dual-monitor launch toolbar
         detected_base = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
         kiosk_launch_url = f"{detected_base}/?mode=kiosk"
 
@@ -1342,9 +1372,266 @@ elif nav == "3. Stepladder Finals":
                     st.success("Official PDF and tournament record permanently archived to Google Sheets!")
 
 # ---------------------------------------------------------
-# MODULE 4: AI RULES ARBITER
+# MODULE 4: SIDE ACTION: 8-BOWLER BRACKETS & SIDE POTS
 # ---------------------------------------------------------
-elif nav == "4. AI Rules Arbiter":
+elif "Brackets & Pots" in nav:
+    st.markdown("""
+    <div class="brand-banner">
+        <h1>Side Action: 8-Bowler Brackets & Side Pots</h1>
+        <p>Manage single-elimination bracket trees and high-game side pot payouts synchronized with live scores.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    tab_brackets, tab_pots = st.tabs(["🌳 8-Bowler Elimination Brackets", "💵 High-Game & Series Side Pots"])
+
+    # TAB 1: 8-BOWLER BRACKETS
+    with tab_brackets:
+        st.subheader("Generate & Manage Elimination Brackets")
+        
+        col_b_cfg1, col_b_cfg2, col_b_cfg3 = st.columns([1, 1, 1])
+        with col_b_cfg1:
+            b_type = st.selectbox("Bracket Division:", ["Scratch", "Handicap"])
+        with col_b_cfg2:
+            num_brackets_to_gen = st.number_input("Number of Brackets to Seed:", min_value=1, max_value=20, value=1)
+        with col_b_cfg3:
+            bracket_cost = st.number_input("Entry Fee per Bowler ($):", value=5, step=1)
+
+        eligible_bowlers = st.session_state.roster[st.session_state.roster["Paid"] == True]["USBC ID"].tolist()
+
+        col_gen, col_clear = st.columns([2, 1])
+        with col_gen:
+            if st.button("🎲 Generate & Seed Brackets", type="primary", use_container_width=True):
+                if len(eligible_bowlers) < 8:
+                    st.error(f"Cannot generate an 8-bowler bracket. Only {len(eligible_bowlers)} paid bowlers available (minimum 8 required).")
+                else:
+                    for _ in range(num_brackets_to_gen):
+                        sampled = random.sample(eligible_bowlers, 8) if len(eligible_bowlers) >= 8 else eligible_bowlers[:8]
+                        new_bracket = {
+                            "id": f"B-{len(st.session_state.brackets) + 1:02d}",
+                            "type": b_type,
+                            "fee": bracket_cost,
+                            "seeds": sampled,
+                            "created_at": datetime.now().strftime("%H:%M")
+                        }
+                        st.session_state.brackets.append(new_bracket)
+                    log_audit_event(f"Generated {num_brackets_to_gen} {b_type} 8-bowler bracket(s).")
+                    st.success(f"Generated {num_brackets_to_gen} bracket(s) successfully.")
+                    st.rerun()
+
+        with col_clear:
+            if st.button("🗑️ Reset All Brackets", use_container_width=True):
+                st.session_state.brackets = []
+                log_audit_event("TD cleared all bracket records.")
+                st.rerun()
+
+        st.divider()
+
+        if not st.session_state.brackets:
+            st.info("No active brackets generated yet. Choose division and click 'Generate & Seed Brackets'.")
+        else:
+            for b_idx, brk in enumerate(st.session_state.brackets):
+                b_id = brk["id"]
+                b_mode = brk["type"]
+                seeds = brk["seeds"]
+
+                pool = brk["fee"] * 8
+                payout_1st = int(pool * 0.625)
+                payout_2nd = int(pool * 0.25)
+                payout_exp = pool - (payout_1st + payout_2nd)
+
+                st.markdown(f"""
+                <div style="background-color: #1e293b; border: 1px solid #334155; border-left: 4px solid #38bdf8; border-radius: 8px; padding: 12px 18px; margin-bottom: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: baseline;">
+                        <h3 style="margin: 0; color: #f8fafc;">Bracket #{b_id} — <span style="color: #38bdf8;">{b_mode.upper()}</span></h3>
+                        <span style="font-size: 14px; color: #34d399; font-weight: 700;">1st: ${payout_1st} | 2nd: ${payout_2nd} | Exp: ${payout_exp}</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # Round 1 (Game 1)
+                r1_m1_b1, r1_m1_s1, r1_m1_b2, r1_m1_s2, r1_m1_win = resolve_bracket_match(seeds[0], seeds[7], "Game 1", b_mode, st.session_state.roster)
+                r1_m2_b1, r1_m2_s1, r1_m2_b2, r1_m2_s2, r1_m2_win = resolve_bracket_match(seeds[3], seeds[4], "Game 1", b_mode, st.session_state.roster)
+                r1_m3_b1, r1_m3_s1, r1_m3_b2, r1_m3_s2, r1_m3_win = resolve_bracket_match(seeds[2], seeds[5], "Game 1", b_mode, st.session_state.roster)
+                r1_m4_b1, r1_m4_s1, r1_m4_b2, r1_m4_s2, r1_m4_win = resolve_bracket_match(seeds[1], seeds[6], "Game 1", b_mode, st.session_state.roster)
+
+                # Round 2 (Game 2)
+                r2_m1_b1, r2_m1_s1, r2_m1_b2, r2_m1_s2, r2_m1_win = resolve_bracket_match(r1_m1_win, r1_m2_win, "Game 2", b_mode, st.session_state.roster)
+                r2_m2_b1, r2_m2_s1, r2_m2_b2, r2_m2_s2, r2_m2_win = resolve_bracket_match(r1_m3_win, r1_m4_win, "Game 2", b_mode, st.session_state.roster)
+
+                # Round 3 (Game 3)
+                champ_b1, champ_s1, champ_b2, champ_s2, champ_win = resolve_bracket_match(r2_m1_win, r2_m2_win, "Game 3", b_mode, st.session_state.roster)
+
+                col_r1, col_r2, col_r3, col_champ = st.columns([3, 3, 3, 2])
+
+                with col_r1:
+                    st.caption("Game 1 (Quarterfinals)")
+                    st.markdown(f"""
+                    <div style="background-color: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px; margin-bottom: 6px; font-size: 13px;">
+                        <div><b>{r1_m1_b1}</b>: {r1_m1_s1}</div>
+                        <div><b>{r1_m1_b2}</b>: {r1_m1_s2}</div>
+                    </div>
+                    <div style="background-color: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px; margin-bottom: 6px; font-size: 13px;">
+                        <div><b>{r1_m2_b1}</b>: {r1_m2_s1}</div>
+                        <div><b>{r1_m2_b2}</b>: {r1_m2_s2}</div>
+                    </div>
+                    <div style="background-color: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px; margin-bottom: 6px; font-size: 13px;">
+                        <div><b>{r1_m3_b1}</b>: {r1_m3_s1}</div>
+                        <div><b>{r1_m3_b2}</b>: {r1_m3_s2}</div>
+                    </div>
+                    <div style="background-color: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px; font-size: 13px;">
+                        <div><b>{r1_m4_b1}</b>: {r1_m4_s1}</div>
+                        <div><b>{r1_m4_b2}</b>: {r1_m4_s2}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                with col_r2:
+                    st.caption("Game 2 (Semifinals)")
+                    st.markdown(f"""
+                    <div style="background-color: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 12px 8px; margin: 18px 0 28px 0; font-size: 13px;">
+                        <div><b>{r2_m1_b1}</b>: {r2_m1_s1}</div>
+                        <div><b>{r2_m1_b2}</b>: {r2_m1_s2}</div>
+                    </div>
+                    <div style="background-color: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 12px 8px; font-size: 13px;">
+                        <div><b>{r2_m2_b1}</b>: {r2_m2_s1}</div>
+                        <div><b>{r2_m2_b2}</b>: {r2_m2_s2}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                with col_r3:
+                    st.caption("Game 3 (Championship)")
+                    st.markdown(f"""
+                    <div style="background-color: #0f172a; border: 2px solid #38bdf8; border-radius: 6px; padding: 20px 8px; margin-top: 52px; font-size: 14px;">
+                        <div style="color: {'#34d399' if champ_win == r2_m1_win else '#f8fafc'}; font-weight: 700;">{champ_b1}: {champ_s1}</div>
+                        <div style="color: {'#34d399' if champ_win == r2_m2_win else '#f8fafc'}; font-weight: 700;">{champ_b2}: {champ_s2}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                with col_champ:
+                    st.caption("Payout Results")
+                    winner_name = champ_b1 if champ_win == r2_m1_win else champ_b2
+                    runner_name = champ_b2 if champ_win == r2_m1_win else champ_b1
+                    st.markdown(f"""
+                    <div style="background-color: #10b98120; border: 1px solid #10b981; border-radius: 8px; padding: 14px 10px; margin-top: 48px; text-align: center;">
+                        <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700;">1st Place (${payout_1st})</span>
+                        <div style="font-size: 15px; font-weight: 800; color: #34d399; margin: 2px 0;">{winner_name}</div>
+                        <hr style="border-color: #334155; margin: 8px 0;"/>
+                        <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700;">2nd Place (${payout_2nd})</span>
+                        <div style="font-size: 13px; font-weight: 700; color: #cbd5e1;">{runner_name}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                st.divider()
+
+    # TAB 2: HIGH-GAME & SERIES POTS
+    with tab_pots:
+        st.subheader("High-Game & Series Pots Engine")
+        st.caption("Select participants who bought into the side pot ($10 standard buy-in: $3 Game 1, $3 Game 2, $3 Game 3, $1 Series).")
+
+        pot_fee = st.number_input("Side Pot Entry Fee ($):", value=10, min_value=1, step=1)
+        
+        paid_roster = st.session_state.roster[st.session_state.roster["Paid"] == True]
+        all_paid_names = paid_roster["Bowler"].tolist()
+
+        enrolled_bowlers = st.multiselect(
+            "Bowlers Entered in Side Pot:",
+            options=all_paid_names,
+            default=all_paid_names
+        )
+
+        pot_count = len(enrolled_bowlers)
+        total_pot = pot_count * pot_fee
+
+        p_g1 = round(total_pot * 0.30, 2)
+        p_g2 = round(total_pot * 0.30, 2)
+        p_g3 = round(total_pot * 0.30, 2)
+        p_ser = round(total_pot * 0.10, 2)
+
+        c_p1, c_p2, c_p3, c_p4 = st.columns(4)
+        with c_p1:
+            st.metric("Game 1 Pot", f"${p_g1:,.2f}")
+        with c_p2:
+            st.metric("Game 2 Pot", f"${p_g2:,.2f}")
+        with c_p3:
+            st.metric("Game 3 Pot", f"${p_g3:,.2f}")
+        with c_p4:
+            st.metric("Series Pot", f"${p_ser:,.2f}")
+
+        if enrolled_bowlers:
+            pot_df = paid_roster[paid_roster["Bowler"].isin(enrolled_bowlers)].copy()
+            for col in ["Game 1", "Game 2", "Game 3", "Average"]:
+                pot_df[col] = pd.to_numeric(pot_df[col], errors="coerce").fillna(0).astype(int)
+
+            pot_df["HDCP_Per_Game"] = pot_df["Average"].apply(calculate_handicap)
+            pot_df["G1_HDCP"] = pot_df["Game 1"] + pot_df["HDCP_Per_Game"]
+            pot_df["G2_HDCP"] = pot_df["Game 2"] + pot_df["HDCP_Per_Game"]
+            pot_df["G3_HDCP"] = pot_df["Game 3"] + pot_df["HDCP_Per_Game"]
+            pot_df["Series_Scratch"] = pot_df["Game 1"] + pot_df["Game 2"] + pot_df["Game 3"]
+            pot_df["Series_HDCP"] = pot_df["Series_Scratch"] + (pot_df["HDCP_Per_Game"] * 3)
+
+            pot_mode = st.radio("Display Pot Standings By:", ["Handicap", "Scratch"], horizontal=True)
+
+            g1_col = "G1_HDCP" if pot_mode == "Handicap" else "Game 1"
+            g2_col = "G2_HDCP" if pot_mode == "Handicap" else "Game 2"
+            g3_col = "G3_HDCP" if pot_mode == "Handicap" else "Game 3"
+            ser_col = "Series_HDCP" if pot_mode == "Handicap" else "Series_Scratch"
+
+            max_g1 = pot_df[g1_col].max()
+            max_g2 = pot_df[g2_col].max()
+            max_g3 = pot_df[g3_col].max()
+            max_ser = pot_df[ser_col].max()
+
+            w_g1 = pot_df[pot_df[g1_col] == max_g1]["Bowler"].tolist()
+            w_g2 = pot_df[pot_df[g2_col] == max_g2]["Bowler"].tolist()
+            w_g3 = pot_df[pot_df[g3_col] == max_g3]["Bowler"].tolist()
+            w_ser = pot_df[pot_df[ser_col] == max_ser]["Bowler"].tolist()
+
+            st.write("")
+            st.markdown(f"### 🏆 Official Payout Leaders ({pot_mode})")
+
+            col_w1, col_w2, col_w3, col_w4 = st.columns(4)
+            with col_w1:
+                st.markdown(f"""
+                <div class="match-box">
+                    <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700;">Game 1 Winner</span>
+                    <div style="font-size: 18px; font-weight: 800; color: #38bdf8;">{', '.join(w_g1)}</div>
+                    <div style="font-size: 14px; color: #34d399; font-weight: 700; margin-top: 4px;">Score: {max_g1} (${p_g1 / max(len(w_g1), 1):,.2f}{' each' if len(w_g1) > 1 else ''})</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with col_w2:
+                st.markdown(f"""
+                <div class="match-box">
+                    <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700;">Game 2 Winner</span>
+                    <div style="font-size: 18px; font-weight: 800; color: #38bdf8;">{', '.join(w_g2)}</div>
+                    <div style="font-size: 14px; color: #34d399; font-weight: 700; margin-top: 4px;">Score: {max_g2} (${p_g2 / max(len(w_g2), 1):,.2f}{' each' if len(w_g2) > 1 else ''})</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with col_w3:
+                st.markdown(f"""
+                <div class="match-box">
+                    <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700;">Game 3 Winner</span>
+                    <div style="font-size: 18px; font-weight: 800; color: #38bdf8;">{', '.join(w_g3)}</div>
+                    <div style="font-size: 14px; color: #34d399; font-weight: 700; margin-top: 4px;">Score: {max_g3} (${p_g3 / max(len(w_g3), 1):,.2f}{' each' if len(w_g3) > 1 else ''})</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with col_w4:
+                st.markdown(f"""
+                <div class="match-box">
+                    <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700;">Series Winner</span>
+                    <div style="font-size: 18px; font-weight: 800; color: #38bdf8;">{', '.join(w_ser)}</div>
+                    <div style="font-size: 14px; color: #34d399; font-weight: 700; margin-top: 4px;">Score: {max_ser} (${p_ser / max(len(w_ser), 1):,.2f}{' each' if len(w_ser) > 1 else ''})</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            st.write("")
+            st.dataframe(
+                pot_df[["Bowler", "Average", "HDCP_Per_Game", "Game 1", "G1_HDCP", "Game 2", "G2_HDCP", "Game 3", "G3_HDCP", "Series_Scratch", "Series_HDCP"]],
+                use_container_width=True
+            )
+
+# ---------------------------------------------------------
+# MODULE 5: AI RULES ARBITER
+# ---------------------------------------------------------
+elif nav == "5. AI Rules Arbiter":
     st.markdown("""
     <div class="brand-banner">
         <h1>USBC & Tournament Rules Arbiter</h1>
@@ -1403,9 +1690,9 @@ Format:
                         st.error(f"Error querying Gemini: {err}")
 
 # ---------------------------------------------------------
-# MODULE 5: PAST TOURNAMENTS ARCHIVE (PERSISTENT PDF STORAGE)
+# MODULE 6: PAST TOURNAMENTS ARCHIVE (PERSISTENT PDF STORAGE)
 # ---------------------------------------------------------
-elif nav == "5. Past Tournaments Archive 📂":
+elif nav == "6. Past Tournaments Archive 📂":
     st.markdown("""
     <div class="brand-banner">
         <h1>Historical Tournament Archive</h1>
@@ -1459,9 +1746,9 @@ elif nav == "5. Past Tournaments Archive 📂":
                 st.divider()
 
 # ---------------------------------------------------------
-# MODULE 6: AUDIT LOG
+# MODULE 7: AUDIT LOG
 # ---------------------------------------------------------
-elif nav == "6. TD Audit Log":
+elif nav == "7. TD Audit Log":
     st.markdown("""
     <div class="brand-banner">
         <h1>Official Tournament Audit Log</h1>
@@ -1475,9 +1762,9 @@ elif nav == "6. TD Audit Log":
         st.dataframe(pd.DataFrame(st.session_state.audit_trail), use_container_width=True)
 
 # ---------------------------------------------------------
-# MODULE 7: ADMIN USER MANAGEMENT
+# MODULE 8: ADMIN USER MANAGEMENT
 # ---------------------------------------------------------
-elif "7. TD User Management" in nav:
+elif "TD User Management" in nav:
     st.markdown("""
     <div class="brand-banner">
         <h1>Tournament Director & Staff Management</h1>
@@ -1486,7 +1773,6 @@ elif "7. TD User Management" in nav:
     """, unsafe_allow_html=True)
 
     users_df = fetch_users_df()
-
     pending_df = users_df[users_df["status"] == "pending"]
 
     st.subheader(f"Account Requests Pending Approval ({len(pending_df)})")
