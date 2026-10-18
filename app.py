@@ -36,7 +36,7 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------
-# 1. PAGE SETUP & GLOBAL CUSTOM THEME
+# 1. PAGE SETUP & HIGH-VISIBILITY CONTRAST THEME
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="CHUSBC Tournament Desk Ops",
@@ -79,93 +79,166 @@ def clear_kiosk_state():
 
 st.markdown("""
 <style>
+    /* Global Base Canvas */
     .stApp {
         background-color: #0b1120;
+        color: #f8fafc !important;
     }
+
+    /* Primary Typography: Force high-visibility white across standard markdown */
+    h1, h2, h3, h4, h5, h6, p, span, div[data-testid="stMarkdownContainer"] p {
+        color: #f8fafc !important;
+    }
+    
+    /* Input Labels, Dropdown Titles & Form Selectors */
+    .stTextInput label, 
+    .stSelectbox label, 
+    .stNumberInput label, 
+    .stTextArea label, 
+    .stRadio label, 
+    .stFileUploader label,
+    .stMultiSelect label {
+        color: #ffffff !important;
+        font-weight: 700 !important;
+        font-size: 14.5px !important;
+        letter-spacing: 0.3px;
+        margin-bottom: 4px !important;
+    }
+
+    /* Helper Captions & Subtext */
+    .stCaption, small, .stCaption p, div[data-testid="stCaptionContainer"] {
+        color: #cbd5e1 !important; /* Soft, bright silver instead of dark gray */
+        font-size: 13.5px !important;
+        line-height: 1.4 !important;
+    }
+
+    /* Header Banner */
     .brand-banner {
         background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%);
-        border: 1px solid #1e40af;
+        border: 1.5px solid #38bdf8;
         border-radius: 12px;
-        padding: 20px 24px;
+        padding: 22px 26px;
         margin-bottom: 24px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
     }
     .brand-banner h1 {
-        color: #f8fafc;
+        color: #ffffff !important;
         margin: 0;
         font-size: 26px;
         font-weight: 800;
         letter-spacing: -0.5px;
     }
     .brand-banner p {
-        color: #94a3b8;
+        color: #e2e8f0 !important;
         margin: 6px 0 0 0;
-        font-size: 14px;
+        font-size: 15px;
     }
+
+    /* Stat Cards */
     .stat-card {
         background-color: #1e293b;
-        border: 1px solid #334155;
+        border: 1.5px solid #475569;
         border-radius: 10px;
         padding: 16px;
         text-align: center;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
     }
     .stat-value {
         font-size: 28px;
         font-weight: 800;
-        color: #38bdf8;
-        line-line: 1.1;
+        color: #38bdf8 !important;
+        line-height: 1.1;
     }
     .stat-label {
         font-size: 12px;
-        font-weight: 600;
-        color: #94a3b8;
+        font-weight: 700;
+        color: #f1f5f9 !important;
         text-transform: uppercase;
         margin-top: 4px;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.6px;
     }
+
+    /* Match & Card Callout Boxes */
+    .match-box {
+        background-color: #1e293b;
+        border: 1px solid #475569;
+        border-left: 4px solid #38bdf8;
+        border-radius: 8px;
+        padding: 16px;
+        margin-bottom: 14px;
+        color: #ffffff !important;
+    }
+    .match-box strong {
+        color: #38bdf8 !important;
+    }
+
+    /* Tab Navigation (Tabs along the top of each module) */
+    button[data-baseweb="tab"] {
+        color: #94a3b8 !important;
+        font-weight: 600 !important;
+        font-size: 15px !important;
+        background-color: transparent !important;
+    }
+    button[data-baseweb="tab"][aria-selected="true"] {
+        color: #38bdf8 !important;
+        font-weight: 800 !important;
+        border-bottom-color: #38bdf8 !important;
+    }
+
+    /* Sidebar Navigation Clarity */
+    section[data-testid="stSidebar"] {
+        background-color: #0f172a;
+        border-right: 1px solid #1e293b;
+    }
+    section[data-testid="stSidebar"] p, 
+    section[data-testid="stSidebar"] span, 
+    section[data-testid="stSidebar"] div {
+        color: #f1f5f9 !important;
+    }
+
+    /* Role Badges */
     .badge-admin {
-        background: #f59e0b20;
-        color: #fbbf24;
-        border: 1px solid #f59e0b50;
-        padding: 3px 8px;
+        background: #f59e0b25;
+        color: #fde047 !important;
+        border: 1px solid #f59e0b80;
+        padding: 4px 10px;
         border-radius: 6px;
         font-size: 12px;
-        font-weight: 700;
+        font-weight: 800;
         display: inline-block;
     }
     .badge-td {
-        background: #0284c720;
-        color: #38bdf8;
-        border: 1px solid #0284c750;
-        padding: 3px 8px;
+        background: #0284c725;
+        color: #7dd3fc !important;
+        border: 1px solid #0284c780;
+        padding: 4px 10px;
         border-radius: 6px;
         font-size: 12px;
-        font-weight: 700;
+        font-weight: 800;
         display: inline-block;
     }
     .badge-pending {
-        background: #ec489920;
-        color: #f472b6;
-        border: 1px solid #ec489950;
-        padding: 3px 8px;
+        background: #ec489925;
+        color: #f9a8d4 !important;
+        border: 1px solid #ec489980;
+        padding: 4px 10px;
         border-radius: 6px;
         font-size: 12px;
-        font-weight: 700;
+        font-weight: 800;
         display: inline-block;
     }
-    .match-box {
-        background-color: #1e293b;
-        border: 1px solid #334155;
-        border-left: 4px solid #38bdf8;
-        border-radius: 8px;
-        padding: 14px;
-        margin-bottom: 14px;
-    }
+
+    /* Action Buttons */
     div.stButton > button:first-child {
         border-radius: 8px;
-        font-weight: 600;
-        transition: all 0.2s ease;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+    }
+
+    /* Data Editor & Tables */
+    div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] {
+        border: 1px solid #334155;
+        border-radius: 8px;
     }
 </style>
 """, unsafe_allow_html=True)
