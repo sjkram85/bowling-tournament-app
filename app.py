@@ -891,7 +891,7 @@ if "brackets" not in st.session_state:
     st.session_state.brackets = []
 
 if "td_pins" not in st.session_state:
-    st.session_state.td_pins = []
+    st.session_state.td_pins = {}
 
 if "session_initialized" not in st.session_state:
     st.session_state.session_initialized = False
@@ -912,7 +912,7 @@ def generate_qr_image(url: str) -> io.BytesIO:
     return buf
 
 # ---------------------------------------------------------
-# 10. DETERMINISTIC SCORING, FINANCIALS & SMART COMPLIANCE
+# 10. DETERMINISTIC SCORING, FINANCIALS & REPORT GENERATORS
 # ---------------------------------------------------------
 def calculate_handicap(avg: int, base: int = None, percentage: float = None) -> int:
     if base is None:
@@ -979,7 +979,6 @@ def compile_all_events_leaderboard(roster_df: pd.DataFrame) -> pd.DataFrame:
     }
     
     group_col = "USBC ID" if "USBC ID" in df.columns else "Bowler"
-    
     grouped = df.groupby(group_col).agg(agg_dict).reset_index()
     if group_col == "USBC ID":
         name_map = df.drop_duplicates(subset=["USBC ID"]).set_index("USBC ID")["Bowler"].to_dict()
@@ -1008,7 +1007,6 @@ def calculate_financial_summary(roster_df: pd.DataFrame, config: dict, lineage_p
 
     paid_df = roster_df[roster_df["Paid"] == True]
     paid_count = len(paid_df)
-    
     entry_fee_total = float(config.get("entry_fee", 50.0))
     lineage_total_per_bowler = lineage_per_game * games_count
     
@@ -1035,7 +1033,6 @@ def generate_smart_scholarship_csv(standings_df: pd.DataFrame, net_prize_fund: f
 
     weights = [0.40, 0.25, 0.15]
     payouts = []
-    
     for i in range(len(eligible)):
         if i < len(weights):
             amt = round(net_prize_fund * weights[i], 2)
@@ -1064,8 +1061,6 @@ def export_lane_assignments_pdf(roster_df: pd.DataFrame, config: dict) -> bytes:
     story = []
 
     title_style = ParagraphStyle("RosterTitle", parent=styles["Heading1"], fontSize=15, leading=18, textColor=colors.HexColor("#0f172a"), spaceAfter=2)
-    meta_style = ParagraphStyle("RosterMeta", parent=styles["Normal"], fontSize=8.5, textColor=colors.HexColor("#475569"), spaceAfter=12)
-
     header_text = f"""
     <b>Cecil Harford USBC — Lane Assignment & Concourse Check-In Roster</b><br/>
     <font size="8" color="#475569">
@@ -1081,7 +1076,6 @@ def export_lane_assignments_pdf(roster_df: pd.DataFrame, config: dict) -> bytes:
         story.append(header_table)
     else:
         story.append(Paragraph("Cecil Harford USBC — Lane Assignment Roster", title_style))
-        story.append(Paragraph(header_text, meta_style))
 
     if roster_df.empty:
         story.append(Paragraph("<b>No bowlers currently registered in roster.</b>", styles["Normal"]))
@@ -1096,7 +1090,6 @@ def export_lane_assignments_pdf(roster_df: pd.DataFrame, config: dict) -> bytes:
         df_sorted["Pair_Label"] = df_sorted.apply(lambda r: f"Lanes {int(r['Pair_Low'])} & {int(r['Pair_High'])}", axis=1)
 
         grouped = df_sorted.groupby(["Pair_Low", "Pair_Label"])
-
         for _, group_df in sorted(grouped, key=lambda x: x[0]):
             pair_name = group_df.iloc[0]["Pair_Label"]
             p_header_style = ParagraphStyle("PairHeader", parent=styles["Heading2"], fontSize=10.5, leading=13, textColor=colors.white, spaceBefore=6, spaceAfter=4)
@@ -1113,7 +1106,6 @@ def export_lane_assignments_pdf(roster_df: pd.DataFrame, config: dict) -> bytes:
                 avg = str(row["Average"])
                 paid = "Yes" if bool(row.get("Paid", False)) else "[  ]"
                 checked = "Yes" if bool(row.get("Checked_In", False)) else "[  ]"
-                
                 pair_table_data.append([lane, b_name, team, avg, paid, checked, "___ / ___ / ___"])
 
             pt = Table(pair_table_data, colWidths=[32, 130, 110, 32, 38, 48, 150])
@@ -1145,8 +1137,6 @@ def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name
     story = []
 
     title_style = ParagraphStyle("DocTitle", parent=styles["Heading1"], fontSize=15, leading=18, textColor=colors.HexColor("#0f172a"), spaceAfter=2)
-    meta_style = ParagraphStyle("DocMeta", parent=styles["Normal"], fontSize=8.5, textColor=colors.HexColor("#475569"), spaceAfter=10)
-
     champ_str = f" | <b>CHAMPION: {champion_name}</b>" if champion_name else ""
     header_text = f"""
     <b>Cecil Harford USBC — {config['name']}</b><br/>
@@ -1163,7 +1153,6 @@ def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name
         story.append(header_table)
     else:
         story.append(Paragraph(f"Cecil Harford USBC — {config['name']}", title_style))
-        story.append(Paragraph(f"Center: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}{champ_str}", meta_style))
 
     table_data = [["Pos", "Bowler Name", "USBC ID", "Avg", "HDCP", "G1", "G2", "G3", "Scratch", "Total"]]
     for rank, row in standings_df.reset_index().iterrows():
@@ -1187,6 +1176,111 @@ def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name
         ("FONTSIZE", (0, 1), (-1, -1), 8),
     ]))
     story.append(table)
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def export_tournament_summary_pdf(standings_df: pd.DataFrame, config: dict, champion_name: str, stepladder_results: dict) -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    story = []
+
+    title_style = ParagraphStyle("SummaryTitle", parent=styles["Heading1"], fontSize=15, leading=18, textColor=colors.HexColor("#0f172a"), spaceAfter=2)
+    meta_style = ParagraphStyle("SummaryMeta", parent=styles["Normal"], fontSize=8.5, textColor=colors.HexColor("#475569"), spaceAfter=12)
+    h2_style = ParagraphStyle("SummaryH2", parent=styles["Heading2"], fontSize=11, leading=14, textColor=colors.HexColor("#0284c7"), spaceBefore=8, spaceAfter=4)
+
+    header_text = f"""
+    <b>Cecil Harford USBC — Official Tournament Summary & Champion Report</b><br/>
+    <font size="8" color="#475569">
+    Event: {config['name']} | Host Center: {config['center']} | Division: {config['division']}<br/>
+    Official Champion: <b>{champion_name}</b> | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}
+    </font>
+    """
+
+    if HAS_LOGO:
+        logo_img = RLImage(LOGO_PATH, width=50, height=50)
+        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[60, 480])
+        header_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
+        story.append(header_table)
+    else:
+        story.append(Paragraph(f"Cecil Harford USBC — {config['name']}", title_style))
+        story.append(Paragraph(header_text, meta_style))
+
+    champ_data = [[Paragraph(f"<b>🏆 OFFICIAL CHAMPION CROWNED: {champion_name}</b><br/><font size='8.5' color='#0f172a'>Adjudicated automatically via USBC handicap grand totals and top-5 stepladder finals engine.</font>", styles["Normal"])]]
+    ct = Table(champ_data, colWidths=[540])
+    ct.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#10b98120")),
+        ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#10b981")),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+    ]))
+    story.append(ct)
+    story.append(Spacer(1, 8))
+
+    story.append(Paragraph("Championship Stepladder Finals Summary", h2_style))
+    step_data = [
+        ["Match Stage", "Competitors", "Winner & Score"],
+        ["Match 1 (4th vs 5th)", f"{stepladder_results.get('m1_p1', '')} vs {stepladder_results.get('m1_p2', '')}", f"{stepladder_results.get('m1_winner', '')} ({stepladder_results.get('m1_score', '')})"],
+        ["Match 2 (3rd vs M1 Winner)", f"{stepladder_results.get('m2_p1', '')} vs {stepladder_results.get('m2_winner_prev', '')}", f"{stepladder_results.get('m2_winner', '')} ({stepladder_results.get('m2_score', '')})"],
+        ["Semifinal (2nd vs M2 Winner)", f"{stepladder_results.get('semi_p1', '')} vs {stepladder_results.get('semi_winner_prev', '')}", f"{stepladder_results.get('semi_winner', '')} ({stepladder_results.get('semi_score', '')})"],
+        ["Championship (1st vs Semifinalist)", f"{stepladder_results.get('champ_p1', '')} vs {stepladder_results.get('champ_winner_prev', '')}", f"<b>{champion_name} ({stepladder_results.get('champ_score', '')})</b>"]
+    ]
+    st_table = Table(step_data, colWidths=[140, 220, 180])
+    st_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0284c7")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(st_table)
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Final Official Standings", h2_style))
+    table_data = [["Pos", "Bowler Name", "USBC ID", "Avg", "HDCP", "G1", "G2", "G3", "Scratch", "Total"]]
+    for rank, row in standings_df.reset_index().head(20).iterrows():
+        table_data.append([
+            str(row["Rank"]), str(row["Bowler"]), str(row.get("USBC ID", "-")),
+            str(row["Average"]), str(row.get("Total_HDCP", 0)), str(row.get("Game 1", 0)),
+            str(row.get("Game 2", 0)), str(row.get("Game 3", 0)), str(row.get("Scratch_Total", row.get("Scratch_Series", 0))), str(row["Grand_Total"])
+        ])
+
+    table = Table(table_data, colWidths=[24, 136, 52, 32, 38, 38, 38, 38, 52, 58])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 8),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("ALIGN", (2, 0), (-1, -1), "CENTER"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+        ("FONTSIZE", (0, 1), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    story.append(table)
+    story.append(Spacer(1, 14))
+
+    sig_data = [
+        ["Tournament Director Signature: ___________________________", "Date: ___________________"],
+        ["Association Official: _________________________________", "Sanction Verified: [ X ]"]
+    ]
+    s_table = Table(sig_data, colWidths=[340, 200])
+    s_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#475569")),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(s_table)
+
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
@@ -1222,40 +1316,17 @@ def resolve_bracket_match(b1_id: str, b2_id: str, game_col: str, bracket_type: s
 # SOP DOCUMENT GENERATORS (DOCX & PDF)
 # ---------------------------------------------------------
 def generate_first_time_td_guide() -> str:
-    if not ai_client:
-        return (
-            "1. T-60 Min: Connect external monitor to laptop. Extend display (Win+P). Open ?mode=kiosk on secondary display and hit F11.\n"
-            "2. T-45 Min: In Module 1 (Tab 2), ingest roster and run Automated Lane Balancer (handles up to 40 lanes, keeps teams together). Download printable PDF lane sheets.\n"
-            "3. T-30 Min: Post the Express Entrance QR (?mode=self_checkin) at the door. Pre-paid bowlers check in automatically; unpaid or bracket bowlers are routed to the desk.\n"
-            "4. T-15 Min: Floor TDs scan ?mode=scorer QR code on their phones, create their Argon2 4-digit PIN, and claim lane pairs.\n"
-            "5. Squad Active: Roving TDs snap overhead monitors with phone camera OCR, input scores, and lock with their secret PIN. Central Desk monitors verified lanes on the Radar Matrix.\n"
-            "6. Concourse TV & Bowler Portal: Cast ?mode=leaderboard on center TVs and let bowlers track ranks on ?mode=bowler_portal.\n"
-            "7. Financials & Archive: Use Financials & Payout Ledger to balance collections against lineage and export SMART forms. In Module 3, archive event."
-        )
-
-    prompt = f"""
-Write a clear, encouraging, step-by-step checklist for a Cecil Harford USBC board member who has NEVER run a tournament or used this software before.
-
-Current Event Context:
-- Event: {st.session_state.tournament_config['name']}
-- Host Center: {st.session_state.tournament_config['center']}
-- Division: {st.session_state.tournament_config['division']}
-- Active Pairs: {st.session_state.tournament_config['lanes_range']}
-- Format Mode: {st.session_state.tournament_config.get('format_mode', 'Standard')}
-
-Structure the guide into 6 numbered chronological steps including generating printable PDF lane sheets, the Express Entrance Self-Check-In QR (?mode=self_checkin) that routes bracket and unpaid bowlers to the desk, how floor TDs connect their phones to ?mode=scorer with Argon2 PIN concurrence, financial drawer reconciliation, and how bowlers view live standings via ?mode=bowler_portal.
-"""
-    try:
-        return generate_with_failover(prompt, temperature=0.1)
-    except Exception:
-        return (
-            "1. Setup external monitor on desk facing bowlers (?mode=kiosk, F11).\n"
-            "2. Ingest roster, balance lanes in Module 1, and download printable PDF lane sheets.\n"
-            "3. Post Express Self-Check-In QR (?mode=self_checkin) at entrance; handle unpaid and bracket entries at desk.\n"
-            "4. Roving TDs open ?mode=scorer on their phones, snap monitors with AI OCR, and set a 4-digit PIN.\n"
-            "5. Open ?mode=leaderboard on concourse TVs and share ?mode=bowler_portal for live bowler tracking.\n"
-            "6. Reconcile finances and archive event."
-        )
+    return (
+        "TECHNICAL POINT OF CONTACT (TPOC):\n"
+        "Scott Kramer | scottjk85@gmail.com | 443.966.4460\n\n"
+        "1. T-60 Min: Connect external monitor to laptop. Extend display (Win+P). Open ?mode=kiosk on secondary display and hit F11.\n"
+        "2. T-45 Min: In Module 1 (Tab 2), ingest roster and run Automated Lane Balancer (handles up to 40 lanes, keeps teams together). Download printable PDF lane sheets.\n"
+        "3. T-30 Min: Post the Express Entrance QR (?mode=self_checkin) at the door. Pre-paid bowlers check in automatically; unpaid or bracket bowlers are routed to the desk.\n"
+        "4. T-15 Min: Floor TDs scan ?mode=scorer QR code on their phones, create their Argon2 4-digit PIN, and claim lane pairs.\n"
+        "5. Squad Active: Roving TDs snap overhead monitors with phone camera OCR, input scores, and lock with their secret PIN. Central Desk monitors verified lanes on the Radar Matrix.\n"
+        "6. Concourse TV & Bowler Portal: Cast ?mode=leaderboard on center TVs and let bowlers track ranks on ?mode=bowler_portal.\n"
+        "7. Final Automation: In Module 3, click 'Calculate & Complete Tournament' to auto-seed the stepladder, declare the Champion, and download the official PDF summary report."
+    )
 
 def generate_sop_docx() -> io.BytesIO:
     doc = Document()
@@ -1281,15 +1352,6 @@ def generate_sop_docx() -> io.BytesIO:
         tcPr = cell._tc.get_or_add_tcPr()
         tcPr.append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="{hex_color}"/>'))
 
-    def set_cell_padding(cell, top=100, bottom=100, left=140, right=140):
-        tcPr = cell._tc.get_or_add_tcPr()
-        tcPr.append(parse_xml(
-            f'<w:tcMar {nsdecls("w")}>'
-            f'<w:top w:w="{top}" w:type="dxa"/><w:bottom w:w="{bottom}" w:type="dxa"/>'
-            f'<w:left w:w="{left}" w:type="dxa"/><w:right w:w="{right}" w:type="dxa"/>'
-            f'</w:tcMar>'
-        ))
-
     p_org = doc.add_paragraph()
     p_org.paragraph_format.space_after = Pt(2)
     r_org = p_org.add_run("CECIL HARFORD UNITED STATES BOWLING CONGRESS")
@@ -1308,7 +1370,7 @@ def generate_sop_docx() -> io.BytesIO:
     p_meta.paragraph_format.space_after = Pt(14)
     r_meta = p_meta.add_run(
         f"Document Identifier: SOP-TD-2026-01 | Event: {st.session_state.tournament_config['name']}\n"
-        f"Generated from Live Console: {datetime.now().strftime('%B %d, %Y')} | Active Center: {st.session_state.tournament_config['center']}"
+        f"Technical POC: Scott Kramer (scottjk85@gmail.com, 443.966.4460) | Active Center: {st.session_state.tournament_config['center']}"
     )
     r_meta.font.size = Pt(9.5)
     r_meta.font.color.rgb = MUTED
@@ -1321,17 +1383,16 @@ def generate_sop_docx() -> io.BytesIO:
     c_div.height = Pt(3)
 
     doc.add_paragraph().paragraph_format.space_after = Pt(8)
-
     h1 = doc.add_heading(level=1)
-    h1.add_run("1. Purpose & System Overview").font.color.rgb = PRIMARY
+    h1.add_run("1. Technical Point of Contact & Overview").font.color.rgb = PRIMARY
     doc.add_paragraph(
+        "Technical Lead: Scott Kramer (scottjk85@gmail.com | 443.966.4460)\n"
         f"This Standard Operating Procedure (SOP) standardizes tournament desk operations for the {st.session_state.tournament_config['name']} "
-        "and all official Cecil Harford USBC (CHUSBC) championship events. The platform utilizes Argon2id cryptographic authentication, "
-        "team-aware automated lane balancing up to 40 lanes, express entrance QR self-check-in, roving mobile TD scoring with PIN concurrence, and public concourse TV broadcasting."
+        "and all official Cecil Harford USBC (CHUSBC) events using Argon2id encryption, team-aware 40-lane distribution, and automated tournament finalization."
     )
 
     h_novice = doc.add_heading(level=1)
-    h_novice.add_run("2. First-Time Tournament Director (TD) Quickstart Guide").font.color.rgb = PRIMARY
+    h_novice.add_run("2. Quickstart Reference Walkthrough").font.color.rgb = PRIMARY
     guide_text = generate_first_time_td_guide()
     p_guide = doc.add_paragraph(guide_text)
     p_guide.paragraph_format.space_after = Pt(8)
@@ -1354,8 +1415,8 @@ def generate_sop_pdf() -> bytes:
     header_text = f"""
     <b>Cecil Harford USBC — Tournament Desk Standard Operating Procedure</b><br/>
     <font size="8" color="#475569">
-    Official Board Manual & First-Time TD Reference Guide | Event: {st.session_state.tournament_config['name']}<br/>
-    Host Center: {st.session_state.tournament_config['center']} | Effective: October 2026 | Document ID: SOP-TD-2026-01
+    Official Board Manual & Reference Guide | Event: {st.session_state.tournament_config['name']}<br/>
+    Technical POC: Scott Kramer (scottjk85@gmail.com, 443.966.4460) | Center: {st.session_state.tournament_config['center']}
     </font>
     """
 
@@ -1375,7 +1436,7 @@ def generate_sop_pdf() -> bytes:
         "<b>Step 3 (T-30 Entrance & Desk Check-In):</b> Post the Express Entrance QR (?mode=self_checkin). Pre-paid bowlers check in automatically; unpaid or bracket bowlers are directed to the desk.<br/>"
         "<b>Step 4 (T-15 Floor Scorer Setup):</b> Floor TDs scan ?mode=scorer QR code on their phones, set an Argon2 4-digit PIN, and claim lane pairs.<br/>"
         "<b>Step 5 (Scoring with PIN Concurrence):</b> Roving TDs input pair scores on mobile (or snap overhead screens with camera OCR) and enter their secret PIN to lock them.<br/>"
-        "<b>Step 6 (Financials & Finals):</b> Reconcile entries using the Financial Payout Ledger. Select match winners for top 5 stepladder, declare Champion, and archive event.",
+        "<b>Step 6 (Financials & Finals):</b> Reconcile entries using Financial Payout Ledger. In Module 3, click 'Calculate & Complete Tournament' to auto-seed the stepladder and print the final PDF summary.",
         body_style
     ))
 
@@ -1702,7 +1763,6 @@ if query_params.get("mode") == "bowler_portal":
             b_stat = b_Rank_df.iloc[0]
             curr_rank = b_Rank_df.index[0]
             s_lane = int(pd.to_numeric(b_stat.get("Starting Lane", 1), errors="coerce") or 1)
-            
             rot_rule = st.session_state.tournament_config.get("movement_rule", "Move Right 1 Pair (+2 Lanes)")
             max_l = int(st.session_state.tournament_config.get("lanes_count", 40))
 
@@ -1779,7 +1839,6 @@ if query_params.get("mode") == "scorer":
     if not st.session_state.mobile_scorer_td:
         with st.form("scorer_identify_form"):
             td_name_in = st.text_input("Enter Your Name (TD on Floor):", placeholder="e.g. Dave Miller, Chris Reynolds").strip()
-            
             existing_pins = st.session_state.get("td_pins", {})
             st.caption("Establish or enter your 4-digit PIN (secured with Argon2id):")
             pin_in = st.text_input("4-Digit Security PIN:", type="password", max_chars=6).strip()
@@ -1837,9 +1896,7 @@ if query_params.get("mode") == "scorer":
         working_roster["Active_Game_Lane"] = working_roster["Starting Lane"].apply(
             lambda l: get_bowler_lane_for_game(int(l), selected_game_num, rotation_rule, max_lanes=max_center_lanes)
         )
-        pair_bowlers = working_roster[
-            working_roster["Active_Game_Lane"].isin([lane_odd, lane_even])
-        ]
+        pair_bowlers = working_roster[working_roster["Active_Game_Lane"].isin([lane_odd, lane_even])]
 
     if pair_bowlers.empty:
         st.warning(f"No bowlers currently assigned to {selected_pair_label} for Game {selected_game_num}.")
@@ -1850,7 +1907,6 @@ if query_params.get("mode") == "scorer":
 
         first_v = pair_bowlers.iloc[0].get(v_by_col, "")
         first_at = pair_bowlers.iloc[0].get(v_at_col, "")
-
         if first_v:
             st.markdown(f"""
             <div style="background-color: #10b98120; border: 1px solid #10b981; border-radius: 8px; padding: 10px 14px; margin-bottom: 14px;">
@@ -1886,7 +1942,6 @@ if query_params.get("mode") == "scorer":
             for b_idx, b_row in pair_bowlers.iterrows():
                 b_name = b_row["Bowler"]
                 b_lane = int(b_row["Active_Game_Lane"])
-                
                 ocr_key = f"temp_ocr_{b_name}_{selected_game_num}"
                 default_score = st.session_state.get(ocr_key, int(pd.to_numeric(b_row.get(g_col, 0), errors="coerce") or 0))
 
@@ -1942,18 +1997,7 @@ if query_params.get("mode") == "leaderboard":
     <style>
         header {visibility: hidden;}
         footer {visibility: hidden;}
-        .block-container {
-            padding: 1rem 1.8rem 1rem 1.8rem;
-            max-width: 100% !important;
-        }
-        .tv-header {
-            background: linear-gradient(135deg, #1e3a8a 0%, #0b1120 100%);
-            border: 2px solid #38bdf8;
-            border-radius: 14px;
-            padding: 16px 24px;
-            margin-bottom: 14px;
-            box-shadow: 0 6px 24px rgba(0,0,0,0.6);
-        }
+        .block-container { padding: 1rem 1.8rem 1rem 1.8rem; max-width: 100% !important; }
         .tv-row {
             background-color: #1e293b;
             border: 1px solid #334155;
@@ -2300,7 +2344,6 @@ if not st.session_state.session_initialized:
     st.caption("Choose an official CHUSBC tournament preset or load an in-flight tournament:")
 
     col_opt_new, col_opt_resume, col_opt_archive = st.columns(3)
-
     cloud_state = fetch_active_tournament_state()
     has_active_cloud = cloud_state is not None and bool(cloud_state.get("config"))
     archives_df = fetch_archives_df()
@@ -3185,7 +3228,6 @@ elif nav == "2. Scores & Standings":
             st.link_button("🖥️ Launch Concourse TV Leaderboard", leaderboard_url, use_container_width=True)
             st.caption("Autoscrolling, high-contrast overhead display for spectators & bowlers.")
 
-    # 40-Lane Verification Radar Matrix with Dynamic Rotation
     st.subheader("🛰️ Central Desk Lane Radar Matrix")
     parsed_pairs = parse_active_pairs(st.session_state.tournament_config.get("lanes_range", "1-40"), max_lanes=40)
     radar_game = st.radio("Display Radar for Game:", [1, 2, 3], horizontal=True, key="radar_game_sel")
@@ -3376,76 +3418,122 @@ USBC ID,Bowler,Average,Starting Lane,Division,Team_Name,Game 1,Game 2,Game 3,Pai
         )
 
 # ---------------------------------------------------------
-# MODULE 3: STEP-LADDER FINALS BRACKET & ARCHIVING
+# MODULE 3: STEP-LADDER FINALS & AUTOMATED TOURNAMENT COMPLETION
 # ---------------------------------------------------------
 elif nav == "3. Stepladder Finals":
     st.markdown("""
     <div class="brand-banner">
-        <h1>Championship Stepladder Finals</h1>
-        <p>Top 5 qualifying cut-line elimination bracket and tournament completion.</p>
+        <h1>Championship Stepladder Finals & Tournament Completion</h1>
+        <p>Automated cut-line calculation, tiebreaker resolution, stepladder simulation, and official hard-copy PDF report generation.</p>
     </div>
     """, unsafe_allow_html=True)
 
     standings = compile_standings(st.session_state.roster)
     if len(standings) < 5:
-        st.warning(f"Stepladder finals require at least 5 registered bowlers (Current field: {len(standings)}).")
+        st.warning(f"Tournament completion and stepladder finals require at least 5 registered bowlers with recorded scores (Current field: {len(standings)}).")
     else:
         top_5 = standings.head(5)["Bowler"].tolist()
+        
+        def get_bowler_score(b_name):
+            row = standings[standings["Bowler"] == b_name]
+            return int(row.iloc[0]["Grand_Total"]) if not row.empty else 0
 
-        c1, c2 = st.columns([1, 1])
-        with c1:
-            st.subheader("Seeded Qualifiers")
+        # Match 1: #4 vs #5
+        m1_p1, m1_p2 = top_5[3], top_5[4]
+        m1_s1, m1_s2 = get_bowler_score(m1_p1), get_bowler_score(m1_p2)
+        m1_winner = m1_p1 if m1_s1 >= m1_s2 else m1_p2
+        m1_score_str = f"{max(m1_s1, m1_s2)} - {min(m1_s1, m1_s2)}"
+
+        # Match 2: #3 vs Match 1 Winner
+        m2_p1 = top_5[2]
+        m2_s1, m2_s2 = get_bowler_score(m2_p1), get_bowler_score(m1_winner)
+        m2_winner = m2_p1 if m2_s1 >= m2_s2 else m1_winner
+        m2_score_str = f"{max(m2_s1, m2_s2)} - {min(m2_s1, m2_s2)}"
+
+        # Semifinal: #2 vs Match 2 Winner
+        semi_p1 = top_5[1]
+        semi_s1, semi_s2 = get_bowler_score(semi_p1), get_bowler_score(m2_winner)
+        semi_winner = semi_p1 if semi_s1 >= semi_s2 else m2_winner
+        semi_score_str = f"{max(semi_s1, semi_s2)} - {min(semi_s1, semi_s2)}"
+
+        # Championship: #1 vs Semifinal Winner
+        champ_p1 = top_5[0]
+        champ_s1, champ_s2 = get_bowler_score(champ_p1), get_bowler_score(semi_winner)
+        tournament_champion = champ_p1 if champ_s1 >= champ_s2 else semi_winner
+        champ_score_str = f"{max(champ_s1, champ_s2)} - {min(champ_s1, champ_s2)}"
+
+        stepladder_summary_dict = {
+            "m1_p1": m1_p1, "m1_p2": m1_p2, "m1_winner": m1_winner, "m1_score": m1_score_str,
+            "m2_p1": m2_p1, "m2_winner_prev": m1_winner, "m2_winner": m2_winner, "m2_score": m2_score_str,
+            "semi_p1": semi_p1, "semi_winner_prev": m2_winner, "semi_winner": semi_winner, "semi_score": semi_score_str,
+            "champ_p1": champ_p1, "champ_winner_prev": semi_winner, "champ_score": champ_score_str
+        }
+
+        st.subheader("⚡ Automated Tournament Completion Engine")
+        st.markdown(f"""
+        <div style="background-color: #10b98120; border: 1.5px solid #10b981; border-radius: 10px; padding: 18px; text-align: center; margin-bottom: 20px;">
+            <span style="font-size: 13px; text-transform: uppercase; color: #34d399; font-weight: 800;">Calculated Tournament Champion</span>
+            <h1 style="color: #f8fafc; font-size: 32px; margin: 6px 0 0 0; font-weight: 900;">👑 {tournament_champion}</h1>
+            <p style="color: #cbd5e1; font-size: 14px; margin: 4px 0 0 0;">All handicap scores, tiebreakers, and stepladder rounds have been automatically computed.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        col_s1, col_s2 = st.columns([1, 1])
+        with col_s1:
+            st.markdown("#### 🪵 Top 5 Seeded Qualifiers")
+            for idx, name in enumerate(top_5):
+                score_val = get_bowler_score(name)
+                st.markdown(f"""<div class="match-box"><b>#{idx+1} Seed:</b> {name} <span style="float: right; color: #38bdf8;">{score_val} total pins</span></div>""", unsafe_allow_html=True)
+
+        with col_s2:
+            st.markdown("#### 🪜 Stepladder Advancement")
             st.markdown(f"""
-            <div class="match-box"><strong>#1 Seed (Championship Match):</strong> {top_5[0]}</div>
-            <div class="match-box"><strong>#2 Seed (Semifinal Match):</strong> {top_5[1]}</div>
-            <div class="match-box"><strong>#3 Seed (Match 2):</strong> {top_5[2]}</div>
-            <div class="match-box"><strong>#4 Seed (Match 1):</strong> {top_5[3]}</div>
-            <div class="match-box"><strong>#5 Seed (Match 1):</strong> {top_5[4]}</div>
-            """, unsafe_allow_html=True)
-
-        with c2:
-            st.subheader("Match Play Adjudication")
-            m1_winner = st.selectbox(f"Match 1: #4 {top_5[3]} vs #5 {top_5[4]}", [top_5[3], top_5[4]])
-            m2_winner = st.selectbox(f"Match 2: #3 {top_5[2]} vs Winner ({m1_winner})", [top_5[2], m1_winner])
-            semi_winner = st.selectbox(f"Semifinal: #2 {top_5[1]} vs Winner ({m2_winner})", [top_5[1], m2_winner])
-            champion = st.selectbox(f"Championship: #1 {top_5[0]} vs Winner ({semi_winner})", [top_5[0], semi_winner])
-
-            st.markdown(f"""
-            <div style="background-color: #10b98120; border: 1px solid #10b981; border-radius: 8px; padding: 16px; text-align: center; margin-top: 16px;">
-                <span style="font-size: 20px; font-weight: 800; color: #34d399;">🏆 TOURNAMENT CHAMPION: {champion}</span>
+            <div class="match-box" style="font-size: 13px;">
+                <div><b>Match 1:</b> {m1_p1} vs {m1_p2} &nbsp;➔&nbsp; <b style="color: #34d399;">{m1_winner} Wins</b></div>
+                <div style="margin-top: 6px;"><b>Match 2:</b> {m2_p1} vs {m1_winner} &nbsp;➔&nbsp; <b style="color: #34d399;">{m2_winner} Wins</b></div>
+                <div style="margin-top: 6px;"><b>Semifinal:</b> {semi_p1} vs {m2_winner} &nbsp;➔&nbsp; <b style="color: #34d399;">{semi_winner} Wins</b></div>
+                <div style="margin-top: 6px;"><b>Championship:</b> {champ_p1} vs {semi_winner} &nbsp;➔&nbsp; <b style="color: #34d399; font-size: 14px;">{tournament_champion} Crowned Champion!</b></div>
             </div>
             """, unsafe_allow_html=True)
 
-            st.write("")
-            col_lock, col_archive = st.columns(2)
-            with col_lock:
-                if st.button("Lock Champion in Audit Log", type="primary", use_container_width=True):
-                    log_audit_event(f"Stepladder complete. Champion declared: {champion}.")
-                    st.success("Official result recorded.")
+        st.write("")
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button("📝 Record Official Champion in Audit Log", type="primary", use_container_width=True):
+                log_audit_event(f"Tournament completed automatically. Champion declared: {tournament_champion}.")
+                st.success("Official result recorded to audit trail.")
 
-            with col_archive:
-                if st.button("📦 Archive Tournament & Save Official PDF", use_container_width=True):
-                    pdf_bytes = export_standings_pdf(standings, st.session_state.tournament_config, champion_name=champion)
-                    encoded_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
+        with col_btn2:
+            summary_pdf_bytes = export_tournament_summary_pdf(standings, st.session_state.tournament_config, tournament_champion, stepladder_summary_dict)
+            st.download_button(
+                "🖨️ Download Official Hard-Copy Summary Report (PDF)",
+                data=summary_pdf_bytes,
+                file_name=f"{st.session_state.tournament_config['name'].replace(' ', '_')}_Official_Summary.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
 
-                    archive_df = fetch_archives_df()
-                    new_archive_record = pd.DataFrame([{
-                        "tournament_name": st.session_state.tournament_config["name"],
-                        "center": st.session_state.tournament_config["center"],
-                        "division": st.session_state.tournament_config["division"],
-                        "date": datetime.now().strftime("%Y-%m-%d"),
-                        "entries": len(st.session_state.roster),
-                        "champion": champion,
-                        "pdf_data": encoded_pdf,
-                        "archived_by": st.session_state.td_name
-                    }])
+        st.divider()
+        if st.button("📦 Archive Tournament to Cloud & Reset Active State", use_container_width=True):
+            encoded_pdf = base64.b64encode(summary_pdf_bytes).decode("utf-8")
+            archive_df = fetch_archives_df()
+            new_archive_record = pd.DataFrame([{
+                "tournament_name": st.session_state.tournament_config["name"],
+                "center": st.session_state.tournament_config["center"],
+                "division": st.session_state.tournament_config["division"],
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "entries": len(st.session_state.roster),
+                "champion": tournament_champion,
+                "pdf_data": encoded_pdf,
+                "archived_by": st.session_state.td_name
+            }])
 
-                    updated_archives = pd.concat([archive_df, new_archive_record], ignore_index=True)
-                    write_archives_df(updated_archives)
-                    clear_active_tournament_state()
-                    
-                    log_audit_event(f"Tournament '{st.session_state.tournament_config['name']}' officially archived with Champion: {champion}.")
-                    st.success("Official PDF permanently archived to Google Sheets and active tournament cleared!")
+            updated_archives = pd.concat([archive_df, new_archive_record], ignore_index=True)
+            write_archives_df(updated_archives)
+            clear_active_tournament_state()
+            
+            log_audit_event(f"Tournament '{st.session_state.tournament_config['name']}' archived with Champion: {tournament_champion}.")
+            st.success("Official summary report archived to Google Sheets and active tournament cleared successfully!")
 
 # ---------------------------------------------------------
 # MODULE 4: SIDE ACTION: 8-BOWLER BRACKETS & SIDE POTS
@@ -3944,6 +4032,8 @@ Current Tournament Setup:
 - Division: {st.session_state.tournament_config['division']}
 - Active Lanes: {st.session_state.tournament_config['lanes_range']}
 - Current Field Size: {len(st.session_state.roster)} bowlers
+
+Technical POC: Scott Kramer (scottjk85@gmail.com, 443.966.4460)
 
 Rules & Architecture:
 - 6 tiers: TD Console, External Kiosk (?mode=kiosk), Express Entrance Self-Check-In (?mode=self_checkin), Read-Only Bowler Portal (?mode=bowler_portal), Mobile Floor Scorer (?mode=scorer), and Public Concourse Leaderboard (?mode=leaderboard).
