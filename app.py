@@ -93,6 +93,16 @@ st.markdown("""
         font-weight: 700;
         display: inline-block;
     }
+    .badge-pending {
+        background: #ec489920;
+        color: #f472b6;
+        border: 1px solid #ec489950;
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 700;
+        display: inline-block;
+    }
     .match-box {
         background-color: #1e293b;
         border: 1px solid #334155;
@@ -120,14 +130,16 @@ TARGET_ADMIN_HASH = "7e754bbef03e005db3d5089312104526685ba227e7f8e77a1fc9b6460fa
 if "user_registry" not in st.session_state:
     st.session_state.user_registry = {}
 
-# Ensure skramer is initialized if not already registered
+# Ensure skramer is initialized and approved
 if "skramer" not in st.session_state.user_registry:
     st.session_state.user_registry["skramer"] = {
         "name": "Scott Kramer",
         "password_hash": TARGET_ADMIN_HASH,
         "role": "admin",
+        "status": "active",
         "must_change_password": False,
-        "created_at": "Primary Admin"
+        "created_at": "Primary Admin",
+        "note": "Primary Association Administrator"
     }
 
 if "authenticated" not in st.session_state:
@@ -151,7 +163,9 @@ def log_audit_event(action: str):
         "action": action
     })
 
-# Login Screen
+# ---------------------------------------------------------
+# LANDING SCREEN: LOGIN & SELF-REGISTRATION
+# ---------------------------------------------------------
 if not st.session_state.authenticated:
     st.columns([1, 2, 1])[1].write("")
     with st.columns([1, 2, 1])[1]:
@@ -190,31 +204,70 @@ if not st.session_state.authenticated:
                 <p>Tournament Management & Rules Arbitration Portal</p>
             </div>
             """, unsafe_allow_html=True)
-            with st.form("td_login"):
-                username_input = st.text_input("Username").strip().lower()
-                password_input = st.text_input("Password", type="password").strip()
-                submitted = st.form_submit_button("Sign In to Tournament Desk", use_container_width=True)
 
-                if submitted:
-                    is_skramer = (username_input == "skramer" and password_input == "Abigail!2015")
-                    is_reg = (username_input in st.session_state.user_registry and 
-                              st.session_state.user_registry[username_input]["password_hash"] == hash_password(password_input))
+            auth_tab_login, auth_tab_register = st.tabs(["🔑 Sign In", "📝 Request Access (Self-Register)"])
 
-                    if is_skramer or is_reg:
+            with auth_tab_login:
+                with st.form("td_login"):
+                    username_input = st.text_input("Username").strip().lower()
+                    password_input = st.text_input("Password", type="password").strip()
+                    submitted = st.form_submit_button("Sign In to Tournament Desk", use_container_width=True)
+
+                    if submitted:
+                        is_skramer = (username_input == "skramer" and password_input == "Abigail!2015")
                         user_info = st.session_state.user_registry.get(username_input, {})
-                        st.session_state.username = username_input
-                        st.session_state.td_name = user_info.get("name", "Scott Kramer")
-                        st.session_state.td_role = user_info.get("role", "admin")
+                        is_reg = (username_input in st.session_state.user_registry and 
+                                  user_info.get("password_hash") == hash_password(password_input))
 
-                        if user_info.get("must_change_password", False):
-                            st.session_state.pending_password_change = True
-                            st.rerun()
+                        if is_skramer or is_reg:
+                            # Verify approval status
+                            user_status = user_info.get("status", "active")
+                            if user_status == "pending":
+                                st.warning("Your account registration is currently pending review by an Administrator.")
+                            else:
+                                st.session_state.username = username_input
+                                st.session_state.td_name = user_info.get("name", "Scott Kramer")
+                                st.session_state.td_role = user_info.get("role", "admin")
+
+                                if user_info.get("must_change_password", False):
+                                    st.session_state.pending_password_change = True
+                                    st.rerun()
+                                else:
+                                    st.session_state.authenticated = True
+                                    log_audit_event(f"User '{username_input}' ({st.session_state.td_name}) logged in.")
+                                    st.rerun()
                         else:
-                            st.session_state.authenticated = True
-                            log_audit_event(f"User '{username_input}' ({st.session_state.td_name}) logged in.")
-                            st.rerun()
-                    else:
-                        st.error("Invalid credentials.")
+                            st.error("Invalid username or password.")
+
+            with auth_tab_register:
+                with st.form("td_self_register"):
+                    st.caption("Apply for Tournament Director access. An administrator must approve your application.")
+                    req_user = st.text_input("Desired Username:").strip().lower()
+                    req_name = st.text_input("Full Legal / Association Name:").strip()
+                    req_pwd = st.text_input("Desired Password:", type="password").strip()
+                    req_note = st.text_area("Affiliation / Role Details:", placeholder="e.g., Harford Lanes TD, USBC Bronze Coach, Youth Committee").strip()
+                    submit_req = st.form_submit_button("Submit Registration for Approval", use_container_width=True)
+
+                    if submit_req:
+                        if not req_user or not req_name or not req_pwd:
+                            st.error("Username, Name, and Password are all required.")
+                        elif len(req_pwd) < 6:
+                            st.error("Password must be at least 6 characters.")
+                        elif req_user in st.session_state.user_registry:
+                            st.error(f"Username '{req_user}' is already registered or requested.")
+                        else:
+                            st.session_state.user_registry[req_user] = {
+                                "name": req_name,
+                                "password_hash": hash_password(req_pwd),
+                                "role": "td",
+                                "status": "pending",
+                                "must_change_password": False,
+                                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                "note": req_note
+                            }
+                            log_audit_event(f"New self-registration submitted: '{req_user}' ({req_name}). Pending approval.")
+                            st.success("Registration submitted! An administrator will review and approve your account.")
+
     st.stop()
 
 # ---------------------------------------------------------
@@ -285,7 +338,7 @@ def compile_standings(df: pd.DataFrame) -> pd.DataFrame:
     return calc_df
 
 # ---------------------------------------------------------
-# 6. REPORTLAB PDF STANDINGS GENERATOR (WITH LOGO SUPPORT)
+# 6. REPORTLAB PDF STANDINGS GENERATOR
 # ---------------------------------------------------------
 def export_standings_pdf(standings_df: pd.DataFrame, config: dict) -> bytes:
     buffer = io.BytesIO()
@@ -376,8 +429,11 @@ nav_options = [
     "5. TD Audit Log"
 ]
 
+pending_count = sum(1 for u in st.session_state.user_registry.values() if u.get("status") == "pending")
+
 if st.session_state.td_role == "admin":
-    nav_options.append("6. TD User Management ⚙️")
+    label = f"6. TD User Management ⚙️ ({pending_count} pending)" if pending_count > 0 else "6. TD User Management ⚙️"
+    nav_options.append(label)
 
 with st.sidebar:
     if HAS_LOGO:
@@ -778,43 +834,84 @@ elif nav == "5. TD Audit Log":
         st.dataframe(pd.DataFrame(st.session_state.audit_trail), use_container_width=True)
 
 # ---------------------------------------------------------
-# MODULE 6: ADMIN USER MANAGEMENT (ADD, RESET, DELETE)
+# MODULE 6: ADMIN USER MANAGEMENT (APPROVALS, ADD, RESET, DELETE)
 # ---------------------------------------------------------
-elif nav == "6. TD User Management ⚙️":
+elif "6. TD User Management" in nav:
     st.markdown("""
     <div class="brand-banner">
         <h1>Tournament Director & Staff Management</h1>
-        <p>Admin console for creating TD credentials, resetting passwords, and managing authorization.</p>
+        <p>Admin console for approving registration requests, creating TD credentials, resetting passwords, and managing authorization.</p>
     </div>
     """, unsafe_allow_html=True)
 
-    # 1. Active Staff Registry Display
+    # 1. Pending Approvals Section
+    pending_users = {u: data for u, data in st.session_state.user_registry.items() if data.get("status") == "pending"}
+
+    st.subheader(f"Account Requests Pending Approval ({len(pending_users)})")
+    if not pending_users:
+        st.info("No registration requests currently awaiting approval.")
+    else:
+        for uname, udata in list(pending_users.items()):
+            with st.container():
+                st.markdown(f"""
+                <div style="background-color: #1e293b; padding: 14px 18px; border-radius: 8px; border: 1px solid #ec489950; margin-bottom: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span style="font-size: 16px; font-weight: 700; color: #f8fafc;">{udata['name']} (<code style="color: #38bdf8;">{uname}</code>)</span>
+                        <span class="badge-pending">PENDING APPROVAL</span>
+                    </div>
+                    <div style="font-size: 13px; color: #94a3b8; margin-top: 6px;">
+                        <strong>Submitted:</strong> {udata.get('created_at', 'Recent')} | <strong>Note:</strong> {udata.get('note', 'No note provided')}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                col_role, col_appr, col_deny = st.columns([1, 1, 1])
+                with col_role:
+                    selected_role = st.selectbox(f"Assign Role for {uname}:", ["td", "admin"], key=f"role_{uname}")
+                with col_appr:
+                    if st.button(f"Approve & Activate ({uname})", key=f"appr_{uname}", type="primary", use_container_width=True):
+                        st.session_state.user_registry[uname]["status"] = "active"
+                        st.session_state.user_registry[uname]["role"] = selected_role
+                        log_audit_event(f"Admin approved registration for '{uname}' ({udata['name']}) as {selected_role}.")
+                        st.success(f"Account '{uname}' approved.")
+                        st.rerun()
+                with col_deny:
+                    if st.button(f"Deny & Remove ({uname})", key=f"deny_{uname}", use_container_width=True):
+                        del st.session_state.user_registry[uname]
+                        log_audit_event(f"Admin denied registration request for '{uname}'.")
+                        st.warning(f"Registration request for '{uname}' denied.")
+                        st.rerun()
+            st.divider()
+
+    # 2. Active Staff Registry Display
     st.subheader("Active Staff Registry")
-    user_list = []
+    active_list = []
     for uname, udata in st.session_state.user_registry.items():
-        user_list.append({
-            "Username": uname,
-            "Full Name": udata["name"],
-            "Role": udata["role"].upper(),
-            "Must Reset Pwd": "YES" if udata.get("must_change_password", False) else "NO",
-            "Registered": udata.get("created_at", "System")
-        })
-    st.dataframe(pd.DataFrame(user_list), use_container_width=True)
+        if udata.get("status", "active") == "active":
+            active_list.append({
+                "Username": uname,
+                "Full Name": udata["name"],
+                "Role": udata["role"].upper(),
+                "Must Reset Pwd": "YES" if udata.get("must_change_password", False) else "NO",
+                "Registered": udata.get("created_at", "System"),
+                "Note": udata.get("note", "")
+            })
+    st.dataframe(pd.DataFrame(active_list), use_container_width=True)
 
     st.divider()
 
-    # 2. Add New TD Section
+    # 3. Add New TD Section
     col_add, col_reset, col_del = st.columns([1, 1, 1])
 
     with col_add:
-        st.subheader("Register Official Account")
+        st.subheader("Register Official Directly")
         with st.form("add_td_form"):
             new_user = st.text_input("Username:").strip().lower()
             new_name = st.text_input("Full Official Name:")
             new_pw = st.text_input("Initial Password:", type="password").strip()
             new_role = st.selectbox("Role Assignment:", ["td", "admin"])
             force_change = st.checkbox("Require pwd change on 1st login", value=True)
-            submit_td = st.form_submit_button("Create Account", type="primary", use_container_width=True)
+            submit_td = st.form_submit_button("Create Account Directly", type="primary", use_container_width=True)
 
             if submit_td:
                 if not new_user or not new_name or not new_pw:
@@ -826,20 +923,22 @@ elif nav == "6. TD User Management ⚙️":
                         "name": new_name,
                         "password_hash": hash_password(new_pw),
                         "role": new_role,
+                        "status": "active",
                         "must_change_password": force_change,
-                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "note": "Created directly by Admin"
                     }
                     flag_note = "with mandatory password change" if force_change else "without mandatory password change"
                     log_audit_event(f"Admin registered new user: '{new_user}' ({new_name}) as {new_role} {flag_note}.")
                     st.success(f"Official '{new_name}' registered.")
                     st.rerun()
 
-    # 3. Reset User Password Section
+    # 4. Reset User Password Section
     with col_reset:
         st.subheader("Reset / Override Password")
-        all_users = list(st.session_state.user_registry.keys())
+        all_active_users = [u for u, d in st.session_state.user_registry.items() if d.get("status", "active") == "active"]
         with st.form("reset_pwd_form"):
-            target_user = st.selectbox("Select Account to Reset:", all_users)
+            target_user = st.selectbox("Select Account to Reset:", all_active_users)
             new_admin_pw = st.text_input("New Password:", type="password").strip()
             target_force = st.checkbox("Require user to change on next login", value=True)
             submit_reset = st.form_submit_button("Update Password", use_container_width=True)
@@ -856,18 +955,17 @@ elif nav == "6. TD User Management ⚙️":
                     st.success(f"Password for '{target_user}' updated.")
                     st.rerun()
 
-    # 4. Delete User Account Section
+    # 5. Delete User Account Section
     with col_del:
         st.subheader("Delete User Account")
-        # Exclude current primary admin from delete options to prevent accidental lockout
-        deletable_users = [u for u in all_users if u != "skramer"]
+        deletable_users = [u for u in st.session_state.user_registry.keys() if u != "skramer"]
         
         if not deletable_users:
             st.info("No auxiliary user accounts to delete.")
         else:
             with st.form("delete_user_form"):
                 user_to_delete = st.selectbox("Select Account to Remove:", deletable_users)
-                confirm_delete = st.checkbox(f"Confirm permanent removal", value=False)
+                confirm_delete = st.checkbox("Confirm permanent removal", value=False)
                 submit_delete = st.form_submit_button("Delete Account", use_container_width=True)
 
                 if submit_delete:
