@@ -4258,54 +4258,125 @@ elif "TD User Management" in nav:
                         st.rerun()
 
 # ---------------------------------------------------------
-# FLOATING GEMINI DESK COACH (PINNED TO BOTTOM-RIGHT ACROSS ALL MODULES)
+# FLOATING GEMINI DESK COACH (AWARE OF ACTIVE MODULE & LIVE STATE)
 # ---------------------------------------------------------
 if st.session_state.authenticated and st.session_state.session_initialized:
     st.markdown('<div class="floating-ai-anchor">', unsafe_allow_html=True)
-    with st.popover("✨ Ask Gemini", help="Instant USBC rules rulings & tournament procedures"):
+    with st.popover("✨ Ask Gemini", help="Live operations copilot & USBC rules arbiter"):
+        total_field = len(st.session_state.roster)
+        paid_field = len(st.session_state.roster[st.session_state.roster["Paid"] == True]) if total_field > 0 else 0
+        current_module = nav
+
         st.markdown(f"""
         <div style="border-bottom: 1px solid #334155; padding-bottom: 8px; margin-bottom: 10px;">
-            <strong style="color: #38bdf8; font-size: 15px;">🎳 CHUSBC AI Desk Coach</strong><br/>
-            <span style="color: #94a3b8; font-size: 12px;">Active: {st.session_state.tournament_config['name']}</span><br/>
-            <span style="color: #cbd5e1; font-size: 11px;">Host: {st.session_state.tournament_config['center']} | Format: {st.session_state.tournament_config.get('format_mode', 'Standard')}</span>
+            <strong style="color: #38bdf8; font-size: 15px;">🎳 CHUSBC Live Desk Coach</strong><br/>
+            <span style="color: #34d399; font-size: 12px; font-weight: bold;">📍 Active: {current_module}</span><br/>
+            <span style="color: #cbd5e1; font-size: 11px;">Roster: <b>{paid_field}/{total_field} Paid</b> | Center: <b>{st.session_state.tournament_config['center']}</b></span>
         </div>
         """, unsafe_allow_html=True)
 
-        if HAS_RULEBOOK and RULEBOOK_BYTES is not None:
-            st.caption("🟢 Grounded: USBC-Playing-Rulebook-26-27.pdf")
+        # Context-Aware Presets based on Active Screen
+        preset_prompt = ""
+        st.caption("⚡ Quick Actions for This Screen:")
+
+        if "1. Event & Roster Intake" in current_module:
+            c_p1, c_p2 = st.columns(2)
+            with c_p1:
+                if st.button("How to balance lanes?", use_container_width=True, key="ctx_btn_1"):
+                    preset_prompt = "I am on Module 1 (Event & Roster Intake). Explain step-by-step how I should balance up to 40 lanes, keep teammates together, and print lane sheets."
+                if st.button("Bowler check-in steps", use_container_width=True, key="ctx_btn_2"):
+                    preset_prompt = "A bowler just arrived at the desk. Walk me through checking them in, taking payment, and showing the QR code on the customer screen."
+            with c_p2:
+                if st.button("Floor TD PIN setup", use_container_width=True, key="ctx_btn_3"):
+                    preset_prompt = "How do floor officials create their 4-digit security PIN, and how do I reset it from Central Desk if they forget it?"
+                if st.button("Tardy Bowler (R10)", use_container_width=True, key="ctx_btn_4"):
+                    preset_prompt = "A bowler arrived 15 minutes late and their pair is in the middle of frame 3. What is the official USBC Rule 10 procedure?"
+
+        elif "2. Scores & Standings" in current_module:
+            c_p1, c_p2 = st.columns(2)
+            with c_p1:
+                if st.button("Radar Matrix guide", use_container_width=True, key="ctx_btn_1"):
+                    preset_prompt = "I am looking at the Central Desk Lane Radar Matrix. What do the different status colors mean, and how do I know when a pair is locked?"
+                if st.button("Camera OCR help", use_container_width=True, key="ctx_btn_2"):
+                    preset_prompt = "How does a floor official take a photo of an overhead scoring monitor with their phone, and what do they do if it does not read clearly?"
+            with c_p2:
+                if st.button("Altering Ball (R17)", use_container_width=True, key="ctx_btn_3"):
+                    preset_prompt = "A bowler just used an Abralon pad to sand their ball between game 1 and game 2. What is the mandatory penalty under USBC Rule 17?"
+                if st.button("Tiebreaker rules", use_container_width=True, key="ctx_btn_4"):
+                    preset_prompt = "Two bowlers have the exact same Grand Total score. How does the system automatically break ties under USBC rules?"
+
+        elif "3. Stepladder Finals" in current_module:
+            c_p1, c_p2 = st.columns(2)
+            with c_p1:
+                if st.button("How to complete event", use_container_width=True, key="ctx_btn_1"):
+                    preset_prompt = "I am ready to finalize this tournament. What exact buttons do I click in Module 3 to crown the Champion and generate the hard-copy summary report?"
+                if st.button("Download Summary PDF", use_container_width=True, key="ctx_btn_2"):
+                    preset_prompt = "Where do I click to download the official hard-copy summary report with the signature blocks for our records?"
+            with c_p2:
+                if st.button("Stepladder seeding", use_container_width=True, key="ctx_btn_3"):
+                    preset_prompt = "Explain how the top 5 seeded stepladder elimination ladder advances from Match 1 through the Championship."
+                if st.button("Cloud archive help", use_container_width=True, key="ctx_btn_4"):
+                    preset_prompt = "How does archiving work, where does the saved tournament go in Google Sheets, and how do I access past archives?"
+
+        elif "4. Side Action" in current_module:
+            c_p1, c_p2 = st.columns(2)
+            with c_p1:
+                if st.button("Seed 8-Bowler Bracket", use_container_width=True, key="ctx_btn_1"):
+                    preset_prompt = "How do I randomly seed 8-bowler brackets, and what is the standard payout split ($25 1st, $10 2nd, $5 expense)?"
+            with c_p2:
+                if st.button("Side Pot payouts", use_container_width=True, key="ctx_btn_2"):
+                    preset_prompt = "How are High-Game and Series side pots calculated across Games 1, 2, and 3, and how are ties handled in the payout?"
+
+        elif "5. Financial" in current_module:
+            c_p1, c_p2 = st.columns(2)
+            with c_p1:
+                if st.button("Reconcile drawer", use_container_width=True, key="ctx_btn_1"):
+                    preset_prompt = "How do I balance our cash drawer against the center lineage fee and tournament prize fund in Module 5?"
+            with c_p2:
+                if st.button("Youth SMART export", use_container_width=True, key="ctx_btn_2"):
+                    preset_prompt = "This is a youth division. How do I export the official USBC SMART scholarship submission file under Rule 400?"
+
         else:
-            st.caption("⚠️ Operating on baseline memory (Rulebook PDF not found)")
+            c_p1, c_p2 = st.columns(2)
+            with c_p1:
+                if st.button("What do I do here?", use_container_width=True, key="ctx_btn_1"):
+                    preset_prompt = f"I am currently viewing '{current_module}'. Give me a quick orientation of what actions I can perform on this screen."
+            with c_p2:
+                if st.button("Contact Tech Support", use_container_width=True, key="ctx_btn_2"):
+                    preset_prompt = "Who is the technical point of contact if I need urgent help or run into system errors?"
 
-        st.caption("⚡ Quick Dispute Presets:")
-        col_q1, col_q2 = st.columns(2)
-        preset_q = ""
-        with col_q1:
-            if st.button("Tardy Bowler (R10)", use_container_width=True, key="quick_r10"):
-                preset_q = "A bowler arrived 15 minutes late and their pair is in the middle of frame 3. What is the official USBC Rule 10 procedure?"
-            if st.button("Altering Ball (R17)", use_container_width=True, key="quick_r17"):
-                preset_q = "A bowler just used an Abralon pad to sand their ball between game 1 and game 2. What is the mandatory penalty under USBC Rule 17?"
-        with col_q2:
-            if st.button("Weight Holes (R18)", use_container_width=True, key="quick_r18"):
-                preset_q = "An opponent protests that a bowler has an extra un-gripped balance hole in their ball. What does USBC Rule 18 require?"
-            if st.button("Youth SMART (R400)", use_container_width=True, key="quick_r400"):
-                preset_q = "Can a youth bowler receive cash or a gift card prize in this event under USBC Rule 400?"
+        user_float_q = st.text_input(
+            "Ask a question about this screen or a rule:",
+            value=preset_prompt,
+            placeholder="e.g. What do I click next?",
+            key="float_ai_query"
+        )
 
-        user_float_q = st.text_input("Or type your question / on-lane dispute:", value=preset_q, placeholder="e.g. How do I handle a foul light dispute?", key="float_ai_query")
-
-        if st.button("Get Official Ruling", type="primary", use_container_width=True, key="float_ai_submit"):
+        if st.button("Get Help from Coach", type="primary", use_container_width=True, key="float_ai_submit"):
             if not user_float_q.strip():
-                st.warning("Please type a question or choose a quick dispute preset.")
+                st.warning("Please enter a question or click a quick action above.")
             elif not ai_client:
                 st.error("Gemini API key is not configured.")
             else:
-                with st.spinner("Consulting USBC-Playing-Rulebook-26-27.pdf..."):
+                with st.spinner("Analyzing active screen and event state..."):
                     float_context = f"""
-HOST BOWLING CENTER: {st.session_state.tournament_config['center']}
-TOURNAMENT NAME: {st.session_state.tournament_config['name']}
-DIVISION: {st.session_state.tournament_config['division']}
-ACTIVE LANES: {st.session_state.tournament_config['lanes_range']}
-FORMAT MODE: {st.session_state.tournament_config.get('format_mode', 'Standard')}
-EVENT RULES: {st.session_state.tournament_config['rules_text']}
+You are the Cecil Harford USBC (CHUSBC) Tournament Desk Operations Copilot and Rules Arbiter.
+The Tournament Director or volunteer is currently using the live Streamlit console and needs direct, practical assistance.
+
+CURRENT REAL-TIME CONTEXT:
+- Active Navigation Screen: {current_module}
+- Event Name: {st.session_state.tournament_config['name']}
+- Host Center: {st.session_state.tournament_config['center']}
+- Division: {st.session_state.tournament_config['division']}
+- Active Lanes: {st.session_state.tournament_config['lanes_range']}
+- Total Registered Bowlers: {total_field}
+- Paid Entries: {paid_field}
+- Technical POC: Scott Kramer (scottjk85@gmail.com, 443.966.4460)
+
+INSTRUCTIONS:
+1. If the user asks about the software or what to do next, provide concise, numbered steps specifying EXACT button labels, tabs, and fields on the active screen ({current_module}).
+2. If the user asks about an on-lane dispute or rule, cite the official 2026-2027 USBC Playing Rulebook and provide clear desk enforcement instructions.
+3. Keep the tone helpful, calm, and direct.
 """
                     try:
                         ans = arbitrate_rules_inquiry(user_float_q, float_context)
@@ -4314,7 +4385,7 @@ EVENT RULES: {st.session_state.tournament_config['rules_text']}
                             {ans}
                         </div>
                         """, unsafe_allow_html=True)
-                        log_audit_event(f"Floating AI Coach answered dispute: '{user_float_q[:40]}...'")
+                        log_audit_event(f"Live AI Copilot assisted on '{current_module}': '{user_float_q[:40]}...'")
                     except Exception as err:
                         st.error(f"Error consulting Gemini: {err}")
     st.markdown('</div>', unsafe_allow_html=True)
