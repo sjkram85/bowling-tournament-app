@@ -209,8 +209,16 @@ def write_archives_df(df: pd.DataFrame):
     return False
 
 # ---------------------------------------------------------
-# 3. INITIALIZE TOURNAMENT STATE & ROSTER
+# 3. CROSS-SCREEN SHARED MEMORY & GLOBAL STATE
 # ---------------------------------------------------------
+@st.cache_resource
+def get_shared_kiosk_state():
+    return {
+        "active_kiosk_usbc_id": None
+    }
+
+shared_kiosk = get_shared_kiosk_state()
+
 if "tournament_config" not in st.session_state:
     st.session_state.tournament_config = {
         "center": "Forest Hill Lanes",
@@ -232,7 +240,7 @@ if "roster" not in st.session_state:
         {"USBC ID": "11-67890", "Bowler": "Derek Jackson", "Average": 182, "Starting Lane": 3, "Game 1": 178, "Game 2": 195, "Game 3": 210, "Paid": False, "Checked_In": False},
     ])
 
-# Handle legacy column migration if needed
+# Column migrations
 if "Bowler_ID" in st.session_state.roster.columns and "USBC ID" not in st.session_state.roster.columns:
     st.session_state.roster["USBC ID"] = st.session_state.roster["Bowler_ID"]
     st.session_state.roster.drop(columns=["Bowler_ID"], inplace=True)
@@ -240,10 +248,6 @@ if "Bowler_ID" in st.session_state.roster.columns and "USBC ID" not in st.sessio
 for col, default in [("USBC ID", "N/A"), ("Paid", False), ("Checked_In", False)]:
     if col not in st.session_state.roster.columns:
         st.session_state.roster[col] = default
-
-# Cross-screen broadcast state for external monitor
-if "active_kiosk_usbc_id" not in st.session_state:
-    st.session_state.active_kiosk_usbc_id = None
 
 def generate_qr_image(url: str) -> io.BytesIO:
     qr = qrcode.QRCode(
@@ -276,7 +280,7 @@ if query_params.get("mode") == "kiosk":
     </style>
     """, unsafe_allow_html=True)
 
-    active_usbc = st.session_state.active_kiosk_usbc_id
+    active_usbc = shared_kiosk.get("active_kiosk_usbc_id")
     detected_base = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
 
     col_k1, col_k2, col_k3 = st.columns([1, 4, 1])
@@ -286,7 +290,7 @@ if query_params.get("mode") == "kiosk":
             with col_l2:
                 st.image(LOGO_PATH, width=160)
 
-        # 1. Active Check-in View on Monitor
+        # 1. Active Check-in View on Customer Monitor
         if active_usbc:
             match = st.session_state.roster[st.session_state.roster["USBC ID"].astype(str) == str(active_usbc)]
             if not match.empty:
@@ -323,10 +327,10 @@ if query_params.get("mode") == "kiosk":
                 </div>
                 """, unsafe_allow_html=True)
             else:
-                st.session_state.active_kiosk_usbc_id = None
+                shared_kiosk["active_kiosk_usbc_id"] = None
                 st.rerun()
         else:
-            # 2. Idle Welcome View on Monitor
+            # 2. Idle Welcome View on Customer Monitor
             total = len(st.session_state.roster)
             checked = len(st.session_state.roster[st.session_state.roster["Checked_In"] == True])
             st.markdown(f"""
@@ -344,7 +348,7 @@ if query_params.get("mode") == "kiosk":
             </div>
             """, unsafe_allow_html=True)
 
-    # Auto-refresh loop to catch TD updates in real time
+    # 2-second polling to catch TD laptop actions across tabs
     time.sleep(2.0)
     st.rerun()
 
@@ -1017,7 +1021,7 @@ Input:
             st.caption("Drag that window to the monitor facing the bowlers and press F11 for fullscreen.")
         with col_kiosk_clear:
             if st.button("🔄 Reset External Display (Show Welcome)", use_container_width=True):
-                st.session_state.active_kiosk_usbc_id = None
+                shared_kiosk["active_kiosk_usbc_id"] = None
                 log_audit_event("TD reset customer kiosk display to idle banner.")
                 st.rerun()
 
@@ -1083,7 +1087,7 @@ Input:
                         idx = st.session_state.roster.index[st.session_state.roster["USBC ID"].astype(str) == b_usbc].tolist()
                         if idx:
                             st.session_state.roster.loc[idx[0], "Paid"] = True
-                            st.session_state.active_kiosk_usbc_id = b_usbc
+                            shared_kiosk["active_kiosk_usbc_id"] = b_usbc
                             log_audit_event(f"Payment collected for {search_query} ({payment_type}) & pushed to customer screen.")
                             st.success("Payment logged! Now displaying QR code on customer-facing monitor.")
                             st.rerun()
@@ -1092,7 +1096,7 @@ Input:
                     col_p1, col_p2 = st.columns(2)
                     with col_p1:
                         if st.button("📺 Push to Customer Screen", type="primary", use_container_width=True):
-                            st.session_state.active_kiosk_usbc_id = b_usbc
+                            shared_kiosk["active_kiosk_usbc_id"] = b_usbc
                             log_audit_event(f"Pushed {search_query} to external customer screen.")
                             st.rerun()
                     with col_p2:
@@ -1101,8 +1105,8 @@ Input:
                             if idx:
                                 st.session_state.roster.loc[idx[0], "Paid"] = False
                                 st.session_state.roster.loc[idx[0], "Checked_In"] = False
-                                if st.session_state.active_kiosk_usbc_id == b_usbc:
-                                    st.session_state.active_kiosk_usbc_id = None
+                                if shared_kiosk.get("active_kiosk_usbc_id") == b_usbc:
+                                    shared_kiosk["active_kiosk_usbc_id"] = None
                                 log_audit_event(f"Payment reverted to Unpaid for {search_query}.")
                                 st.rerun()
 
@@ -1113,8 +1117,7 @@ Input:
                     checkin_url = f"{detected_base}/?mode=checkin&usbc_id={b_usbc}"
                     qr_buf = generate_qr_image(checkin_url)
 
-                    # Indicator of what is showing on the customer screen
-                    is_currently_on_kiosk = (st.session_state.active_kiosk_usbc_id == b_usbc)
+                    is_currently_on_kiosk = (shared_kiosk.get("active_kiosk_usbc_id") == b_usbc)
                     status_text = "🟢 Currently Live on Customer Screen" if is_currently_on_kiosk else "⚪ Not currently on Customer Screen"
                     
                     st.markdown(f"#### 📲 Desk Preview ({search_query}):")
@@ -1307,7 +1310,7 @@ elif nav == "3. Stepladder Finals":
                     updated_archives = pd.concat([archive_df, new_archive_record], ignore_index=True)
                     write_archives_df(updated_archives)
                     log_audit_event(f"Tournament '{st.session_state.tournament_config['name']}' officially archived with Champion: {champion}.")
-                    st.success("Official PDF and tournament record permanently archived to Google Sheets!")
+                    st.success(f"Official PDF and tournament record permanently archived to Google Sheets!")
 
 # ---------------------------------------------------------
 # MODULE 4: AI RULES ARBITER
