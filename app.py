@@ -48,6 +48,9 @@ st.set_page_config(
 LOGO_PATH = "CHUSBC.jpg"
 HAS_LOGO = os.path.exists(LOGO_PATH)
 
+RULEBOOK_PATH = "USBC-Playing-Rulebook-26-27.pdf"
+HAS_RULEBOOK = os.path.exists(RULEBOOK_PATH)
+
 PRIMARY_MODEL = "gemini-3.8-flash"
 FALLBACK_MODELS = ["gemini-3.7-flash", "gemini-3.5-flash"]
 
@@ -75,6 +78,19 @@ def clear_kiosk_state():
             os.remove(KIOSK_FILE_PATH)
     except Exception:
         pass
+
+@st.cache_resource
+def load_official_rulebook_bytes():
+    """Reads the committed 2026-27 USBC Playing Rulebook into memory once."""
+    if os.path.exists(RULEBOOK_PATH):
+        try:
+            with open(RULEBOOK_PATH, "rb") as f:
+                return f.read()
+        except Exception:
+            return None
+    return None
+
+RULEBOOK_BYTES = load_official_rulebook_bytes()
 
 st.markdown("""
 <style>
@@ -1135,7 +1151,7 @@ if not st.session_state.session_initialized:
     st.stop()
 
 # ---------------------------------------------------------
-# 9. GEMINI API CLIENT & RETRY FAILOVER ENGINE
+# 9. GEMINI API CLIENT & DETERMINISTIC RULES ARBITER
 # ---------------------------------------------------------
 api_key = st.secrets.get("GEMINI_API_KEY", None)
 if not api_key:
@@ -1170,6 +1186,52 @@ def generate_with_failover(prompt: str, temperature: float = 0.0) -> str:
                     break
 
     raise last_exception
+
+def arbitrate_rules_inquiry(query_text: str, event_context: str) -> str:
+    """Grounds arbitration directly on the official 2026-27 USBC Rulebook PDF."""
+    if not ai_client:
+        return "Gemini API key is not configured."
+
+    contents_payload = []
+    
+    if RULEBOOK_BYTES is not None:
+        contents_payload.append(
+            types.Part.from_bytes(
+                data=RULEBOOK_BYTES,
+                mime_type="application/pdf"
+            )
+        )
+
+    prompt = f"""
+You are the official Cecil Harford USBC (CHUSBC) Tournament Rules Arbiter.
+You have direct access to the official 2026-2027 USBC Playing Rulebook PDF provided in this prompt.
+
+Active Event Context:
+{event_context}
+
+Dispute / Inquiry:
+{query_text}
+
+Rules Precedence:
+1. Tournament flyer / local event rules govern format specifics (e.g. number of games, cut line, handicap formulas, Scotch Doubles rotation).
+2. General USBC statutory rules (e.g. Rule 10 Tardy Bowlers, Rule 17 Surface Adjustments, Rule 18 Equipment Specs, Rule 400 Youth SMART) govern all playing conduct.
+
+Format your decision as:
+1. **Official Ruling:** (Clear, direct verdict on what stands right now)
+2. **USBC Rulebook Citation:** (Exact rule number, subsection, and quote from the 2026-27 rulebook)
+3. **Desk Official Action:** (Step-by-step instructions for the TD on how to score, penalize, or enforce)
+"""
+    contents_payload.append(prompt)
+
+    try:
+        res = ai_client.models.generate_content(
+            model=PRIMARY_MODEL,
+            contents=contents_payload,
+            config=types.GenerateContentConfig(temperature=0.1)
+        )
+        return res.text
+    except Exception:
+        return generate_with_failover(prompt, temperature=0.1)
 
 def generate_first_time_td_guide() -> str:
     if not ai_client:
@@ -1472,6 +1534,8 @@ def generate_sop_docx() -> io.BytesIO:
             set_cell_background(cell, "F8FAFC" if row_idx % 2 == 1 else "FFFFFF")
             set_cell_padding(cell, 100, 100, 140, 140)
             p = cell.paragraphs[0]
+            p.paragraph_format.line_spacing = 1.1
+            p.paragraph_format.space_after = Pt(2)
             r = p.add_run(val)
             r.font.size = Pt(9.5)
 
@@ -2580,7 +2644,7 @@ elif "Brackets & Pots" in nav:
             )
 
 # ---------------------------------------------------------
-# MODULE 5: AI RULES ARBITER
+# MODULE 5: AI RULES ARBITER (GROUNDED TO 2026-27 RULEBOOK PDF)
 # ---------------------------------------------------------
 elif nav == "5. AI Rules Arbiter":
     st.markdown("""
@@ -2590,55 +2654,62 @@ elif nav == "5. AI Rules Arbiter":
     </div>
     """, unsafe_allow_html=True)
 
-    if not ai_client:
-        st.warning("Gemini API key is required to query the Rules Arbiter.")
+    if HAS_RULEBOOK and RULEBOOK_BYTES is not None:
+        st.markdown("""
+        <div style="display: inline-block; background-color: #10b98120; border: 1px solid #10b981; border-radius: 20px; padding: 4px 14px; margin-bottom: 12px; font-size: 13px; font-weight: 700; color: #34d399;">
+            🟢 Grounded directly on USBC-Playing-Rulebook-26-27.pdf
+        </div>
+        """, unsafe_allow_html=True)
     else:
-        division_alert = ""
-        if "Youth" in str(st.session_state.tournament_config.get("division", "")):
-            division_alert = "\nCRITICAL DIVISION MANDATE: Enforce USBC Rule 400 (all awards must be SMART scholarships; cash is prohibited)."
+        st.markdown("""
+        <div style="display: inline-block; background-color: #f59e0b20; border: 1px solid #f59e0b; border-radius: 20px; padding: 4px 14px; margin-bottom: 12px; font-size: 13px; font-weight: 700; color: #fde047;">
+            ⚠️ USBC-Playing-Rulebook-26-27.pdf not detected in root repo — operating on baseline memory
+        </div>
+        """, unsafe_allow_html=True)
 
-        rules_context = f"""
+    division_alert = ""
+    if "Youth" in str(st.session_state.tournament_config.get("division", "")):
+        division_alert = "\nCRITICAL DIVISION MANDATE: Enforce USBC Rule 400 (all awards must be SMART scholarships; cash is strictly prohibited)."
+
+    rules_context = f"""
 HOST BOWLING CENTER: {st.session_state.tournament_config['center']}
 TOURNAMENT NAME: {st.session_state.tournament_config['name']}
 DIVISION: {st.session_state.tournament_config['division']}
 ACTIVE LANES: {st.session_state.tournament_config['lanes_range']}
-RULES TEXT:
+FORMAT MODE: {st.session_state.tournament_config.get('format_mode', 'Standard')}
+EVENT FLYER / LOCAL RULES TEXT:
 {st.session_state.tournament_config['rules_text']}
 {division_alert}
-
-USBC BASELINE RULES:
-Rule 10 - Tardy Bowlers: An individual late for competition can begin only if the frame has not been completed by all bowlers on their pair. No warm-up frames.
-Rule 17 - Altering Ball Surface: Surface adjustments via abrasive pads or chemical cleaners are prohibited once tournament competition has begun.
-Rule 18 - Equipment Specs: Balance holes are prohibited. All drilled finger holes must be occupied on every delivery.
-Rule 111 - Practice: No practice balls permitted on assigned pairs outside scheduled practice sessions.
-Rule 329 - Protest Procedures: Protests must be filed in writing before prize distribution.
 """
-        query = st.text_area("Describe the on-lane situation or protest:")
-        if st.button("Generate Official Arbiter Ruling", type="primary"):
-            if not query.strip():
-                st.warning("Please describe the dispute.")
-            else:
-                with st.spinner("Analyzing USBC statutes..."):
-                    prompt = f"""
-You are the Cecil Harford USBC Official Rules Arbiter.
-Ground your decision strictly on the rules below:
-{rules_context}
 
-Inquiry:
-{query}
+    st.caption("⚡ Common On-Lane Disputes:")
+    col_preset1, col_preset2 = st.columns(2)
+    selected_dispute_preset = ""
+    with col_preset1:
+        if st.button("Rule 17: Altering Ball Surface (Sanding/Cleaning Mid-Game)", use_container_width=True):
+            selected_dispute_preset = "A bowler was seen using an Abralon pad to alter the surface of their ball between game 1 and game 2 of official competition. What is the mandatory penalty under USBC Rule 17?"
+        if st.button("Rule 10: Tardy Bowler Arrival Protocol", use_container_width=True):
+            selected_dispute_preset = "A bowler arrived 15 minutes late and their assigned pair is currently bowling in the 3rd frame. Can they bowl, and how are missed frames scored under USBC Rule 10?"
+    with col_preset2:
+        if st.button("Rule 18: Gripping Holes & Weight Holes", use_container_width=True):
+            selected_dispute_preset = "An opponent protests that a bowler has an extra un-gripped balance hole in their ball. What does USBC Rule 18 require?"
+        if st.button("Rule 400: Youth SMART Eligibility", use_container_width=True):
+            selected_dispute_preset = "Can a youth bowler participate in adult brackets, or receive cash or merchandise gift cards under USBC Rule 400?"
 
-Format:
-1. **Official Ruling:**
-2. **Applicable USBC Rule:**
-3. **TD Actionable Next Step:**
-"""
-                    try:
-                        decision_text = generate_with_failover(prompt, temperature=0.1)
-                        st.markdown("### Official Decision")
-                        st.markdown(decision_text)
-                        log_audit_event(f"Rules dispute adjudicated: '{query[:50]}...'")
-                    except Exception as err:
-                        st.error(f"Error querying Gemini: {err}")
+    query = st.text_area("Describe the on-lane situation or protest:", value=selected_dispute_preset, height=100)
+    
+    if st.button("Generate Official Arbiter Ruling", type="primary"):
+        if not query.strip():
+            st.warning("Please describe the dispute or click one of the quick dispute presets above.")
+        else:
+            with st.spinner("Analyzing USBC-Playing-Rulebook-26-27.pdf..."):
+                try:
+                    decision_text = arbitrate_rules_inquiry(query, rules_context)
+                    st.markdown("### Official Decision")
+                    st.markdown(decision_text)
+                    log_audit_event(f"Rules dispute adjudicated: '{query[:50]}...'")
+                except Exception as err:
+                    st.error(f"Error querying Gemini: {err}")
 
 # ---------------------------------------------------------
 # MODULE 6: PAST TOURNAMENTS ARCHIVE
@@ -2957,6 +3028,11 @@ if st.session_state.authenticated and st.session_state.session_initialized:
         </div>
         """, unsafe_allow_html=True)
 
+        if HAS_RULEBOOK and RULEBOOK_BYTES is not None:
+            st.caption("🟢 Grounded: USBC-Playing-Rulebook-26-27.pdf")
+        else:
+            st.caption("⚠️ Operating on baseline memory (Rulebook PDF not found)")
+
         st.caption("⚡ Quick Dispute Presets:")
         col_q1, col_q2 = st.columns(2)
         preset_q = ""
@@ -2971,7 +3047,7 @@ if st.session_state.authenticated and st.session_state.session_initialized:
             if st.button("Youth SMART (R400)", use_container_width=True, key="quick_r400"):
                 preset_q = "Can a youth bowler receive cash or a gift card prize in this event under USBC Rule 400?"
 
-        user_float_q = st.text_input("Or type your question / on-lane dispute:", value=preset_q, placeholder="e.g. How do I split tied side pot payouts?", key="float_ai_query")
+        user_float_q = st.text_input("Or type your question / on-lane dispute:", value=preset_q, placeholder="e.g. How do I handle a foul light dispute?", key="float_ai_query")
 
         if st.button("Get Official Ruling", type="primary", use_container_width=True, key="float_ai_submit"):
             if not user_float_q.strip():
@@ -2979,30 +3055,17 @@ if st.session_state.authenticated and st.session_state.session_initialized:
             elif not ai_client:
                 st.error("Gemini API key is not configured.")
             else:
-                with st.spinner("Consulting USBC Rulebook..."):
-                    float_prompt = f"""
-You are the Cecil Harford USBC (CHUSBC) Tournament Desk Operations AI Assistant.
-A Tournament Director is actively running an event at the desk right now and needs an immediate, definitive ruling.
-
-Active Tournament Context:
-- Tournament Name: {st.session_state.tournament_config['name']}
-- Host Center: {st.session_state.tournament_config['center']}
-- Division: {st.session_state.tournament_config['division']}
-- Format Mode: {st.session_state.tournament_config.get('format_mode', 'Standard')}
-- Active Lanes: {st.session_state.tournament_config['lanes_range']}
-- Handicap: {int(st.session_state.tournament_config.get('hdcp_pct', 0.90)*100)}% of {st.session_state.tournament_config.get('hdcp_base', 220)}
-- Rules Context: {st.session_state.tournament_config['rules_text']}
-
-Question / Dispute:
-{user_float_q}
-
-Provide a concise, direct ruling:
-1. **Official Ruling:** (1-2 sentences on what to do right now)
-2. **USBC Statute:** (Exact rule number and reason)
-3. **Desk Action:** (The exact button to click or instruction to give the bowler)
+                with st.spinner("Consulting USBC-Playing-Rulebook-26-27.pdf..."):
+                    float_context = f"""
+HOST BOWLING CENTER: {st.session_state.tournament_config['center']}
+TOURNAMENT NAME: {st.session_state.tournament_config['name']}
+DIVISION: {st.session_state.tournament_config['division']}
+ACTIVE LANES: {st.session_state.tournament_config['lanes_range']}
+FORMAT MODE: {st.session_state.tournament_config.get('format_mode', 'Standard')}
+EVENT RULES: {st.session_state.tournament_config['rules_text']}
 """
                     try:
-                        ans = generate_with_failover(float_prompt, temperature=0.1)
+                        ans = arbitrate_rules_inquiry(user_float_q, float_context)
                         st.markdown(f"""
                         <div style="background-color: #1e293b; border-left: 3px solid #38bdf8; padding: 12px; border-radius: 6px; font-size: 13px; margin-top: 10px;">
                             {ans}
