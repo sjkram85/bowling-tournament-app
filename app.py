@@ -1,5 +1,6 @@
 import os
 import io
+import time
 import math
 import hashlib
 from datetime import datetime
@@ -27,7 +28,10 @@ st.set_page_config(
 
 LOGO_PATH = "CHUSBC.jpg"
 HAS_LOGO = os.path.exists(LOGO_PATH)
-GEMINI_MODEL = "gemini-3.8-flash"
+
+# Active production models with automatic resilience pool
+PRIMARY_MODEL = "gemini-3.8-flash"
+FALLBACK_MODELS = ["gemini-3.7-flash", "gemini-3.5-flash"]
 
 st.markdown("""
 <style>
@@ -319,7 +323,7 @@ if not st.session_state.authenticated:
     st.stop()
 
 # ---------------------------------------------------------
-# 3. GEMINI API CLIENT SETUP
+# 3. GEMINI API SETUP & RESILIENT RETRY/FAILOVER WRAPPER
 # ---------------------------------------------------------
 api_key = st.secrets.get("GEMINI_API_KEY", None)
 if not api_key:
@@ -327,6 +331,39 @@ if not api_key:
         api_key = st.text_input("Gemini API Key", type="password")
 
 ai_client = genai.Client(api_key=api_key) if api_key else None
+
+def generate_with_failover(prompt: str, temperature: float = 0.0) -> str:
+    """
+    Executes prompt across 3.x Flash fleet with automatic backoff and model failover
+    to eliminate temporary 503 UNAVAILABLE or 429 rate limit errors.
+    """
+    if not ai_client:
+        raise ValueError("Gemini API key is not configured.")
+
+    models_to_try = [PRIMARY_MODEL] + FALLBACK_MODELS
+    last_exception = None
+
+    for model_name in models_to_try:
+        for attempt in range(2):
+            try:
+                res = ai_client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(temperature=temperature)
+                )
+                return res.text
+            except Exception as e:
+                last_exception = e
+                err_msg = str(e).lower()
+                # If capacity spike (503) or rate limit (429), pause and retry
+                if "503" in err_msg or "unavailable" in err_msg or "429" in err_msg or "quota" in err_msg:
+                    time.sleep(1.5)
+                    continue
+                else:
+                    # Non-transient error, move to next model in pool immediately
+                    break
+
+    raise last_exception
 
 # ---------------------------------------------------------
 # 4. TOURNAMENT INTAKE STATE
@@ -567,7 +604,7 @@ if nav == "1. Event & Roster Intake":
         with tab_ai:
             raw_bowler_text = st.text_area(
                 "Paste bowler signups (e.g., names, averages, lanes):",
-                placeholder="Marcus Vance (198 avg, lane 1)\nElena Rostova (215 avg, lane 1)\nDerek Jackson (182 avg, lane 2)\nChloe Davenport (204 avg, lane 2)",
+                placeholder="Scott Kramer (218 avg, lane 1)\nDave Miller (205 avg, lane 1)\nChris Reynolds (195 avg, lane 2)\nMarcus Vance (198 avg, lane 2)",
                 height=110
             )
             if st.button("Extract Roster with Gemini", type="primary"):
@@ -587,12 +624,8 @@ Input:
 {raw_bowler_text}
 """
                         try:
-                            res = ai_client.models.generate_content(
-                                model=GEMINI_MODEL,
-                                contents=prompt,
-                                config=types.GenerateContentConfig(temperature=0.0)
-                            )
-                            cleaned_csv = res.text.replace("```csv", "").replace("```", "").strip()
+                            raw_csv_text = generate_with_failover(prompt, temperature=0.0)
+                            cleaned_csv = raw_csv_text.replace("```csv", "").replace("```", "").strip()
                             new_roster_df = pd.read_csv(io.StringIO(cleaned_csv))
                             st.session_state.roster = new_roster_df
                             log_audit_event(f"Gemini parsed {len(new_roster_df)} bowler entries.")
@@ -709,7 +742,7 @@ elif nav == "2. Scores & Standings":
     st.write("")
 
     with st.expander("⚡ Gemini Live Score Recap Ingestion"):
-        recap_text = st.text_area("Paste recap update text (e.g. 'Marcus Vance 224, 215, 230'):")
+        recap_text = st.text_area("Paste recap update text (e.g. 'Scott Kramer 245, 238, 268'):")
         if st.button("Apply Recap Scores"):
             if not ai_client:
                 st.error("Gemini API key missing.")
@@ -729,12 +762,8 @@ Output strictly CSV formatted table with headers:
 Bowler,Average,Starting Lane,Game 1,Game 2,Game 3
 """
                     try:
-                        res = ai_client.models.generate_content(
-                            model=GEMINI_MODEL,
-                            contents=prompt,
-                            config=types.GenerateContentConfig(temperature=0.0)
-                        )
-                        cleaned = res.text.replace("```csv", "").replace("```", "").strip()
+                        raw_csv_text = generate_with_failover(prompt, temperature=0.0)
+                        cleaned = raw_csv_text.replace("```csv", "").replace("```", "").strip()
                         st.session_state.roster = pd.read_csv(io.StringIO(cleaned))
                         log_audit_event("Gemini updated scores from live recap.")
                         st.rerun()
@@ -870,13 +899,9 @@ Format:
 3. **TD Actionable Next Step:**
 """
                     try:
-                        decision = ai_client.models.generate_content(
-                            model=GEMINI_MODEL,
-                            contents=prompt,
-                            config=types.GenerateContentConfig(temperature=0.1)
-                        )
+                        decision_text = generate_with_failover(prompt, temperature=0.1)
                         st.markdown("### Official Decision")
-                        st.markdown(decision.text)
+                        st.markdown(decision_text)
                         log_audit_event(f"Rules dispute adjudicated: '{query[:50]}...'")
                     except Exception as err:
                         st.error(f"Error querying Gemini: {err}")
