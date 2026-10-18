@@ -301,6 +301,7 @@ CHUSBC_PRESET_PROFILES = {
         "hdcp_pct": 0.90,
         "format_mode": "Team/Singles Standard",
         "games_count": 3,
+        "movement_rule": "Move Right 1 Pair (+2 Lanes)",
         "rules_text": (
             "USBC Certified. 3 Games across assigned pairs. Open to all adult certified bowlers. "
             "Handicap: 90% of 220 based on highest winter book average. Optional All-Events scratch & handicap. "
@@ -316,6 +317,7 @@ CHUSBC_PRESET_PROFILES = {
         "hdcp_pct": 0.90,
         "format_mode": "Women's Championship",
         "games_count": 3,
+        "movement_rule": "Move Right 1 Pair (+2 Lanes)",
         "rules_text": (
             "USBC Certified. Open to all female USBC members of Cecil Harford USBC. "
             "Handicap: 90% of 220. 4-person team, 2-person doubles, and individual singles. "
@@ -331,6 +333,7 @@ CHUSBC_PRESET_PROFILES = {
         "hdcp_pct": 0.90,
         "format_mode": "Ladies Singles Invitational",
         "games_count": 3,
+        "movement_rule": "Move Right 1 Pair (+2 Lanes)",
         "rules_text": (
             "Annual Lighthouse Ladies Singles Championship. 3 qualifying games moving pairs each game. "
             "Cut to top 5 stepladder finals. Handicap 90% of 215."
@@ -345,6 +348,7 @@ CHUSBC_PRESET_PROFILES = {
         "hdcp_pct": 0.90,
         "format_mode": "Senior Age-Bracketed",
         "games_count": 3,
+        "movement_rule": "Move Right 1 Pair (+2 Lanes)",
         "rules_text": (
             "USBC Certified Senior Singles. Age 50+ as of tournament date. "
             "Divisions: Super Senior (75+), Senior A (70-74), B (65-69), C (60-64), D (55-59), E (50-54). "
@@ -360,6 +364,7 @@ CHUSBC_PRESET_PROFILES = {
         "hdcp_pct": 0.90,
         "format_mode": "Mixed Gender Teams",
         "games_count": 3,
+        "movement_rule": "Move Right 1 Pair (+2 Lanes)",
         "rules_text": (
             "CHUSBC Mixed Championship. 4-bowler team (2 Men / 2 Women required) and Doubles (1 Man / 1 Woman). "
             "Handicap: 90% of 220. 3 games across pairs."
@@ -374,6 +379,7 @@ CHUSBC_PRESET_PROFILES = {
         "hdcp_pct": 0.90,
         "format_mode": "Scotch Doubles (Alternating)",
         "games_count": 3,
+        "movement_rule": "Stay on Pair (No Movement)",
         "rules_text": (
             "Valentine's Scotch Doubles. 2 bowlers per team. Bowler A rolls first ball, Bowler B shoots spare, "
             "alternating strike shot lead each frame. Combined team average handicap based on 90% of 430."
@@ -388,6 +394,7 @@ CHUSBC_PRESET_PROFILES = {
         "hdcp_pct": 0.90,
         "format_mode": "9-Pin No-Tap (9 = Strike)",
         "games_count": 3,
+        "movement_rule": "Move Right 1 Pair (+2 Lanes)",
         "rules_text": (
             "Valentine's 9-Pin No-Tap Tournament. Hitting 9 pins on first ball delivery is scored as an automatic strike. "
             "3 games total. 90% of 220 handicap."
@@ -402,6 +409,7 @@ CHUSBC_PRESET_PROFILES = {
         "hdcp_pct": 0.90,
         "format_mode": "Tournament of Champions (TOC)",
         "games_count": 3,
+        "movement_rule": "Move Right 1 Pair (+2 Lanes)",
         "rules_text": (
             "Invitational Tournament of Champions for CHUSBC winter league winning teams. "
             "Qualifying 3 games into seeded single-elimination match play bracket to crown the Association League Champion."
@@ -412,22 +420,24 @@ CHUSBC_PRESET_PROFILES = {
 # ---------------------------------------------------------
 # 3. ARGON2 CRYPTOGRAPHIC ENGINE & CLOUD PERSISTENCE
 # ---------------------------------------------------------
+ph = PasswordHasher(
+    time_cost=2,
+    memory_cost=65536,
+    parallelism=2,
+    hash_len=32,
+    salt_len=16
+)
+
 def hash_secret(secret_str: str) -> str:
-    """Hashes a password or 4-digit PIN using Argon2id."""
     return ph.hash(str(secret_str).strip())
 
 def verify_secret(stored_hash: str, plain_secret: str) -> tuple[bool, bool]:
-    """
-    Verifies a secret against an Argon2id hash (or legacy SHA-256 hash).
-    Returns (is_valid, needs_rehash).
-    """
     if not stored_hash or not plain_secret:
         return False, False
 
     clean_secret = str(plain_secret).strip()
     stored_hash = str(stored_hash).strip()
 
-    # Check if stored_hash is an Argon2 hash
     if stored_hash.startswith("$argon2"):
         try:
             ph.verify(stored_hash, clean_secret)
@@ -435,7 +445,6 @@ def verify_secret(stored_hash: str, plain_secret: str) -> tuple[bool, bool]:
         except (VerifyMismatchError, InvalidHashError):
             return False, False
     else:
-        # Fallback for legacy 64-char SHA-256 hashes (migrates to Argon2 on success)
         legacy_sha = hashlib.sha256(clean_secret.encode("utf-8")).hexdigest()
         if stored_hash == legacy_sha:
             return True, True
@@ -561,7 +570,6 @@ def clear_active_tournament_state():
     return False
 
 def register_td_pin(td_name: str, pin_str: str) -> bool:
-    """Registers or updates a TD's 4-digit PIN using Argon2id."""
     if not td_name or len(str(pin_str).strip()) < 4:
         return False
     if "td_pins" not in st.session_state:
@@ -575,7 +583,6 @@ def register_td_pin(td_name: str, pin_str: str) -> bool:
     return True
 
 def verify_td_pin(td_name: str, pin_str: str) -> bool:
-    """Validates the entered PIN against the stored Argon2id hash (auto-migrating legacy SHA-256)."""
     pins = st.session_state.get("td_pins", {})
     stored_hash = pins.get(td_name.strip(), "")
     if not stored_hash:
@@ -652,7 +659,7 @@ def notify_admin_new_registration(requested_user: str, requested_name: str, requ
         return False
 
 # ---------------------------------------------------------
-# 4. TEAM-AWARE LANE BALANCER & HOUSE MATRIX (UP TO 40 LANES)
+# 4. TEAM-AWARE LANE BALANCER & CROSS-PAIR MOVEMENT ENGINE
 # ---------------------------------------------------------
 def parse_active_pairs(range_str: str, max_lanes: int = 40):
     lanes = set()
@@ -697,6 +704,25 @@ def parse_active_pairs(range_str: str, max_lanes: int = 40):
             
     return unique_pairs
 
+def get_bowler_lane_for_game(starting_lane: int, game_num: int, movement_rule: str, max_lanes: int = 40) -> int:
+    """Calculates active lane for a game based on tournament pair rotation rule."""
+    if game_num <= 1:
+        return starting_lane
+
+    shift_pairs = 0
+    if "Move Right 1 Pair" in movement_rule:
+        shift_pairs = 1
+    elif "Move Right 2 Pairs" in movement_rule:
+        shift_pairs = 2
+    elif "Move Right 3 Pairs" in movement_rule:
+        shift_pairs = 3
+    elif "Move Left 1 Pair" in movement_rule:
+        shift_pairs = -1
+
+    lanes_shift = shift_pairs * 2 * (game_num - 1)
+    current_lane = ((starting_lane - 1 + lanes_shift) % max_lanes) + 1
+    return int(current_lane)
+
 def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list, max_per_pair: int = 5, shuffle: bool = True, group_by_team: bool = True):
     if roster_df.empty or not pairs:
         return roster_df, "No roster or lane pairs provided."
@@ -727,7 +753,7 @@ def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list, max_per_pair: int = 
     for u in units:
         if len(u) > max_per_pair:
             sample_name = updated_df.loc[u[0], 'Team_Name']
-            return roster_df, f"Team '{sample_name}' has {len(u)} bowlers, which exceeds the max capacity of {max_per_pair} bowlers per pair. Increase 'Max Bowlers per Pair' to at least {len(u)}."
+            return roster_df, f"Team '{sample_name}' has {len(u)} bowlers, which exceeds the max capacity of {max_per_pair} bowlers per pair."
 
     if shuffle:
         random.shuffle(units)
@@ -744,7 +770,7 @@ def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list, max_per_pair: int = 
                 break
                 
         if not assigned:
-            return roster_df, "Unable to fit teams evenly across the active pairs without splitting. Try opening more lane pairs or increasing Max Bowlers per Pair."
+            return roster_df, "Unable to fit teams evenly across active pairs. Try opening more lane pairs or increasing capacity."
 
     for p, row_indices in pair_buckets.items():
         lane_odd, lane_even = p
@@ -854,21 +880,8 @@ def export_lane_assignments_pdf(roster_df: pd.DataFrame, config: dict) -> bytes:
     styles = getSampleStyleSheet()
     story = []
 
-    title_style = ParagraphStyle(
-        "RosterTitle",
-        parent=styles["Heading1"],
-        fontSize=15,
-        leading=18,
-        textColor=colors.HexColor("#0f172a"),
-        spaceAfter=2
-    )
-    meta_style = ParagraphStyle(
-        "RosterMeta",
-        parent=styles["Normal"],
-        fontSize=8.5,
-        textColor=colors.HexColor("#475569"),
-        spaceAfter=12
-    )
+    title_style = ParagraphStyle("RosterTitle", parent=styles["Heading1"], fontSize=15, leading=18, textColor=colors.HexColor("#0f172a"), spaceAfter=2)
+    meta_style = ParagraphStyle("RosterMeta", parent=styles["Normal"], fontSize=8.5, textColor=colors.HexColor("#475569"), spaceAfter=12)
 
     header_text = f"""
     <b>Cecil Harford USBC — Lane Assignment & Concourse Check-In Roster</b><br/>
@@ -881,13 +894,10 @@ def export_lane_assignments_pdf(roster_df: pd.DataFrame, config: dict) -> bytes:
     if HAS_LOGO:
         logo_img = RLImage(LOGO_PATH, width=50, height=50)
         header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[60, 480])
-        header_table.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-        ]))
+        header_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
         story.append(header_table)
     else:
-        story.append(Paragraph(f"Cecil Harford USBC — Lane Assignment Roster", title_style))
+        story.append(Paragraph("Cecil Harford USBC — Lane Assignment Roster", title_style))
         story.append(Paragraph(header_text, meta_style))
 
     if roster_df.empty:
@@ -906,16 +916,7 @@ def export_lane_assignments_pdf(roster_df: pd.DataFrame, config: dict) -> bytes:
 
         for _, group_df in sorted(grouped, key=lambda x: x[0]):
             pair_name = group_df.iloc[0]["Pair_Label"]
-            
-            p_header_style = ParagraphStyle(
-                "PairHeader",
-                parent=styles["Heading2"],
-                fontSize=10.5,
-                leading=13,
-                textColor=colors.white,
-                spaceBefore=6,
-                spaceAfter=4
-            )
+            p_header_style = ParagraphStyle("PairHeader", parent=styles["Heading2"], fontSize=10.5, leading=13, textColor=colors.white, spaceBefore=6, spaceAfter=4)
             
             pair_table_data = [[Paragraph(f"<b>{pair_name}</b>", p_header_style), "", "", "", "", "", ""]]
             pair_table_data.append(["Lane", "Bowler Name", "Team / Affiliation", "Avg", "Paid", "Check-in", "Game Scores (G1 / G2 / G3)"])
@@ -930,15 +931,7 @@ def export_lane_assignments_pdf(roster_df: pd.DataFrame, config: dict) -> bytes:
                 paid = "Yes" if bool(row.get("Paid", False)) else "[  ]"
                 checked = "Yes" if bool(row.get("Checked_In", False)) else "[  ]"
                 
-                pair_table_data.append([
-                    lane,
-                    b_name,
-                    team,
-                    avg,
-                    paid,
-                    checked,
-                    "___ / ___ / ___"
-                ])
+                pair_table_data.append([lane, b_name, team, avg, paid, checked, "___ / ___ / ___"])
 
             pt = Table(pair_table_data, colWidths=[32, 130, 110, 32, 38, 48, 150])
             pt.setStyle(TableStyle([
@@ -968,21 +961,8 @@ def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name
     styles = getSampleStyleSheet()
     story = []
 
-    title_style = ParagraphStyle(
-        "DocTitle",
-        parent=styles["Heading1"],
-        fontSize=15,
-        leading=18,
-        textColor=colors.HexColor("#0f172a"),
-        spaceAfter=2
-    )
-    meta_style = ParagraphStyle(
-        "DocMeta",
-        parent=styles["Normal"],
-        fontSize=8.5,
-        textColor=colors.HexColor("#475569"),
-        spaceAfter=10
-    )
+    title_style = ParagraphStyle("DocTitle", parent=styles["Heading1"], fontSize=15, leading=18, textColor=colors.HexColor("#0f172a"), spaceAfter=2)
+    meta_style = ParagraphStyle("DocMeta", parent=styles["Normal"], fontSize=8.5, textColor=colors.HexColor("#475569"), spaceAfter=10)
 
     champ_str = f" | <b>CHAMPION: {champion_name}</b>" if champion_name else ""
     header_text = f"""
@@ -996,32 +976,18 @@ def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name
     if HAS_LOGO:
         logo_img = RLImage(LOGO_PATH, width=54, height=54)
         header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[64, 476])
-        header_table.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-        ]))
+        header_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BOTTOMPADDING", (0, 0), (-1, -1), 10)]))
         story.append(header_table)
     else:
         story.append(Paragraph(f"Cecil Harford USBC — {config['name']}", title_style))
-        story.append(Paragraph(
-            f"Center: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}{champ_str}<br/>"
-            f"TD on Duty: {st.session_state.get('td_name', 'Official')} | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}",
-            meta_style
-        ))
+        story.append(Paragraph(f"Center: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}{champ_str}", meta_style))
 
     table_data = [["Pos", "Bowler Name", "USBC ID", "Avg", "HDCP", "G1", "G2", "G3", "Scratch", "Total"]]
     for rank, row in standings_df.reset_index().iterrows():
         table_data.append([
-            str(row["Rank"]),
-            str(row["Bowler"]),
-            str(row.get("USBC ID", "-")),
-            str(row["Average"]),
-            str(row["Total_HDCP"]),
-            str(row["Game 1"]),
-            str(row["Game 2"]),
-            str(row["Game 3"]),
-            str(row["Scratch_Total"]),
-            str(row["Grand_Total"])
+            str(row["Rank"]), str(row["Bowler"]), str(row.get("USBC ID", "-")),
+            str(row["Average"]), str(row["Total_HDCP"]), str(row["Game 1"]),
+            str(row["Game 2"]), str(row["Game 3"]), str(row["Scratch_Total"]), str(row["Grand_Total"])
         ])
 
     table = Table(table_data, colWidths=[24, 140, 52, 32, 38, 38, 38, 38, 52, 58])
@@ -1078,10 +1044,7 @@ if query_params.get("mode") == "kiosk":
     <style>
         header {visibility: hidden;}
         footer {visibility: hidden;}
-        .block-container {
-            padding-top: 1.5rem;
-            max-width: 900px;
-        }
+        .block-container { padding-top: 1.5rem; max-width: 900px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -1290,7 +1253,6 @@ if query_params.get("mode") == "self_checkin":
                 </div>
                 """, unsafe_allow_html=True)
             elif "Yes" in wants_brackets:
-                # Mark checked in since they paid entry fee, but direct them to the desk for brackets
                 match_idx = st.session_state.roster.index[st.session_state.roster["Bowler"] == selected_name].tolist()
                 if match_idx and not bool(b_row.get("Checked_In", False)):
                     st.session_state.roster.loc[match_idx[0], "Checked_In"] = True
@@ -1364,7 +1326,7 @@ if query_params.get("mode") == "bowler_portal":
 
     standings = compile_standings(st.session_state.roster)
     bowler_names = sorted(st.session_state.roster["Bowler"].dropna().unique().tolist())
-    selected_bowler = st.selectbox("Select Your Name to View Personal Tracker:", ["-- View Full Leaderboard Only --"] + bowler_names)
+    selected_bowler = st.selectbox("Select Your Name to View Personal Tracker & Schedule:", ["-- View Full Leaderboard Only --"] + bowler_names)
 
     if selected_bowler != "-- View Full Leaderboard Only --":
         b_Rank_df = standings[standings["Bowler"] == selected_bowler]
@@ -1372,7 +1334,18 @@ if query_params.get("mode") == "bowler_portal":
             b_stat = b_Rank_df.iloc[0]
             curr_rank = b_Rank_df.index[0]
             s_lane = int(pd.to_numeric(b_stat.get("Starting Lane", 1), errors="coerce") or 1)
-            p_lane = s_lane + 1 if s_lane % 2 != 0 else s_lane - 1
+            
+            rot_rule = st.session_state.tournament_config.get("movement_rule", "Move Right 1 Pair (+2 Lanes)")
+            max_l = int(st.session_state.tournament_config.get("lanes_count", 40))
+
+            g1_l = get_bowler_lane_for_game(s_lane, 1, rot_rule, max_l)
+            g2_l = get_bowler_lane_for_game(s_lane, 2, rot_rule, max_l)
+            g3_l = get_bowler_lane_for_game(s_lane, 3, rot_rule, max_l)
+
+            def get_pair_str(l):
+                p = l + 1 if l % 2 != 0 else l - 1
+                return f"Lanes {min(l, p)}-{max(l, p)}"
+
             cut_val = standings.iloc[4]["Grand_Total"] if len(standings) >= 5 else 0
             diff_cut = int(b_stat["Grand_Total"]) - int(cut_val)
             diff_str = f"+{diff_cut} above #5 Cut" if diff_cut >= 0 else f"{diff_cut} from #5 Cut"
@@ -1381,8 +1354,8 @@ if query_params.get("mode") == "bowler_portal":
             <div class="match-box" style="text-align: center;">
                 <span style="font-size: 12px; color: #94a3b8; text-transform: uppercase; font-weight: 800;">Current Standing</span>
                 <div style="font-size: 34px; font-weight: 900; color: #38bdf8; margin: 4px 0;">Rank #{curr_rank} <span style="font-size: 16px; color: #34d399;">({diff_str})</span></div>
-                <div style="font-size: 15px; color: #f8fafc; margin-top: 6px;">
-                    Assigned Pair: <b>Lanes {min(s_lane, p_lane)} & {max(s_lane, p_lane)}</b> (Lead-off Lane {s_lane}) | Team: <b>{b_stat.get('Team_Name', 'Singles')}</b>
+                <div style="font-size: 14.5px; font-weight: 700; color: #f8fafc; margin-top: 8px; border-top: 1px solid #334155; padding-top: 8px;">
+                    Game 1: <b>{get_pair_str(g1_l)}</b> &nbsp;➔&nbsp; Game 2: <b>{get_pair_str(g2_l)}</b> &nbsp;➔&nbsp; Game 3: <b>{get_pair_str(g3_l)}</b>
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -1413,10 +1386,7 @@ if query_params.get("mode") == "scorer":
     <style>
         header {visibility: hidden;}
         footer {visibility: hidden;}
-        .block-container {
-            padding-top: 1rem;
-            max-width: 600px;
-        }
+        .block-container { padding-top: 1rem; max-width: 600px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -1485,21 +1455,27 @@ if query_params.get("mode") == "scorer":
     target_pair = parsed_pairs[selected_pair_idx]
     lane_odd, lane_even = target_pair
 
+    # Dynamic cross-pair rotation calculation for mobile scorer
+    rotation_rule = st.session_state.tournament_config.get("movement_rule", "Move Right 1 Pair (+2 Lanes)")
+    max_center_lanes = int(st.session_state.tournament_config.get("lanes_count", 40))
+
     if "Starting Lane" not in st.session_state.roster.columns:
         st.session_state.roster["Starting Lane"] = 1
 
     if st.session_state.roster.empty:
         pair_bowlers = pd.DataFrame()
     else:
-        st.session_state.roster["Starting Lane"] = pd.to_numeric(
-            st.session_state.roster["Starting Lane"], errors="coerce"
-        ).fillna(1).astype(int)
-        pair_bowlers = st.session_state.roster[
-            st.session_state.roster["Starting Lane"].isin([lane_odd, lane_even])
+        working_roster = st.session_state.roster.copy()
+        working_roster["Starting Lane"] = pd.to_numeric(working_roster["Starting Lane"], errors="coerce").fillna(1).astype(int)
+        working_roster["Active_Game_Lane"] = working_roster["Starting Lane"].apply(
+            lambda l: get_bowler_lane_for_game(int(l), selected_game_num, rotation_rule, max_lanes=max_center_lanes)
+        )
+        pair_bowlers = working_roster[
+            working_roster["Active_Game_Lane"].isin([lane_odd, lane_even])
         ]
 
     if pair_bowlers.empty:
-        st.warning(f"No bowlers currently assigned to {selected_pair_label}.")
+        st.warning(f"No bowlers currently assigned to {selected_pair_label} for Game {selected_game_num}.")
     else:
         g_col = f"Game {selected_game_num}"
         v_by_col = f"G{selected_game_num}_Verified_By"
@@ -1542,7 +1518,7 @@ if query_params.get("mode") == "scorer":
             updated_scores_map = {}
             for b_idx, b_row in pair_bowlers.iterrows():
                 b_name = b_row["Bowler"]
-                b_lane = b_row["Starting Lane"]
+                b_lane = int(b_row["Active_Game_Lane"])
                 
                 ocr_key = f"temp_ocr_{b_name}_{selected_game_num}"
                 default_score = st.session_state.get(ocr_key, int(pd.to_numeric(b_row.get(g_col, 0), errors="coerce") or 0))
@@ -1978,6 +1954,7 @@ if not st.session_state.session_initialized:
                 "hdcp_pct": p_data["hdcp_pct"],
                 "format_mode": p_data["format_mode"],
                 "games_count": p_data["games_count"],
+                "movement_rule": p_data.get("movement_rule", "Move Right 1 Pair (+2 Lanes)"),
                 "rules_text": p_data["rules_text"],
                 "intake_completed": False
             }
@@ -2038,6 +2015,7 @@ if not st.session_state.session_initialized:
                     "hdcp_pct": 0.90,
                     "format_mode": "Standard 3-Game",
                     "games_count": 3,
+                    "movement_rule": "Move Right 1 Pair (+2 Lanes)",
                     "rules_text": "Qualifying: 3 games across assigned pairs. Handicap: 90% of 220.",
                     "intake_completed": False
                 }
@@ -2206,181 +2184,7 @@ Structure the guide into 6 numbered chronological steps including generating pri
         )
 
 # ---------------------------------------------------------
-# 11. DYNAMIC SOP GENERATION (WORD & PDF)
-# ---------------------------------------------------------
-def generate_sop_docx() -> io.BytesIO:
-    doc = Document()
-    for section in doc.sections:
-        section.top_margin = Inches(1.0)
-        section.bottom_margin = Inches(1.0)
-        section.left_margin = Inches(1.0)
-        section.right_margin = Inches(1.0)
-
-    PRIMARY = RGBColor(14, 58, 138)
-    SECONDARY = RGBColor(2, 132, 199)
-    TEXT_DARK = RGBColor(15, 23, 42)
-    MUTED = RGBColor(100, 116, 139)
-
-    style_normal = doc.styles['Normal']
-    style_normal.font.name = 'Calibri'
-    style_normal.font.size = Pt(11)
-    style_normal.font.color.rgb = TEXT_DARK
-    style_normal.paragraph_format.line_spacing = 1.15
-    style_normal.paragraph_format.space_after = Pt(6)
-
-    def set_cell_background(cell, hex_color):
-        tcPr = cell._tc.get_or_add_tcPr()
-        tcPr.append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="{hex_color}"/>'))
-
-    def set_cell_padding(cell, top=100, bottom=100, left=140, right=140):
-        tcPr = cell._tc.get_or_add_tcPr()
-        tcPr.append(parse_xml(
-            f'<w:tcMar {nsdecls("w")}>'
-            f'<w:top w:w="{top}" w:type="dxa"/><w:bottom w:w="{bottom}" w:type="dxa"/>'
-            f'<w:left w:w="{left}" w:type="dxa"/><w:right w:w="{right}" w:type="dxa"/>'
-            f'</w:tcMar>'
-        ))
-
-    p_org = doc.add_paragraph()
-    p_org.paragraph_format.space_after = Pt(2)
-    r_org = p_org.add_run("CECIL HARFORD UNITED STATES BOWLING CONGRESS")
-    r_org.font.size = Pt(11)
-    r_org.font.bold = True
-    r_org.font.color.rgb = SECONDARY
-
-    p_title = doc.add_paragraph()
-    p_title.paragraph_format.space_after = Pt(4)
-    r_title = p_title.add_run("Standard Operating Procedure: Tournament Desk Operations Console")
-    r_title.font.size = Pt(20)
-    r_title.font.bold = True
-    r_title.font.color.rgb = PRIMARY
-
-    p_meta = doc.add_paragraph()
-    p_meta.paragraph_format.space_after = Pt(14)
-    r_meta = p_meta.add_run(
-        f"Document Identifier: SOP-TD-2026-01 | Event: {st.session_state.tournament_config['name']}\n"
-        f"Generated from Live Console: {datetime.now().strftime('%B %d, %Y')} | Active Center: {st.session_state.tournament_config['center']}"
-    )
-    r_meta.font.size = Pt(9.5)
-    r_meta.font.color.rgb = MUTED
-
-    t_div = doc.add_table(rows=1, cols=1)
-    t_div.alignment = WD_TABLE_ALIGNMENT.CENTER
-    c_div = t_div.cell(0, 0)
-    c_div.width = Inches(6.5)
-    set_cell_background(c_div, "0E3A8A")
-    c_div.height = Pt(3)
-
-    doc.add_paragraph().paragraph_format.space_after = Pt(8)
-
-    h1 = doc.add_heading(level=1)
-    h1.add_run("1. Purpose & System Overview").font.color.rgb = PRIMARY
-    doc.add_paragraph(
-        f"This Standard Operating Procedure (SOP) standardizes tournament desk operations for the {st.session_state.tournament_config['name']} "
-        "and all official Cecil Harford USBC (CHUSBC) championship events. The platform utilizes Argon2id cryptographic authentication, "
-        "team-aware automated lane balancing up to 40 lanes, express entrance QR self-check-in, roving mobile TD scoring with PIN concurrence, and public concourse TV broadcasting."
-    )
-
-    h_novice = doc.add_heading(level=1)
-    h_novice.add_run("2. First-Time Tournament Director (TD) Quickstart Guide").font.color.rgb = PRIMARY
-    guide_text = generate_first_time_td_guide()
-    p_guide = doc.add_paragraph(guide_text)
-    p_guide.paragraph_format.space_after = Pt(8)
-
-    buf = io.BytesIO()
-    doc.save(buf)
-    buf.seek(0)
-    return buf
-
-def generate_sop_pdf() -> bytes:
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
-    styles = getSampleStyleSheet()
-    story = []
-
-    title_style = ParagraphStyle(
-        "SOPTitle",
-        parent=styles["Heading1"],
-        fontSize=15,
-        leading=18,
-        textColor=colors.HexColor("#0e3a8a"),
-        spaceAfter=2
-    )
-    h2_style = ParagraphStyle(
-        "SOPH2",
-        parent=styles["Heading2"],
-        fontSize=11,
-        leading=14,
-        textColor=colors.HexColor("#0284c7"),
-        spaceBefore=6,
-        spaceAfter=3
-    )
-    body_style = ParagraphStyle(
-        "SOPBody",
-        parent=styles["Normal"],
-        fontSize=8,
-        leading=11,
-        textColor=colors.HexColor("#0f172a"),
-        spaceAfter=4
-    )
-
-    header_text = f"""
-    <b>Cecil Harford USBC — Tournament Desk Standard Operating Procedure</b><br/>
-    <font size="8" color="#475569">
-    Official Board Manual & First-Time TD Reference Guide | Event: {st.session_state.tournament_config['name']}<br/>
-    Host Center: {st.session_state.tournament_config['center']} | Effective: October 2026 | Document ID: SOP-TD-2026-01
-    </font>
-    """
-
-    if HAS_LOGO:
-        logo_img = RLImage(LOGO_PATH, width=48, height=48)
-        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[56, 484])
-        header_table.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ]))
-        story.append(header_table)
-    else:
-        story.append(Paragraph("Cecil Harford USBC — Tournament Desk Standard Operating Procedure", title_style))
-        story.append(Spacer(1, 4))
-
-    story.append(Paragraph("1. First-Time Tournament Director (TD) Quickstart Walkthrough", h2_style))
-    story.append(Paragraph(
-        "<b>Step 1 (T-60 Setup):</b> Connect desk monitor to laptop (Win+P -> Extend). Open ?mode=kiosk on secondary monitor (F11). Open ?mode=leaderboard on concourse TVs.<br/>"
-        "<b>Step 2 (T-45 Roster & Balancing):</b> Ingest roster in Module 1. Use 'Automated Lane Balancer' to distribute bowlers across active lanes with team grouping. Print the PDF Lane Assignment Sheet.<br/>"
-        "<b>Step 3 (T-30 Entrance & Desk Check-In):</b> Post the Express Entrance QR (?mode=self_checkin). Pre-paid bowlers check in automatically; unpaid or bracket bowlers are directed to the desk.<br/>"
-        "<b>Step 4 (T-15 Floor Scorer Setup):</b> Floor TDs scan ?mode=scorer QR code on their phones, set an Argon2 4-digit PIN, and claim lane pairs.<br/>"
-        "<b>Step 5 (Scoring with PIN Concurrence):</b> Roving TDs input pair scores on mobile (or snap overhead screens with camera OCR) and enter their secret PIN to lock them.<br/>"
-        "<b>Step 6 (Finals & Archive):</b> Go to Module 3. Select match winners for top 5 stepladder, declare Champion, and click 'Archive Tournament & Save Official PDF'.",
-        body_style
-    ))
-
-    rules_table_data = [
-        ["Statute", "Mandatory Desk Enforcement"],
-        ["Rule 17: Altering Surface", "No abrasive pads or liquid cleaners once competition starts. Remove ball immediately; frames bowled post-adjustment incur zero scores."],
-        ["Rule 18: Equipment Specs", "Balance holes are prohibited. All drilled holes must be occupied by gripping fingers on delivery. Non-compliant balls must be removed."],
-        ["Rule 10: Tardy Bowlers", "Late bowlers begin in current frame if not completed by all on pair. No warm-up frames. Missed frames are scored zero."],
-        ["Rule 400: Youth SMART", "CRITICAL MANDATE: All prizes and awards in youth divisions must be deposited into the USBC SMART program. Zero cash/gift card policy."]
-    ]
-    t_rules = Table(rules_table_data, colWidths=[120, 420])
-    t_rules.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0284c7")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-    ]))
-    story.append(t_rules)
-    doc.build(story)
-    buffer.seek(0)
-    return buffer.getvalue()
-
-# ---------------------------------------------------------
-# 12. SIDEBAR NAVIGATION & CONTROLS
+# SIDEBAR NAVIGATION & CONTROLS
 # ---------------------------------------------------------
 nav_options = [
     "1. Event & Roster Intake",
@@ -2523,7 +2327,10 @@ if nav == "1. Event & Roster Intake":
         with col_h2:
             h_pct = st.number_input("Handicap Percentage (0.90 = 90%):", value=float(st.session_state.tournament_config.get("hdcp_pct", 0.90)), step=0.05, format="%.2f")
         with col_h3:
-            fmt_mode = st.text_input("Tournament Discipline:", value=st.session_state.tournament_config.get("format_mode", "Standard 3-Game"))
+            current_rule = st.session_state.tournament_config.get("movement_rule", "Move Right 1 Pair (+2 Lanes)")
+            rule_options = ["Stay on Pair (No Movement)", "Move Right 1 Pair (+2 Lanes)", "Move Right 2 Pairs (+4 Lanes)", "Move Left 1 Pair (-2 Lanes)"]
+            r_idx = rule_options.index(current_rule) if current_rule in rule_options else 1
+            movement_rule = st.selectbox("Lane Rotation Rule (Between Games):", rule_options, index=r_idx)
 
         t_rules = st.text_area("Tournament Rules & Format Flyer:", value=st.session_state.tournament_config["rules_text"])
         uploaded_doc = st.file_uploader("Upload Tournament Flyer / Rules PDF (.pdf or .txt):", type=["pdf", "txt"])
@@ -2553,7 +2360,7 @@ if nav == "1. Event & Roster Intake":
                 "division": division,
                 "hdcp_base": h_base,
                 "hdcp_pct": h_pct,
-                "format_mode": fmt_mode,
+                "movement_rule": movement_rule,
                 "rules_text": t_rules + uploaded_content,
                 "intake_completed": True
             })
@@ -3039,7 +2846,7 @@ elif nav == "2. Scores & Standings":
             st.link_button("🖥️ Launch Concourse TV Leaderboard", leaderboard_url, use_container_width=True)
             st.caption("Autoscrolling, high-contrast overhead display for spectators & bowlers.")
 
-    # 40-Lane Verification Radar Matrix
+    # 40-Lane Verification Radar Matrix with Dynamic Rotation
     st.subheader("🛰️ Central Desk Lane Radar Matrix")
     parsed_pairs = parse_active_pairs(st.session_state.tournament_config.get("lanes_range", "1-40"), max_lanes=40)
     radar_game = st.radio("Display Radar for Game:", [1, 2, 3], horizontal=True, key="radar_game_sel")
@@ -3047,6 +2854,9 @@ elif nav == "2. Scores & Standings":
     g_target = f"Game {radar_game}"
     v_by_target = f"G{radar_game}_Verified_By"
     v_at_target = f"G{radar_game}_Verified_At"
+
+    rotation_rule = st.session_state.tournament_config.get("movement_rule", "Move Right 1 Pair (+2 Lanes)")
+    max_center_lanes = int(st.session_state.tournament_config.get("lanes_count", 40))
 
     if parsed_pairs:
         radar_cols = st.columns(4)
@@ -3057,7 +2867,12 @@ elif nav == "2. Scores & Standings":
             if "Starting Lane" not in st.session_state.roster.columns:
                 st.session_state.roster["Starting Lane"] = 1
                 
-            p_bowlers = st.session_state.roster[st.session_state.roster["Starting Lane"].isin([lane_odd, lane_even])]
+            working_rost = st.session_state.roster.copy()
+            working_rost["Starting Lane"] = pd.to_numeric(working_rost["Starting Lane"], errors="coerce").fillna(1).astype(int)
+            working_rost["Active_Game_Lane"] = working_rost["Starting Lane"].apply(
+                lambda l: get_bowler_lane_for_game(int(l), radar_game, rotation_rule, max_lanes=max_center_lanes)
+            )
+            p_bowlers = working_rost[working_rost["Active_Game_Lane"].isin([lane_odd, lane_even])]
 
             if p_bowlers.empty:
                 status_color = "#334155"
@@ -3926,7 +3741,7 @@ if st.session_state.authenticated and st.session_state.session_initialized:
                 preset_q = "A bowler just used an Abralon pad to sand their ball between game 1 and game 2. What is the mandatory penalty under USBC Rule 17?"
         with col_q2:
             if st.button("Weight Holes (R18)", use_container_width=True, key="quick_r18"):
-                preset_q = "An opponent protests that a bowler has an unfilled balance hole or a hole without a gripping finger. What does USBC Rule 18 require?"
+                preset_q = "An opponent protests that a bowler has an extra un-gripped balance hole in their ball. What does USBC Rule 18 require?"
             if st.button("Youth SMART (R400)", use_container_width=True, key="quick_r400"):
                 preset_q = "Can a youth bowler receive cash or a gift card prize in this event under USBC Rule 400?"
 
