@@ -81,7 +81,6 @@ def clear_kiosk_state():
 
 @st.cache_resource
 def load_official_rulebook_bytes():
-    """Reads the committed 2026-27 USBC Playing Rulebook into memory once."""
     if os.path.exists(RULEBOOK_PATH):
         try:
             with open(RULEBOOK_PATH, "rb") as f:
@@ -244,8 +243,6 @@ st.markdown("""
         border: 1px solid #334155;
         border-radius: 8px;
     }
-
-    /* Floating AI Coach Widget (Bottom-Right Pinned) */
     div.floating-ai-anchor {
         position: fixed;
         bottom: 24px;
@@ -702,10 +699,23 @@ if "tournament_config" not in st.session_state:
     st.session_state.tournament_config["name"] = "Annual CHUSBC Open Championship Tournament"
     st.session_state.tournament_config["intake_completed"] = False
 
+DEFAULT_ROSTER_COLS = [
+    "USBC ID", "Bowler", "Average", "Starting Lane", "Division", "Team_Name",
+    "Game 1", "Game 2", "Game 3", "Paid", "Checked_In",
+    "G1_Verified_By", "G1_Verified_At", "G2_Verified_By", "G2_Verified_At", "G3_Verified_By", "G3_Verified_At"
+]
+
 if "roster" not in st.session_state:
-    st.session_state.roster = pd.DataFrame(columns=[
-        "USBC ID", "Bowler", "Average", "Starting Lane", "Division", "Team_Name", "Game 1", "Game 2", "Game 3", "Paid", "Checked_In"
-    ])
+    st.session_state.roster = pd.DataFrame(columns=DEFAULT_ROSTER_COLS)
+
+for col in DEFAULT_ROSTER_COLS:
+    if col not in st.session_state.roster.columns:
+        if col in ["Game 1", "Game 2", "Game 3"]:
+            st.session_state.roster[col] = 0
+        elif col in ["Paid", "Checked_In"]:
+            st.session_state.roster[col] = False
+        else:
+            st.session_state.roster[col] = ""
 
 if "brackets" not in st.session_state:
     st.session_state.brackets = []
@@ -880,6 +890,125 @@ if query_params.get("mode") == "checkin":
                 </div>
                 """, unsafe_allow_html=True)
                 st.caption("Keep this screen open for your starting pair reference. Good luck and high bowling!")
+
+    st.stop()
+
+# ---------------------------------------------------------
+# 6C. ROVING MOBILE TD SCORER PORTAL (?mode=scorer)
+# ---------------------------------------------------------
+if query_params.get("mode") == "scorer":
+    st.markdown("""
+    <style>
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+        .block-container {
+            padding-top: 1rem;
+            max-width: 600px;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+    cloud_state = fetch_active_tournament_state()
+    if cloud_state:
+        st.session_state.tournament_config = cloud_state["config"]
+        st.session_state.roster = pd.DataFrame(cloud_state["roster"])
+        st.session_state.brackets = cloud_state.get("brackets", [])
+
+    st.markdown(f"""
+    <div style="background: linear-gradient(135deg, #0284c7 0%, #0f172a 100%); border: 1.5px solid #38bdf8; border-radius: 12px; padding: 16px; text-align: center; margin-bottom: 16px;">
+        <span style="color: #38bdf8; font-size: 12px; font-weight: 800; letter-spacing: 1px;">CHUSBC FLOOR SCORER</span>
+        <h2 style="color: #f8fafc; margin: 4px 0 0 0; font-size: 20px;">{st.session_state.tournament_config['name']}</h2>
+        <div style="color: #cbd5e1; font-size: 13px; margin-top: 4px;">Host Center: <b>{st.session_state.tournament_config['center']}</b></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if "mobile_scorer_td" not in st.session_state:
+        st.session_state.mobile_scorer_td = ""
+
+    if not st.session_state.mobile_scorer_td:
+        with st.form("scorer_identify_form"):
+            td_name_in = st.text_input("Enter Your Name (TD on Floor):", placeholder="e.g. Dave Miller, Chris Reynolds").strip()
+            submit_td = st.form_submit_button("Start Lane Scoring", type="primary", use_container_width=True)
+            if submit_td and td_name_in:
+                st.session_state.mobile_scorer_td = td_name_in
+                st.rerun()
+        st.stop()
+
+    st.markdown(f"""
+    <div style="display: flex; justify-content: space-between; align-items: center; background-color: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 10px 14px; margin-bottom: 14px;">
+        <span style="font-size: 13.5px; color: #cbd5e1;">Official: <b style="color: #38bdf8;">{st.session_state.mobile_scorer_td}</b></span>
+        <span style="font-size: 12px; color: #34d399; font-weight: 700;">🟢 CONNECTED</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    parsed_pairs = parse_active_pairs(st.session_state.tournament_config.get("lanes_range", "1-40"), max_lanes=40)
+    pair_labels = [f"Lanes {p[0]} & {p[1]}" for p in parsed_pairs]
+
+    col_sel_p, col_sel_g = st.columns([2, 1])
+    with col_sel_p:
+        selected_pair_label = st.selectbox("Select Active Pair:", pair_labels)
+    with col_sel_g:
+        selected_game_num = st.selectbox("Game:", [1, 2, 3], index=0)
+
+    selected_pair_idx = pair_labels.index(selected_pair_label)
+    target_pair = parsed_pairs[selected_pair_idx]
+    lane_odd, lane_even = target_pair
+
+    pair_bowlers = st.session_state.roster[st.session_state.roster["Starting Lane"].isin([lane_odd, lane_even])]
+
+    if pair_bowlers.empty:
+        st.warning(f"No bowlers currently assigned to {selected_pair_label}.")
+    else:
+        g_col = f"Game {selected_game_num}"
+        v_by_col = f"G{selected_game_num}_Verified_By"
+        v_at_col = f"G{selected_game_num}_Verified_At"
+
+        first_v = pair_bowlers.iloc[0].get(v_by_col, "")
+        first_at = pair_bowlers.iloc[0].get(v_at_col, "")
+
+        if first_v:
+            st.markdown(f"""
+            <div style="background-color: #10b98120; border: 1px solid #10b981; border-radius: 8px; padding: 10px 14px; margin-bottom: 14px;">
+                <span style="color: #34d399; font-size: 13px; font-weight: 700;">✅ Game {selected_game_num} Verified by {first_v} at {first_at}</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with st.form(f"mobile_score_form_{lane_odd}_{selected_game_num}"):
+            updated_scores_map = {}
+            for b_idx, b_row in pair_bowlers.iterrows():
+                b_name = b_row["Bowler"]
+                b_lane = b_row["Starting Lane"]
+                b_curr_val = int(pd.to_numeric(b_row.get(g_col, 0), errors="coerce") or 0)
+                
+                updated_scores_map[b_row["USBC ID"]] = st.number_input(
+                    f"Lane {b_lane}: {b_name} (Entering Avg: {b_row['Average']})",
+                    min_value=0,
+                    max_value=300,
+                    value=b_curr_val,
+                    step=1,
+                    key=f"m_score_{b_row['USBC ID']}_{selected_game_num}"
+                )
+
+            submit_scores = st.form_submit_button(f"Verify & Lock Game {selected_game_num} Scores", type="primary", use_container_width=True)
+
+            if submit_scores:
+                latest_cloud = fetch_active_tournament_state()
+                working_df = pd.DataFrame(latest_cloud["roster"]) if latest_cloud else st.session_state.roster.copy()
+                
+                timestamp_str = datetime.now().strftime("%I:%M %p")
+                for u_id, sc in updated_scores_map.items():
+                    m_idx = working_df.index[working_df["USBC ID"].astype(str) == str(u_id)].tolist()
+                    if m_idx:
+                        working_df.loc[m_idx[0], g_col] = int(sc)
+                        working_df.loc[m_idx[0], v_by_col] = st.session_state.mobile_scorer_td
+                        working_df.loc[m_idx[0], v_at_col] = timestamp_str
+
+                st.session_state.roster = working_df
+                write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
+                log_audit_event(f"Mobile TD '{st.session_state.mobile_scorer_td}' verified Game {selected_game_num} on Lanes {lane_odd}-{lane_even}.")
+                st.success(f"Game {selected_game_num} on {selected_pair_label} verified and committed to Central Desk!")
+                time.sleep(1.0)
+                st.rerun()
 
     st.stop()
 
@@ -1080,9 +1209,7 @@ if not st.session_state.session_initialized:
                 "rules_text": p_data["rules_text"],
                 "intake_completed": False
             }
-            st.session_state.roster = pd.DataFrame(columns=[
-                "USBC ID", "Bowler", "Average", "Starting Lane", "Division", "Team_Name", "Game 1", "Game 2", "Game 3", "Paid", "Checked_In"
-            ])
+            st.session_state.roster = pd.DataFrame(columns=DEFAULT_ROSTER_COLS)
             st.session_state.brackets = []
             st.session_state.session_initialized = True
             log_audit_event(f"TD launched official preset: '{selected_preset}'.")
@@ -1140,9 +1267,7 @@ if not st.session_state.session_initialized:
                     "rules_text": "Qualifying: 3 games across assigned pairs. Handicap: 90% of 220.",
                     "intake_completed": False
                 }
-                st.session_state.roster = pd.DataFrame(columns=[
-                    "USBC ID", "Bowler", "Average", "Starting Lane", "Division", "Team_Name", "Game 1", "Game 2", "Game 3", "Paid", "Checked_In"
-                ])
+                st.session_state.roster = pd.DataFrame(columns=DEFAULT_ROSTER_COLS)
                 st.session_state.brackets = []
                 st.session_state.session_initialized = True
                 log_audit_event(f"TD cloned past event '{selected_past}' as template.")
@@ -1188,7 +1313,6 @@ def generate_with_failover(prompt: str, temperature: float = 0.0) -> str:
     raise last_exception
 
 def arbitrate_rules_inquiry(query_text: str, event_context: str) -> str:
-    """Grounds arbitration directly on the official 2026-27 USBC Rulebook PDF."""
     if not ai_client:
         return "Gemini API key is not configured."
 
@@ -1239,8 +1363,8 @@ def generate_first_time_td_guide() -> str:
             "1. T-60 Min: Connect external monitor to laptop. Extend display (Win+P). Open ?mode=kiosk on secondary display and hit F11.\n"
             "2. T-45 Min: In Module 1 (Tab 2), ingest roster and run Automated Lane Balancer (handles up to 40 lanes, keeps teams together).\n"
             "3. T-30 Min: As bowlers arrive, select name in Module 1 (Tab 3), collect fee, click 'Mark Paid & Display on Customer Screen'.\n"
-            "4. T-15 Min: Go to Module 4 (Brackets & Pots), seed 8-bowler brackets ($25/$10/$5) and enroll side pot bowlers.\n"
-            "5. Squad Active: In Module 2, enter or paste scores. Standings and brackets advance automatically.\n"
+            "4. T-15 Min: Floor TDs scan ?mode=scorer QR code on their phones to enter and verify scores directly from overhead monitors.\n"
+            "5. Squad Active: Track live verified lanes via the Central Desk Lane Radar Matrix in Module 2.\n"
             "6. Finals & Archive: In Module 3, run stepladder finals, declare Champion, and click 'Archive Tournament' to store in Google Sheets."
         )
 
@@ -1254,25 +1378,17 @@ Current Event Context:
 - Active Pairs: {st.session_state.tournament_config['lanes_range']}
 - Format Mode: {st.session_state.tournament_config.get('format_mode', 'Standard')}
 
-Structure the guide into 6 numbered chronological steps:
-1. T-60 Min: Hardware & Kiosk Display Setup (HDMI cable, extending screen, opening ?mode=kiosk, pressing F11).
-2. T-45 Min: Roster Ingestion & Automated 40-Lane Balancing (ensuring teams of 4 or 5 stay together on the same pair).
-3. T-30 Min: The Bowler Walk-Up Dance (selecting bowler, collecting cash/check/Venmo, clicking 'Mark Paid & Display', bowler scanning QR).
-4. T-15 Min: Brackets & Side Pots.
-5. During Competition: Score Entry (how to paste recap sheets or enter scores).
-6. Finals & Closeout: Stepladder Finals & 1-click archiving to Google Sheets.
-
-Keep the language direct, actionable, friendly, and free of unnecessary technical jargon.
+Structure the guide into 6 numbered chronological steps including how roving TDs connect their phones to ?mode=scorer and how the Central Desk monitors the live Lane Radar Matrix.
 """
     try:
         return generate_with_failover(prompt, temperature=0.1)
     except Exception:
         return (
             "1. Setup external monitor on desk facing bowlers (?mode=kiosk, F11).\n"
-            "2. Ingest roster and balance lanes across pairs in Module 1 (grouping teammates together).\n"
+            "2. Ingest roster and balance lanes across pairs in Module 1.\n"
             "3. Take payments and push check-in QR codes to bowler screen.\n"
-            "4. Seed 8-bowler brackets and side pots in Module 4.\n"
-            "5. Post game scores in Module 2.\n"
+            "4. Roving TDs open ?mode=scorer on their phones to input scores.\n"
+            "5. Monitor verified pairs in Module 2 Lane Radar Matrix.\n"
             "6. Run stepladder and archive event in Module 3."
         )
 
@@ -1426,221 +1542,7 @@ def resolve_bracket_match(b1_id: str, b2_id: str, game_col: str, bracket_type: s
     return r1["Bowler"], t1, r2["Bowler"], t2, winner_id
 
 # ---------------------------------------------------------
-# 11. DYNAMIC SOP GENERATION (WORD & PDF)
-# ---------------------------------------------------------
-def generate_sop_docx() -> io.BytesIO:
-    doc = Document()
-    for section in doc.sections:
-        section.top_margin = Inches(1.0)
-        section.bottom_margin = Inches(1.0)
-        section.left_margin = Inches(1.0)
-        section.right_margin = Inches(1.0)
-
-    PRIMARY = RGBColor(14, 58, 138)
-    SECONDARY = RGBColor(2, 132, 199)
-    TEXT_DARK = RGBColor(15, 23, 42)
-    MUTED = RGBColor(100, 116, 139)
-
-    style_normal = doc.styles['Normal']
-    style_normal.font.name = 'Calibri'
-    style_normal.font.size = Pt(11)
-    style_normal.font.color.rgb = TEXT_DARK
-    style_normal.paragraph_format.line_spacing = 1.15
-    style_normal.paragraph_format.space_after = Pt(6)
-
-    def set_cell_background(cell, hex_color):
-        tcPr = cell._tc.get_or_add_tcPr()
-        tcPr.append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="{hex_color}"/>'))
-
-    def set_cell_padding(cell, top=100, bottom=100, left=140, right=140):
-        tcPr = cell._tc.get_or_add_tcPr()
-        tcPr.append(parse_xml(
-            f'<w:tcMar {nsdecls("w")}>'
-            f'<w:top w:w="{top}" w:type="dxa"/><w:bottom w:w="{bottom}" w:type="dxa"/>'
-            f'<w:left w:w="{left}" w:type="dxa"/><w:right w:w="{right}" w:type="dxa"/>'
-            f'</w:tcMar>'
-        ))
-
-    p_org = doc.add_paragraph()
-    p_org.paragraph_format.space_after = Pt(2)
-    r_org = p_org.add_run("CECIL HARFORD UNITED STATES BOWLING CONGRESS")
-    r_org.font.size = Pt(11)
-    r_org.font.bold = True
-    r_org.font.color.rgb = SECONDARY
-
-    p_title = doc.add_paragraph()
-    p_title.paragraph_format.space_after = Pt(4)
-    r_title = p_title.add_run("Standard Operating Procedure: Tournament Desk Operations Console")
-    r_title.font.size = Pt(20)
-    r_title.font.bold = True
-    r_title.font.color.rgb = PRIMARY
-
-    p_meta = doc.add_paragraph()
-    p_meta.paragraph_format.space_after = Pt(14)
-    r_meta = p_meta.add_run(
-        f"Document Identifier: SOP-TD-2026-01 | Event: {st.session_state.tournament_config['name']}\n"
-        f"Generated from Live Console: {datetime.now().strftime('%B %d, %Y')} | Active Center: {st.session_state.tournament_config['center']}"
-    )
-    r_meta.font.size = Pt(9.5)
-    r_meta.font.color.rgb = MUTED
-
-    t_div = doc.add_table(rows=1, cols=1)
-    t_div.alignment = WD_TABLE_ALIGNMENT.CENTER
-    c_div = t_div.cell(0, 0)
-    c_div.width = Inches(6.5)
-    set_cell_background(c_div, "0E3A8A")
-    c_div.height = Pt(3)
-
-    doc.add_paragraph().paragraph_format.space_after = Pt(8)
-
-    h1 = doc.add_heading(level=1)
-    h1.add_run("1. Purpose & System Overview").font.color.rgb = PRIMARY
-    doc.add_paragraph(
-        f"This Standard Operating Procedure (SOP) standardizes tournament desk operations for the {st.session_state.tournament_config['name']} "
-        "and all official Cecil Harford USBC (CHUSBC) championship events. The platform is configured with presets for all eight CHUSBC tournaments, "
-        "supporting multi-tier desk operations, team-aware automated lane balancing up to 40 lanes, handicap calculations, and cloud archiving."
-    )
-
-    h2 = doc.add_heading(level=1)
-    h2.add_run("2. Hardware Configuration & Station Setup").font.color.rgb = PRIMARY
-    doc.add_paragraph("Desk staff must arrive at the host facility at least 60 minutes prior to squad practice to configure equipment:")
-
-    t_hw = doc.add_table(rows=5, cols=3)
-    t_hw.alignment = WD_TABLE_ALIGNMENT.CENTER
-    hw_headers = ["Component", "Physical Position", "Operational Role"]
-    hw_widths = [Inches(1.8), Inches(1.9), Inches(2.8)]
-
-    for i, title in enumerate(hw_headers):
-        cell = t_hw.cell(0, i)
-        cell.width = hw_widths[i]
-        set_cell_background(cell, "0E3A8A")
-        set_cell_padding(cell, 120, 120, 140, 140)
-        p = cell.paragraphs[0]
-        r = p.add_run(title)
-        r.bold = True
-        r.font.color.rgb = RGBColor(255, 255, 255)
-        r.font.size = Pt(10)
-
-    hw_rows = [
-        ("TD Laptop", "Behind desk, facing official only", "Main operational workstation. Keep browser logged into the TD Console."),
-        ("External Monitor", "Facing bowler registration queue", "Connected via HDMI/USB-C as 'Extended Display'. Runs ?mode=kiosk in fullscreen (F11)."),
-        ("Cash Box & Receipts", "Beside TD Laptop (secure)", "Holds cash entries, checks, and side pot pools. Must balance against console totals."),
-        ("Network / Hotspot", "Pre-tested before queue opens", "Ensure connection stability. Keep a staff cellular hotspot on standby for failover.")
-    ]
-    for row_idx, row_data in enumerate(hw_rows, start=1):
-        for col_idx, val in enumerate(row_data):
-            cell = t_hw.cell(row_idx, col_idx)
-            cell.width = hw_widths[col_idx]
-            set_cell_background(cell, "F8FAFC" if row_idx % 2 == 1 else "FFFFFF")
-            set_cell_padding(cell, 100, 100, 140, 140)
-            p = cell.paragraphs[0]
-            p.paragraph_format.line_spacing = 1.1
-            p.paragraph_format.space_after = Pt(2)
-            r = p.add_run(val)
-            r.font.size = Pt(9.5)
-
-    doc.add_paragraph().paragraph_format.space_after = Pt(6)
-
-    h_novice = doc.add_heading(level=1)
-    h_novice.add_run("3. First-Time Tournament Director (TD) Quickstart Guide").font.color.rgb = PRIMARY
-    guide_text = generate_first_time_td_guide()
-    p_guide = doc.add_paragraph(guide_text)
-    p_guide.paragraph_format.space_after = Pt(8)
-
-    buf = io.BytesIO()
-    doc.save(buf)
-    buf.seek(0)
-    return buf
-
-def generate_sop_pdf() -> bytes:
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
-    styles = getSampleStyleSheet()
-    story = []
-
-    title_style = ParagraphStyle(
-        "SOPTitle",
-        parent=styles["Heading1"],
-        fontSize=15,
-        leading=18,
-        textColor=colors.HexColor("#0e3a8a"),
-        spaceAfter=2
-    )
-    h2_style = ParagraphStyle(
-        "SOPH2",
-        parent=styles["Heading2"],
-        fontSize=11,
-        leading=14,
-        textColor=colors.HexColor("#0284c7"),
-        spaceBefore=6,
-        spaceAfter=3
-    )
-    body_style = ParagraphStyle(
-        "SOPBody",
-        parent=styles["Normal"],
-        fontSize=8,
-        leading=11,
-        textColor=colors.HexColor("#0f172a"),
-        spaceAfter=4
-    )
-
-    header_text = f"""
-    <b>Cecil Harford USBC — Tournament Desk Standard Operating Procedure</b><br/>
-    <font size="8" color="#475569">
-    Official Board Manual & First-Time TD Reference Guide | Event: {st.session_state.tournament_config['name']}<br/>
-    Host Center: {st.session_state.tournament_config['center']} | Effective: October 2026 | Document ID: SOP-TD-2026-01
-    </font>
-    """
-
-    if HAS_LOGO:
-        logo_img = RLImage(LOGO_PATH, width=48, height=48)
-        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[56, 484])
-        header_table.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ]))
-        story.append(header_table)
-    else:
-        story.append(Paragraph("Cecil Harford USBC — Tournament Desk Standard Operating Procedure", title_style))
-        story.append(Spacer(1, 4))
-
-    story.append(Paragraph("1. First-Time Tournament Director (TD) Quickstart Walkthrough", h2_style))
-    story.append(Paragraph(
-        "<b>Step 1 (T-60 Setup):</b> Connect external monitor to laptop. Extend display (Win+P). Go to Module 1 -> Tab 3 -> click 'Open External Bowler Kiosk Window'. Drag to secondary monitor facing bowlers, press F11.<br/>"
-        "<b>Step 2 (T-45 Roster & Balancing):</b> Ingest roster in Module 1. Use the 'Automated Lane Balancer' tab to distribute bowlers across active lanes (supports up to 40 lanes) with team grouping and alternating odd/even lead-off.<br/>"
-        "<b>Step 3 (T-30 Bowler Line):</b> Select bowler in Module 1 -> Tab 3. Collect fee, click 'Mark Paid & Display on Customer Screen'. Bowler scans QR code on kiosk screen. Click 'Reset External Display'.<br/>"
-        "<b>Step 4 (T-15 Brackets):</b> Go to Module 4. Select division, click 'Generate & Seed Brackets'. Brackets auto-seed and advance as scores are entered.<br/>"
-        "<b>Step 5 (Scoring):</b> Go to Module 2. Paste center recap into Gemini Live Score Ingestion, click 'Apply Recap Scores' -> 'Save Scores & Recalculate Standings'.<br/>"
-        "<b>Step 6 (Finals & Archive):</b> Go to Module 3. Select match winners for top 5 stepladder, declare Champion, and click 'Archive Tournament & Save Official PDF'.",
-        body_style
-    ))
-
-    rules_table_data = [
-        ["Statute", "Mandatory Desk Enforcement"],
-        ["Rule 17: Altering Surface", "No abrasive pads or liquid cleaners once competition starts. Remove ball immediately; frames bowled post-adjustment incur zero scores."],
-        ["Rule 18: Equipment Specs", "Balance holes are prohibited. All drilled holes must be occupied by gripping fingers on delivery. Non-compliant balls must be removed."],
-        ["Rule 10: Tardy Bowlers", "Late bowlers begin in current frame if not completed by all on pair. No warm-up frames. Missed frames are scored zero."],
-        ["Rule 400: Youth SMART", "CRITICAL MANDATE: All prizes and awards in youth divisions must be deposited into the USBC SMART program. Zero cash/gift card policy."]
-    ]
-    t_rules = Table(rules_table_data, colWidths=[120, 420])
-    t_rules.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0284c7")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-    ]))
-    story.append(t_rules)
-    doc.build(story)
-    buffer.seek(0)
-    return buffer.getvalue()
-
-# ---------------------------------------------------------
-# 12. SIDEBAR NAVIGATION & CONTROLS
+# 11. SIDEBAR NAVIGATION & CONTROLS
 # ---------------------------------------------------------
 nav_options = [
     "1. Event & Roster Intake",
@@ -1883,6 +1785,8 @@ Output strictly CSV formatted table without markdown code fences.
                                 parsed_df["Checked_In"] = False
                                 for g in ["Game 1", "Game 2", "Game 3"]:
                                     parsed_df[g] = 0
+                                for v_col in ["G1_Verified_By", "G1_Verified_At", "G2_Verified_By", "G2_Verified_At", "G3_Verified_By", "G3_Verified_At"]:
+                                    parsed_df[v_col] = ""
 
                                 st.session_state.roster = parsed_df
                                 write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
@@ -1922,6 +1826,8 @@ Input:
                                 new_roster_df["USBC ID"] = [f"11-{10000+i+1}" for i in range(len(new_roster_df))]
                             new_roster_df["Paid"] = False
                             new_roster_df["Checked_In"] = False
+                            for v_col in ["G1_Verified_By", "G1_Verified_At", "G2_Verified_By", "G2_Verified_At", "G3_Verified_By", "G3_Verified_At"]:
+                                new_roster_df[v_col] = ""
                             st.session_state.roster = new_roster_df
                             write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
                             log_audit_event(f"Gemini parsed {len(new_roster_df)} bowler entries.")
@@ -1947,6 +1853,9 @@ Input:
                         df_upload["Paid"] = False
                     if "Checked_In" not in df_upload.columns:
                         df_upload["Checked_In"] = False
+                    for v_col in ["G1_Verified_By", "G1_Verified_At", "G2_Verified_By", "G2_Verified_At", "G3_Verified_By", "G3_Verified_At"]:
+                        if v_col not in df_upload.columns:
+                            df_upload[v_col] = ""
                     st.session_state.roster = df_upload
                     write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
                     st.success("CSV Imported successfully.")
@@ -1965,6 +1874,9 @@ Input:
                 for col in ["Game 1", "Game 2", "Game 3"]:
                     if col not in edited_roster.columns:
                         edited_roster[col] = 0
+                for v_col in ["G1_Verified_By", "G1_Verified_At", "G2_Verified_By", "G2_Verified_At", "G3_Verified_By", "G3_Verified_At"]:
+                    if v_col not in edited_roster.columns:
+                        edited_roster[v_col] = ""
                 st.session_state.roster = edited_roster
                 write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
                 log_audit_event("TD updated roster grid.")
@@ -2202,7 +2114,7 @@ Input:
                                 st.rerun()
 
 # ---------------------------------------------------------
-# MODULE 2: SCORES & STANDINGS
+# MODULE 2: SCORES, STANDINGS & CENTRAL DESK LANE RADAR MATRIX
 # ---------------------------------------------------------
 elif nav == "2. Scores & Standings":
     standings = compile_standings(st.session_state.roster)
@@ -2213,6 +2125,79 @@ elif nav == "2. Scores & Standings":
         <p>{st.session_state.tournament_config['center']} | Format: {st.session_state.tournament_config.get('format_mode', 'Standard')} | Handicap: {int(st.session_state.tournament_config.get('hdcp_pct', 0.90)*100)}% of {st.session_state.tournament_config.get('hdcp_base', 220)}</p>
     </div>
     """, unsafe_allow_html=True)
+
+    # Scorer Deployment Bar & Phone QR Code Generator
+    detected_base = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
+    scorer_url = f"{detected_base}/?mode=scorer"
+    
+    with st.expander("📱 Roving Floor TD Scorer Launch (Connect Officials via Mobile)", expanded=False):
+        c_sc1, c_sc2 = st.columns([1, 2])
+        with c_sc1:
+            scorer_qr = generate_qr_image(scorer_url)
+            st.image(scorer_qr, caption="Scan with phone camera to score lanes", width=180)
+        with c_sc2:
+            st.markdown(f"""
+            #### Deploy Mobile Scoring Marshals
+            Have roving TDs and board members scan the QR code to open the **Mobile Scorer Portal** on their phones.
+            
+            * **URL:** `{scorer_url}`
+            * Officials claim lane pairs (e.g., Lanes 1–8 or 9–16), input scores directly from overhead monitors, and tap **'Verify & Lock'**.
+            * The **Lane Radar Matrix** below updates automatically as scores are verified on the concourse.
+            """)
+            st.link_button("📲 Open Mobile Scorer View in New Tab", scorer_url, use_container_width=True)
+
+    # 40-Lane Verification Radar Matrix
+    st.subheader("🛰️ Central Desk Lane Radar Matrix")
+    parsed_pairs = parse_active_pairs(st.session_state.tournament_config.get("lanes_range", "1-40"), max_lanes=40)
+    radar_game = st.radio("Display Radar for Game:", [1, 2, 3], horizontal=True, key="radar_game_sel")
+
+    g_target = f"Game {radar_game}"
+    v_by_target = f"G{radar_game}_Verified_By"
+    v_at_target = f"G{radar_game}_Verified_At"
+
+    if parsed_pairs:
+        radar_cols = st.columns(4)
+        for p_idx, pair in enumerate(parsed_pairs):
+            col_target = radar_cols[p_idx % 4]
+            lane_odd, lane_even = pair
+            p_bowlers = st.session_state.roster[st.session_state.roster["Starting Lane"].isin([lane_odd, lane_even])]
+
+            if p_bowlers.empty:
+                status_color = "#334155"
+                status_badge = "⚪ EMPTY"
+                card_sub = "No bowlers assigned"
+            else:
+                has_scores = (p_bowlers[g_target] > 0).any()
+                all_verified = (p_bowlers[v_by_target].astype(str).str.strip() != "").all()
+                any_verified = (p_bowlers[v_by_target].astype(str).str.strip() != "").any()
+
+                if all_verified and has_scores:
+                    status_color = "#10b981"  # Green
+                    v_name = p_bowlers.iloc[0].get(v_by_target, "TD")
+                    v_time = p_bowlers.iloc[0].get(v_at_target, "")
+                    status_badge = "🟢 VERIFIED"
+                    card_sub = f"By {v_name} ({v_time})"
+                elif has_scores:
+                    status_color = "#f59e0b"  # Yellow (Provisional)
+                    status_badge = "🟡 PROVISIONAL"
+                    card_sub = "Scores posted, unverified"
+                else:
+                    status_color = "#ef4444"  # Red (Pending)
+                    status_badge = "🔴 PENDING"
+                    card_sub = "Awaiting game completion"
+
+            with col_target:
+                st.markdown(f"""
+                <div style="background-color: #0f172a; border: 1.5px solid {status_color}; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px;">
+                    <div style="display: flex; justify-content: space-between; align-items: baseline;">
+                        <strong style="color: #f8fafc; font-size: 13.5px;">Lanes {lane_odd} & {lane_even}</strong>
+                        <span style="font-size: 11px; font-weight: 800; color: {status_color};">{status_badge}</span>
+                    </div>
+                    <div style="color: #cbd5e1; font-size: 11.5px; margin-top: 4px;">{card_sub}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+    st.divider()
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -2267,7 +2252,7 @@ Incoming Recap:
 
 Update Game 1, Game 2, and Game 3 columns for matching bowlers.
 Output strictly CSV formatted table with headers:
-USBC ID,Bowler,Average,Starting Lane,Division,Team_Name,Game 1,Game 2,Game 3,Paid,Checked_In
+USBC ID,Bowler,Average,Starting Lane,Division,Team_Name,Game 1,Game 2,Game 3,Paid,Checked_In,G1_Verified_By,G1_Verified_At,G2_Verified_By,G2_Verified_At,G3_Verified_By,G3_Verified_At
 """
                     try:
                         raw_csv_text = generate_with_failover(prompt, temperature=0.0)
@@ -2280,7 +2265,7 @@ USBC ID,Bowler,Average,Starting Lane,Division,Team_Name,Game 1,Game 2,Game 3,Pai
                         st.error(f"Error parsing scores: {e}")
 
     st.subheader("Official Scoring Grid")
-    cols_scoring = [c for c in ["USBC ID", "Bowler", "Average", "Starting Lane", "Division", "Team_Name", "Paid", "Checked_In", "Game 1", "Game 2", "Game 3"] if c in st.session_state.roster.columns]
+    cols_scoring = [c for c in ["USBC ID", "Bowler", "Average", "Starting Lane", "Division", "Team_Name", "Paid", "Checked_In", "Game 1", "Game 2", "Game 3", "G1_Verified_By", "G2_Verified_By", "G3_Verified_By"] if c in st.session_state.roster.columns]
     edited_scores = st.data_editor(
         st.session_state.roster[cols_scoring],
         num_rows="dynamic",
@@ -2288,9 +2273,12 @@ USBC ID,Bowler,Average,Starting Lane,Division,Team_Name,Game 1,Game 2,Game 3,Pai
         key="official_scoring_grid"
     )
     if st.button("Save Scores & Recalculate Standings", type="primary"):
+        for c in DEFAULT_ROSTER_COLS:
+            if c not in edited_scores.columns and c in st.session_state.roster.columns:
+                edited_scores[c] = st.session_state.roster[c]
         st.session_state.roster = edited_scores
         write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
-        log_audit_event("Scores saved and recalculated.")
+        log_audit_event("Scores saved and recalculated at Central Desk.")
         st.toast("✅ Scores updated & backed up to cloud!", icon="💾")
         st.rerun()
 
@@ -2801,10 +2789,10 @@ Current Tournament Setup:
 - Current Field Size: {len(st.session_state.roster)} bowlers
 
 Rules & Architecture:
-- 3 tiers: TD Console, External Kiosk (?mode=kiosk), and Bowler Mobile Check-in (?mode=checkin).
+- 3 tiers: TD Console, External Kiosk (?mode=kiosk), Bowler Mobile Check-in (?mode=checkin), and Mobile Floor Scorer (?mode=scorer).
 - Payment gate: Unpaid bowlers are locked from check-in until TD marks paid (Cash/Check/Venmo) and pushes to customer screen.
 - Scoring: Deterministic {int(st.session_state.tournament_config.get('hdcp_pct', 0.90)*100)}% of {st.session_state.tournament_config.get('hdcp_base', 220)} HDCP, cut to top 5 stepladder, permanent archiving to Google Sheets.
-- Side Action: 8-bowler single elimination brackets ($25 1st, $10 2nd, $5 expense) and high-game pots ($10 entry).
+- Floor Scorers: Roving TDs input & verify scores at lanes via ?mode=scorer; Central Desk tracks status via Lane Radar Matrix.
 - House Matrix: Team-aware automated balancing across up to 40 lanes.
 
 User Question:
