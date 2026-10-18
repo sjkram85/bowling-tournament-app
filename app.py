@@ -17,6 +17,13 @@ from pypdf import PdfReader
 import qrcode
 from PIL import Image
 
+# Safe Auto-Refresh Import (Prevents Startup Crashes if not in requirements.txt)
+try:
+    from streamlit_autorefresh import st_autorefresh
+    HAS_AUTOREFRESH = True
+except ImportError:
+    HAS_AUTOREFRESH = False
+
 # Argon2 Cryptographic Hashing
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, InvalidHashError
@@ -49,9 +56,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Optional: Auto-refresh Central Desk every 8 seconds to catch mobile check-ins
-from streamlit_autorefresh import st_autorefresh
-count = st_autorefresh(interval=8000, limit=None, key="central_desk_poller")
+# Polling timer: Auto-refreshes Central Desk every 8 seconds if available
+if HAS_AUTOREFRESH:
+    st_autorefresh(interval=8000, limit=None, key="central_desk_poller")
 
 LOGO_PATH = "CHUSBC.jpg"
 HAS_LOGO = os.path.exists(LOGO_PATH)
