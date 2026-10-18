@@ -214,7 +214,7 @@ def write_archives_df(df: pd.DataFrame):
 @st.cache_resource
 def get_shared_kiosk_state():
     return {
-        "active_kiosk_usbc_id": None
+        "active_card": None
     }
 
 shared_kiosk = get_shared_kiosk_state()
@@ -280,7 +280,7 @@ if query_params.get("mode") == "kiosk":
     </style>
     """, unsafe_allow_html=True)
 
-    active_usbc = shared_kiosk.get("active_kiosk_usbc_id")
+    active_card = shared_kiosk.get("active_card")
     detected_base = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
 
     col_k1, col_k2, col_k3 = st.columns([1, 4, 1])
@@ -291,44 +291,39 @@ if query_params.get("mode") == "kiosk":
                 st.image(LOGO_PATH, width=160)
 
         # 1. Active Check-in View on Customer Monitor
-        if active_usbc:
-            match = st.session_state.roster[st.session_state.roster["USBC ID"].astype(str) == str(active_usbc)]
-            if not match.empty:
-                b_row = match.iloc[0]
-                b_name = b_row["Bowler"]
-                b_avg = b_row["Average"]
-                b_lane = int(b_row["Starting Lane"])
-                pair_partner = b_lane + 1 if b_lane % 2 != 0 else b_lane - 1
-                pair_display = f"Lanes {min(b_lane, pair_partner)} & {max(b_lane, pair_partner)}"
+        if active_card is not None:
+            b_name = active_card["name"]
+            b_usbc = active_card["usbc_id"]
+            b_avg = active_card["avg"]
+            b_lane = active_card["lane"]
+            pair_display = active_card["pair_display"]
 
-                checkin_url = f"{detected_base}/?mode=checkin&usbc_id={active_usbc}"
-                qr_buf = generate_qr_image(checkin_url)
+            checkin_url = f"{detected_base}/?mode=checkin&usbc_id={b_usbc}"
+            qr_buf = generate_qr_image(checkin_url)
 
-                st.markdown(f"""
-                <div style="background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%); border: 2px solid #38bdf8; border-radius: 16px; padding: 24px; text-align: center; box-shadow: 0 8px 24px rgba(0,0,0,0.5); margin-bottom: 20px;">
-                    <span style="background: #38bdf820; color: #38bdf8; border: 1px solid #38bdf8; padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: 800; letter-spacing: 1px;">WELCOME TO THE LANES</span>
-                    <h1 style="color: #f8fafc; font-size: 38px; margin: 12px 0 4px 0; font-weight: 800;">{b_name}</h1>
-                    <div style="color: #94a3b8; font-size: 16px;">USBC ID: <b style="color: #cbd5e1;">{active_usbc}</b> | Entering Avg: <b style="color: #cbd5e1;">{b_avg}</b></div>
-                </div>
-                """, unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%); border: 2px solid #38bdf8; border-radius: 16px; padding: 24px; text-align: center; box-shadow: 0 8px 24px rgba(0,0,0,0.5); margin-bottom: 20px;">
+                <span style="background: #38bdf820; color: #38bdf8; border: 1px solid #38bdf8; padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: 800; letter-spacing: 1px;">WELCOME TO THE LANES</span>
+                <h1 style="color: #f8fafc; font-size: 38px; margin: 12px 0 4px 0; font-weight: 800;">{b_name}</h1>
+                <div style="color: #94a3b8; font-size: 16px;">USBC ID: <b style="color: #cbd5e1;">{b_usbc}</b> | Entering Avg: <b style="color: #cbd5e1;">{b_avg}</b></div>
+            </div>
+            """, unsafe_allow_html=True)
 
-                col_q1, col_q2, col_q3 = st.columns([1, 2, 1])
-                with col_q2:
-                    st.image(qr_buf, use_container_width=True)
+            col_q1, col_q2, col_q3 = st.columns([1, 2, 1])
+            with col_q2:
+                st.image(qr_buf, use_container_width=True)
 
-                st.markdown(f"""
-                <div style="background-color: #1e293b; border: 2px solid #38bdf8; border-radius: 12px; padding: 18px; text-align: center; margin-top: 14px;">
-                    <div style="font-size: 13px; color: #94a3b8; text-transform: uppercase; font-weight: 700; letter-spacing: 1px;">Assigned Starting Pair</div>
-                    <div style="font-size: 36px; font-weight: 900; color: #38bdf8; margin: 4px 0;">{pair_display}</div>
-                    <div style="font-size: 15px; color: #e2e8f0;">Lead-off Delivery on <b>Lane {b_lane}</b></div>
-                </div>
-                <div style="text-align: center; color: #64748b; font-size: 14px; margin-top: 14px;">
-                    📲 Point your phone camera at the QR code above to confirm check-in.
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                shared_kiosk["active_kiosk_usbc_id"] = None
-                st.rerun()
+            st.markdown(f"""
+            <div style="background-color: #1e293b; border: 2px solid #38bdf8; border-radius: 12px; padding: 18px; text-align: center; margin-top: 14px;">
+                <div style="font-size: 13px; color: #94a3b8; text-transform: uppercase; font-weight: 700; letter-spacing: 1px;">Assigned Starting Pair</div>
+                <div style="font-size: 36px; font-weight: 900; color: #38bdf8; margin: 4px 0;">{pair_display}</div>
+                <div style="font-size: 15px; color: #e2e8f0;">Lead-off Delivery on <b>Lane {b_lane}</b></div>
+            </div>
+            <div style="text-align: center; color: #94a3b8; font-size: 14px; margin-top: 14px;">
+                📲 Point your phone camera at the QR code above to confirm check-in.
+            </div>
+            """, unsafe_allow_html=True)
+
         else:
             # 2. Idle Welcome View on Customer Monitor
             total = len(st.session_state.roster)
@@ -343,12 +338,11 @@ if query_params.get("mode") == "kiosk":
                     <span style="font-size: 14px; color: #94a3b8; margin-left: 6px;">Bowlers Checked In</span>
                 </div>
             </div>
-            <div style="text-align: center; margin-top: 36px; color: #475569; font-size: 15px;">
+            <div style="text-align: center; margin-top: 36px; color: #64748b; font-size: 15px;">
                 Please approach the desk official with your entry fee to receive your lane assignment.
             </div>
             """, unsafe_allow_html=True)
 
-    # 2-second polling to catch TD laptop actions across tabs
     time.sleep(2.0)
     st.rerun()
 
@@ -1021,7 +1015,7 @@ Input:
             st.caption("Drag that window to the monitor facing the bowlers and press F11 for fullscreen.")
         with col_kiosk_clear:
             if st.button("🔄 Reset External Display (Show Welcome)", use_container_width=True):
-                shared_kiosk["active_kiosk_usbc_id"] = None
+                shared_kiosk["active_card"] = None
                 log_audit_event("TD reset customer kiosk display to idle banner.")
                 st.rerun()
 
@@ -1066,6 +1060,17 @@ Input:
             b_checked = bool(b_row["Checked_In"])
             b_lane = int(b_row["Starting Lane"])
 
+            pair_partner = b_lane + 1 if b_lane % 2 != 0 else b_lane - 1
+            pair_display_str = f"Lanes {min(b_lane, pair_partner)} & {max(b_lane, pair_partner)}"
+
+            card_payload = {
+                "name": search_query,
+                "usbc_id": b_usbc,
+                "avg": int(b_row["Average"]),
+                "lane": b_lane,
+                "pair_display": pair_display_str
+            }
+
             st.write("")
             col_info, col_actions = st.columns([1, 1])
 
@@ -1087,7 +1092,7 @@ Input:
                         idx = st.session_state.roster.index[st.session_state.roster["USBC ID"].astype(str) == b_usbc].tolist()
                         if idx:
                             st.session_state.roster.loc[idx[0], "Paid"] = True
-                            shared_kiosk["active_kiosk_usbc_id"] = b_usbc
+                            shared_kiosk["active_card"] = card_payload
                             log_audit_event(f"Payment collected for {search_query} ({payment_type}) & pushed to customer screen.")
                             st.success("Payment logged! Now displaying QR code on customer-facing monitor.")
                             st.rerun()
@@ -1096,7 +1101,7 @@ Input:
                     col_p1, col_p2 = st.columns(2)
                     with col_p1:
                         if st.button("📺 Push to Customer Screen", type="primary", use_container_width=True):
-                            shared_kiosk["active_kiosk_usbc_id"] = b_usbc
+                            shared_kiosk["active_card"] = card_payload
                             log_audit_event(f"Pushed {search_query} to external customer screen.")
                             st.rerun()
                     with col_p2:
@@ -1105,8 +1110,8 @@ Input:
                             if idx:
                                 st.session_state.roster.loc[idx[0], "Paid"] = False
                                 st.session_state.roster.loc[idx[0], "Checked_In"] = False
-                                if shared_kiosk.get("active_kiosk_usbc_id") == b_usbc:
-                                    shared_kiosk["active_kiosk_usbc_id"] = None
+                                if shared_kiosk.get("active_card") and shared_kiosk["active_card"].get("usbc_id") == b_usbc:
+                                    shared_kiosk["active_card"] = None
                                 log_audit_event(f"Payment reverted to Unpaid for {search_query}.")
                                 st.rerun()
 
@@ -1117,7 +1122,10 @@ Input:
                     checkin_url = f"{detected_base}/?mode=checkin&usbc_id={b_usbc}"
                     qr_buf = generate_qr_image(checkin_url)
 
-                    is_currently_on_kiosk = (shared_kiosk.get("active_kiosk_usbc_id") == b_usbc)
+                    is_currently_on_kiosk = (
+                        shared_kiosk.get("active_card") is not None and 
+                        shared_kiosk["active_card"].get("usbc_id") == b_usbc
+                    )
                     status_text = "🟢 Currently Live on Customer Screen" if is_currently_on_kiosk else "⚪ Not currently on Customer Screen"
                     
                     st.markdown(f"#### 📲 Desk Preview ({search_query}):")
@@ -1310,7 +1318,7 @@ elif nav == "3. Stepladder Finals":
                     updated_archives = pd.concat([archive_df, new_archive_record], ignore_index=True)
                     write_archives_df(updated_archives)
                     log_audit_event(f"Tournament '{st.session_state.tournament_config['name']}' officially archived with Champion: {champion}.")
-                    st.success(f"Official PDF and tournament record permanently archived to Google Sheets!")
+                    st.success("Official PDF and tournament record permanently archived to Google Sheets!")
 
 # ---------------------------------------------------------
 # MODULE 4: AI RULES ARBITER
