@@ -6,6 +6,9 @@ import json
 import base64
 import random
 import hashlib
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from datetime import datetime
 import pandas as pd
 import streamlit as st
@@ -111,7 +114,7 @@ st.markdown("""
         font-size: 28px;
         font-weight: 800;
         color: #38bdf8;
-        line-height: 1.1;
+        line-line: 1.1;
     }
     .stat-label {
         font-size: 12px;
@@ -168,7 +171,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 2. PERSISTENT GOOGLE SHEETS REPOSITORY (USERS & ARCHIVES)
+# 2. PERSISTENT GOOGLE SHEETS REPOSITORY & EMAIL NOTIFICATIONS
 # ---------------------------------------------------------
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.strip().encode("utf-8")).hexdigest()
@@ -245,6 +248,73 @@ def write_archives_df(df: pd.DataFrame):
             st.error(f"Error persisting archive to Google Sheets: {e}")
             return False
     return False
+
+def notify_admin_new_registration(requested_user: str, requested_name: str, requested_at: str):
+    """Sends an email notification to scottjk85@gmail.com when someone self-registers."""
+    sender_email = st.secrets.get("EMAIL_SENDER", "")
+    sender_password = st.secrets.get("EMAIL_APP_PASSWORD", "")
+    target_admin = "scottjk85@gmail.com"
+
+    if not sender_email or not sender_password:
+        return False
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"🔔 Action Required: New TD Registration ({requested_name})"
+        msg["From"] = f"CHUSBC Desk Alert <{sender_email}>"
+        msg["To"] = target_admin
+
+        app_url = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
+
+        html_body = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; color: #0f172a; line-height: 1.6; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%); padding: 20px; border-radius: 10px; color: #ffffff; text-align: center;">
+                <h2 style="margin: 0; font-size: 20px;">🎳 Cecil Harford USBC</h2>
+                <p style="margin: 5px 0 0 0; color: #38bdf8; font-size: 14px;">Tournament Desk Operations Console</p>
+            </div>
+            
+            <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-top: 20px;">
+                <h3 style="margin-top: 0; color: #1e3a8a;">New Staff Registration Request Pending</h3>
+                <p>A new official has submitted a registration request and is awaiting administrative approval:</p>
+                
+                <table style="width: 100%; border-collapse: collapse; margin: 15px 0;">
+                    <tr>
+                        <td style="padding: 8px 0; color: #64748b; font-weight: bold; width: 140px;">Full Name:</td>
+                        <td style="padding: 8px 0; color: #0f172a; font-weight: bold;">{requested_name}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; color: #64748b; font-weight: bold;">Desired Username:</td>
+                        <td style="padding: 8px 0; color: #0284c7; font-family: monospace; font-size: 15px;">{requested_user}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; color: #64748b; font-weight: bold;">Submitted At:</td>
+                        <td style="padding: 8px 0; color: #0f172a;">{requested_at}</td>
+                    </tr>
+                </table>
+
+                <div style="text-align: center; margin-top: 25px;">
+                    <a href="{app_url}" style="background-color: #0284c7; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">
+                        Sign In to Review & Approve
+                    </a>
+                </div>
+            </div>
+
+            <p style="color: #94a3b8; font-size: 12px; text-align: center; margin-top: 20px;">
+                Navigate to <b>Module 9: TD User Management ⚙️</b> to activate or deny this request.
+            </p>
+        </body>
+        </html>
+        """
+        msg.attach(MIMEText(html_body, "html"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, target_admin, msg.as_string())
+        return True
+    except Exception as e:
+        print(f"Failed to send admin registration alert: {e}")
+        return False
 
 # ---------------------------------------------------------
 # 3. INITIALIZE TOURNAMENT STATE & ROSTER
@@ -580,6 +650,7 @@ if not st.session_state.authenticated:
                         elif req_user in current_df["username"].values:
                             st.error(f"Username '{req_user}' is already registered or requested.")
                         else:
+                            timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M")
                             new_row = pd.DataFrame([{
                                 "username": req_user,
                                 "name": req_name,
@@ -587,12 +658,20 @@ if not st.session_state.authenticated:
                                 "role": "td",
                                 "status": "pending",
                                 "must_change_password": False,
-                                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                                "created_at": timestamp_str
                             }])
                             updated_df = pd.concat([current_df, new_row], ignore_index=True)
                             write_users_df(updated_df)
+                            
+                            # Send automatic email alert to Scott Kramer
+                            notify_admin_new_registration(
+                                requested_user=req_user, 
+                                requested_name=req_name, 
+                                requested_at=timestamp_str
+                            )
+
                             log_audit_event(f"New self-registration submitted: '{req_user}' ({req_name}).")
-                            st.success("Registration submitted! An administrator will review and approve your account.")
+                            st.success("Registration submitted! An administrator has been notified to review your account.")
 
     st.stop()
 
@@ -2149,7 +2228,6 @@ elif nav == "7. Board SOP & Staff Manual 📖":
     </div>
     """, unsafe_allow_html=True)
 
-    # 1. Interactive Gemini Live TD Coach
     with st.expander("🤖 Ask Gemini: Live Desk Operations & Onboarding Coach", expanded=True):
         st.markdown("Have a question about what button to click, how to handle a payment, or what to do if you're stuck? Ask here:")
         coach_question = st.text_input("Enter your desk ops question (e.g., 'A bowler arrived late in game 1, what do I click?'):", placeholder="Type your tournament question...")
@@ -2227,8 +2305,8 @@ Format your response in simple, numbered, crystal-clear steps telling the offici
            * Connect the secondary monitor to your laptop with an HDMI or USB-C cable.
            * On Windows, press `Win + P` and choose **Extend**. (Mac: Displays $\\rightarrow$ Extended Desktop).
            * Open your browser and log into the console.
-           * Navigate to **Module 1: Event & Roster Intake** $\\rightarrow$ Tab 3: **💳 Desk Intake & Payment Terminal**[cite: 5].
-           * Click **🖥️ Open External Bowler Kiosk Window**[cite: 5]. Drag that new tab to the monitor facing bowlers and press **F11** for fullscreen.
+           * Navigate to **Module 1: Event & Roster Intake** $\\rightarrow$ Tab 3: **💳 Desk Intake & Payment Terminal**.
+           * Click **🖥️ Open External Bowler Kiosk Window**. Drag that new tab to the monitor facing bowlers and press **F11** for fullscreen.
 
         2. **T-45 Minutes (Roster Intake)**
            * In Module 1, go to Tab 2: **📝 Roster Ingestion & Editing**.
@@ -2237,11 +2315,11 @@ Format your response in simple, numbered, crystal-clear steps telling the offici
            * Check the **📋 Editable Master Grid** to verify names, USBC IDs, averages, and lane assignments.
 
         3. **T-30 Minutes (Bowler Arrival & The 3-Click Check-In Dance)**
-           * As each bowler steps up to the desk, stay on **Module 1 $\\rightarrow$ Tab 3**[cite: 5]:
-             1. Select their name from the **Search / Select Bowler at Desk** dropdown[cite: 4, 5].
-             2. Collect their entry fee and click **Mark Paid (Cash/Check/Venmo) & Display on Customer Screen**[cite: 5].
-             3. Look at the bowler monitor: their Welcome Card and QR code appear immediately[cite: 4, 5]. Tell the bowler: *"Point your phone camera at the QR code on the screen."*[cite: 4]
-             4. Once checked in, click **🔄 Reset External Display (Show Welcome)** for the next bowler[cite: 5].
+           * As each bowler steps up to the desk, stay on **Module 1 $\\rightarrow$ Tab 3**:
+             1. Select their name from the **Search / Select Bowler at Desk** dropdown.
+             2. Collect their entry fee and click **Mark Paid (Cash/Check/Venmo) & Display on Customer Screen**.
+             3. Look at the bowler monitor: their Welcome Card and QR code appear immediately. Tell the bowler: *"Point your phone camera at the QR code on the screen."*
+             4. Once checked in, click **🔄 Reset External Display (Show Welcome)** for the next bowler.
 
         4. **T-15 Minutes (Brackets & Side Pots)**
            * Go to **Module 4: Side Action: Brackets & Pots 💰**.
@@ -2263,8 +2341,8 @@ Format your response in simple, numbered, crystal-clear steps telling the offici
         
         The platform synchronizes three live touchpoints:
         * **Tournament Director (TD) Console:** Private desk workstation for configuration, rosters, payments, and scoring.
-        * **Customer Kiosk Monitor (`?mode=kiosk`):** Full-screen secondary monitor facing bowlers, displaying the welcome banner and dynamic QR codes[cite: 4, 5].
-        * **Bowler Smartphone Portal (`?mode=checkin`):** Contactless mobile screen confirming on-lane arrival and lane pair assignments[cite: 4].
+        * **Customer Kiosk Monitor (`?mode=kiosk`):** Full-screen secondary monitor facing bowlers, displaying the welcome banner and dynamic QR codes.
+        * **Bowler Smartphone Portal (`?mode=checkin`):** Contactless mobile screen confirming on-lane arrival and lane pair assignments.
         """)
 
     with st.expander("2. Station Hardware & Physical Setup"):
@@ -2274,7 +2352,7 @@ Format your response in simple, numbered, crystal-clear steps telling the offici
         | Component | Position | Operational Role |
         | :--- | :--- | :--- |
         | **TD Laptop** | Behind desk | Main workstation running the TD Console. |
-        | **External Monitor** | Facing registration queue | Connected via HDMI/USB-C running `?mode=kiosk` in fullscreen (**F11**)[cite: 5]. |
+        | **External Monitor** | Facing registration queue | Connected via HDMI/USB-C running `?mode=kiosk` in fullscreen (**F11**). |
         | **Cash Box** | Beside TD laptop (secure) | Holds entry cash, checks, and side action funds. Must balance with the terminal audit log. |
         | **Network Hotspot** | Tested before queue opens | Backup internet access if bowling center guest Wi-Fi is congested. |
         """)
@@ -2291,8 +2369,8 @@ Format your response in simple, numbered, crystal-clear steps telling the offici
 
     with st.expander("4. Troubleshooting Playbook"):
         st.markdown("""
-        * **Kiosk Screen Does Not Update:** Click **🔄 Reset External Display (Show Welcome)**, re-select bowler, and click **📺 Push to Customer Screen**[cite: 5]. If needed, click into the kiosk window and press **F5**.
-        * **Phone Camera Won't Scan QR:** Increase external monitor brightness. If the phone still fails to focus, click **Manual TD Check-In Override (No Phone)** on the TD console[cite: 5].
+        * **Kiosk Screen Does Not Update:** Click **🔄 Reset External Display (Show Welcome)**, re-select bowler, and click **📺 Push to Customer Screen**. If needed, click into the kiosk window and press **F5**.
+        * **Phone Camera Won't Scan QR:** Increase external monitor brightness. If the phone still fails to focus, click **Manual TD Check-In Override (No Phone)** on the TD console.
         * **Wi-Fi Outage:** Do **not** close or hard-refresh the browser tab. Turn on smartphone cellular hotspot, connect the laptop Wi-Fi, and continue operations normally.
         """)
 
