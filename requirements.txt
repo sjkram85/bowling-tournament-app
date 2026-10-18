@@ -1,5 +1,6 @@
 streamlit
 streamlit-gsheets
+streamlit-autorefresh
 pypdf
 qrcode
 pillow
@@ -8,4 +9,3 @@ python-docx
 reportlab
 google-genai
 pandas
-streamlit-autorefresh
