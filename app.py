@@ -56,29 +56,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Polling timer: Auto-refreshes Central Desk every 8 seconds if available
-if HAS_AUTOREFRESH:
-    st_autorefresh(interval=8000, limit=None, key="central_desk_poller")
-
-# ---------------------------------------------------------
-# BACKGROUND CLOUD SYNC ON REFRESH TICK
-# ---------------------------------------------------------
-def sync_desk_with_cloud():
-    cloud_state = fetch_active_tournament_state()
-    if cloud_state and "roster" in cloud_state:
-        cloud_roster_df = pd.DataFrame(cloud_state["roster"])
-        if not cloud_roster_df.empty:
-            # If cloud has newer check-in or score data, update session state seamlessly
-            local_roster = st.session_state.get("roster", pd.DataFrame())
-            if local_roster.empty or len(local_roster) == len(cloud_roster_df):
-                # Update check-in and score columns from cloud without disrupting active form inputs
-                st.session_state.roster = cloud_roster_df
-
-# Trigger cloud sync on every refresh tick
-if HAS_AUTOREFRESH:
-    count = st_autorefresh(interval=8000, limit=None, key="central_desk_poller")
-    sync_desk_with_cloud()
-
 LOGO_PATH = "CHUSBC.jpg"
 HAS_LOGO = os.path.exists(LOGO_PATH)
 
@@ -2684,6 +2661,23 @@ with st.sidebar:
         st.rerun()
 
 # ---------------------------------------------------------
+# SCOPED AUTO-REFRESH & BACKGROUND CLOUD SYNC
+# ---------------------------------------------------------
+def sync_desk_with_cloud():
+    cloud_state = fetch_active_tournament_state()
+    if cloud_state and "roster" in cloud_state:
+        cloud_roster_df = pd.DataFrame(cloud_state["roster"])
+        if not cloud_roster_df.empty:
+            local_roster = st.session_state.get("roster", pd.DataFrame())
+            if local_roster.empty or len(local_roster) == len(cloud_roster_df):
+                st.session_state.roster = cloud_roster_df
+
+if st.session_state.authenticated and st.session_state.session_initialized:
+    if HAS_AUTOREFRESH:
+        count = st_autorefresh(interval=8000, limit=None, key="central_desk_poller")
+        sync_desk_with_cloud()
+
+# ---------------------------------------------------------
 # MODULE 1: COMPREHENSIVE INTAKE (SETTINGS -> ROSTER -> DESK TERMINAL)
 # ---------------------------------------------------------
 if nav == "1. Event & Roster Intake":
@@ -3056,7 +3050,7 @@ Input:
             st.markdown("##### 🚪 Entrance Self-Check-In QR")
             st.image(generate_qr_image(self_checkin_url), width=140)
             st.link_button("🔗 Open Entrance Check-In", self_checkin_url, use_container_width=True)
-            st.caption("Pre-paid bowlers auto-check in; unpaid or bracket bowlers are directed to desk.")
+            st.caption("Pre-paid bowlers check in automatically; unpaid or bracket bowlers are directed to desk.")
         with col_qr2:
             st.markdown("##### 📊 Bowler Live Portal QR")
             st.image(generate_qr_image(bowler_portal_url), width=140)
