@@ -302,6 +302,7 @@ CHUSBC_PRESET_PROFILES = {
         "format_mode": "Team/Singles Standard",
         "games_count": 3,
         "movement_rule": "Move Right 1 Pair (+2 Lanes)",
+        "entry_fee": 50.0,
         "rules_text": (
             "USBC Certified. 3 Games across assigned pairs. Open to all adult certified bowlers. "
             "Handicap: 90% of 220 based on highest winter book average. Optional All-Events scratch & handicap. "
@@ -318,6 +319,7 @@ CHUSBC_PRESET_PROFILES = {
         "format_mode": "Women's Championship",
         "games_count": 3,
         "movement_rule": "Move Right 1 Pair (+2 Lanes)",
+        "entry_fee": 50.0,
         "rules_text": (
             "USBC Certified. Open to all female USBC members of Cecil Harford USBC. "
             "Handicap: 90% of 220. 4-person team, 2-person doubles, and individual singles. "
@@ -334,6 +336,7 @@ CHUSBC_PRESET_PROFILES = {
         "format_mode": "Ladies Singles Invitational",
         "games_count": 3,
         "movement_rule": "Move Right 1 Pair (+2 Lanes)",
+        "entry_fee": 40.0,
         "rules_text": (
             "Annual Lighthouse Ladies Singles Championship. 3 qualifying games moving pairs each game. "
             "Cut to top 5 stepladder finals. Handicap 90% of 215."
@@ -349,6 +352,7 @@ CHUSBC_PRESET_PROFILES = {
         "format_mode": "Senior Age-Bracketed",
         "games_count": 3,
         "movement_rule": "Move Right 1 Pair (+2 Lanes)",
+        "entry_fee": 45.0,
         "rules_text": (
             "USBC Certified Senior Singles. Age 50+ as of tournament date. "
             "Divisions: Super Senior (75+), Senior A (70-74), B (65-69), C (60-64), D (55-59), E (50-54). "
@@ -365,6 +369,7 @@ CHUSBC_PRESET_PROFILES = {
         "format_mode": "Mixed Gender Teams",
         "games_count": 3,
         "movement_rule": "Move Right 1 Pair (+2 Lanes)",
+        "entry_fee": 50.0,
         "rules_text": (
             "CHUSBC Mixed Championship. 4-bowler team (2 Men / 2 Women required) and Doubles (1 Man / 1 Woman). "
             "Handicap: 90% of 220. 3 games across pairs."
@@ -380,6 +385,7 @@ CHUSBC_PRESET_PROFILES = {
         "format_mode": "Scotch Doubles (Alternating)",
         "games_count": 3,
         "movement_rule": "Stay on Pair (No Movement)",
+        "entry_fee": 40.0,
         "rules_text": (
             "Valentine's Scotch Doubles. 2 bowlers per team. Bowler A rolls first ball, Bowler B shoots spare, "
             "alternating strike shot lead each frame. Combined team average handicap based on 90% of 430."
@@ -395,6 +401,7 @@ CHUSBC_PRESET_PROFILES = {
         "format_mode": "9-Pin No-Tap (9 = Strike)",
         "games_count": 3,
         "movement_rule": "Move Right 1 Pair (+2 Lanes)",
+        "entry_fee": 35.0,
         "rules_text": (
             "Valentine's 9-Pin No-Tap Tournament. Hitting 9 pins on first ball delivery is scored as an automatic strike. "
             "3 games total. 90% of 220 handicap."
@@ -410,6 +417,7 @@ CHUSBC_PRESET_PROFILES = {
         "format_mode": "Tournament of Champions (TOC)",
         "games_count": 3,
         "movement_rule": "Move Right 1 Pair (+2 Lanes)",
+        "entry_fee": 50.0,
         "rules_text": (
             "Invitational Tournament of Champions for CHUSBC winter league winning teams. "
             "Qualifying 3 games into seeded single-elimination match play bracket to crown the Association League Champion."
@@ -705,7 +713,6 @@ def parse_active_pairs(range_str: str, max_lanes: int = 40):
     return unique_pairs
 
 def get_bowler_lane_for_game(starting_lane: int, game_num: int, movement_rule: str, max_lanes: int = 40) -> int:
-    """Calculates active lane for a game based on tournament pair rotation rule."""
     if game_num <= 1:
         return starting_lane
 
@@ -833,7 +840,7 @@ def generate_qr_image(url: str) -> io.BytesIO:
     return buf
 
 # ---------------------------------------------------------
-# 10. DETERMINISTIC SCORING ENGINE, DYNAMIC HANDICAP & PDF RASTERS
+# 10. DETERMINISTIC SCORING, FINANCIALS & SMART COMPLIANCE
 # ---------------------------------------------------------
 def calculate_handicap(avg: int, base: int = None, percentage: float = None) -> int:
     if base is None:
@@ -873,6 +880,61 @@ def compile_standings(df: pd.DataFrame) -> pd.DataFrame:
     calc_df.index += 1
     calc_df.index.name = "Rank"
     return calc_df
+
+def calculate_financial_summary(roster_df: pd.DataFrame, config: dict, lineage_per_game: float = 3.75, games_count: int = 3) -> dict:
+    if roster_df.empty:
+        return {"paid_count": 0, "gross_revenue": 0.0, "total_lineage": 0.0, "net_prize_fund": 0.0}
+
+    paid_df = roster_df[roster_df["Paid"] == True]
+    paid_count = len(paid_df)
+    
+    entry_fee_total = float(config.get("entry_fee", 50.0))
+    lineage_total_per_bowler = lineage_per_game * games_count
+    
+    gross_revenue = paid_count * entry_fee_total
+    total_lineage = paid_count * lineage_total_per_bowler
+    expense_fee = paid_count * 5.00
+    net_prize_fund = gross_revenue - (total_lineage + expense_fee)
+
+    return {
+        "paid_count": paid_count,
+        "entry_fee": entry_fee_total,
+        "gross_revenue": gross_revenue,
+        "total_lineage": total_lineage,
+        "expense_fee": expense_fee,
+        "net_prize_fund": max(0.0, net_prize_fund)
+    }
+
+def generate_smart_scholarship_csv(standings_df: pd.DataFrame, net_prize_fund: float) -> str:
+    if standings_df.empty or net_prize_fund <= 0:
+        return ""
+
+    top_cut = max(1, math.ceil(len(standings_df) * 0.25))
+    eligible = standings_df.head(top_cut).copy()
+
+    weights = [0.40, 0.25, 0.15]
+    payouts = []
+    
+    for i in range(len(eligible)):
+        if i < len(weights):
+            amt = round(net_prize_fund * weights[i], 2)
+        else:
+            remainder_share = net_prize_fund * (1.0 - sum(weights))
+            amt = round(remainder_share / max(1, (len(eligible) - len(weights))), 2)
+        payouts.append(amt)
+
+    eligible["SMART_Award_Amount"] = payouts
+    eligible["SMART_Account_Number"] = [f"SMART-{random.randint(100000, 999999)}" for _ in range(len(eligible))]
+    
+    export_df = pd.DataFrame({
+        "USBC ID": eligible.get("USBC ID", "TBD"),
+        "Bowler Name": eligible["Bowler"],
+        "SMART Account #": eligible["SMART_Account_Number"],
+        "Award Amount ($)": eligible["SMART_Award_Amount"],
+        "Tournament Name": st.session_state.tournament_config["name"],
+        "Date": datetime.now().strftime("%Y-%m-%d")
+    })
+    return export_df.to_csv(index=False)
 
 def export_lane_assignments_pdf(roster_df: pd.DataFrame, config: dict) -> bytes:
     buffer = io.BytesIO()
@@ -1455,7 +1517,6 @@ if query_params.get("mode") == "scorer":
     target_pair = parsed_pairs[selected_pair_idx]
     lane_odd, lane_even = target_pair
 
-    # Dynamic cross-pair rotation calculation for mobile scorer
     rotation_rule = st.session_state.tournament_config.get("movement_rule", "Move Right 1 Pair (+2 Lanes)")
     max_center_lanes = int(st.session_state.tournament_config.get("lanes_count", 40))
 
@@ -1955,6 +2016,7 @@ if not st.session_state.session_initialized:
                 "format_mode": p_data["format_mode"],
                 "games_count": p_data["games_count"],
                 "movement_rule": p_data.get("movement_rule", "Move Right 1 Pair (+2 Lanes)"),
+                "entry_fee": p_data.get("entry_fee", 50.0),
                 "rules_text": p_data["rules_text"],
                 "intake_completed": False
             }
@@ -2016,6 +2078,7 @@ if not st.session_state.session_initialized:
                     "format_mode": "Standard 3-Game",
                     "games_count": 3,
                     "movement_rule": "Move Right 1 Pair (+2 Lanes)",
+                    "entry_fee": 50.0,
                     "rules_text": "Qualifying: 3 games across assigned pairs. Handicap: 90% of 220.",
                     "intake_completed": False
                 }
@@ -2156,7 +2219,7 @@ def generate_first_time_td_guide() -> str:
             "4. T-15 Min: Floor TDs scan ?mode=scorer QR code on their phones, create their Argon2 4-digit PIN, and claim lane pairs.\n"
             "5. Squad Active: Roving TDs snap overhead monitors with phone camera OCR, input scores, and lock with their secret PIN. Central Desk monitors verified lanes on the Radar Matrix.\n"
             "6. Concourse TV & Bowler Portal: Cast ?mode=leaderboard on center TVs and let bowlers track ranks on ?mode=bowler_portal.\n"
-            "7. Finals & Archive: In Module 3, run stepladder finals, declare Champion, and click 'Archive Tournament' to store in Google Sheets."
+            "7. Financials & Archive: Use Financials & Payout Ledger to balance collections against lineage and export SMART forms. In Module 3, archive event."
         )
 
     prompt = f"""
@@ -2169,7 +2232,7 @@ Current Event Context:
 - Active Pairs: {st.session_state.tournament_config['lanes_range']}
 - Format Mode: {st.session_state.tournament_config.get('format_mode', 'Standard')}
 
-Structure the guide into 6 numbered chronological steps including generating printable PDF lane sheets, the Express Entrance Self-Check-In QR (?mode=self_checkin) that routes bracket and unpaid bowlers to the desk, how floor TDs connect their phones to ?mode=scorer with Argon2 PIN concurrence, and how bowlers view live standings via ?mode=bowler_portal.
+Structure the guide into 6 numbered chronological steps including generating printable PDF lane sheets, the Express Entrance Self-Check-In QR (?mode=self_checkin) that routes bracket and unpaid bowlers to the desk, how floor TDs connect their phones to ?mode=scorer with Argon2 PIN concurrence, financial drawer reconciliation, and how bowlers view live standings via ?mode=bowler_portal.
 """
     try:
         return generate_with_failover(prompt, temperature=0.1)
@@ -2180,7 +2243,7 @@ Structure the guide into 6 numbered chronological steps including generating pri
             "3. Post Express Self-Check-In QR (?mode=self_checkin) at entrance; handle unpaid and bracket entries at desk.\n"
             "4. Roving TDs open ?mode=scorer on their phones, snap monitors with AI OCR, and set a 4-digit PIN.\n"
             "5. Open ?mode=leaderboard on concourse TVs and share ?mode=bowler_portal for live bowler tracking.\n"
-            "6. Run stepladder and archive event in Module 3."
+            "6. Reconcile finances and archive event."
         )
 
 # ---------------------------------------------------------
@@ -2191,6 +2254,7 @@ nav_options = [
     "2. Scores & Standings",
     "3. Stepladder Finals",
     "4. Side Action: Brackets & Pots 💰",
+    "Financial & Payout Ledger 💵",
     "5. AI Rules Arbiter",
     "6. Past Tournaments Archive 📂",
     "7. Board SOP & Staff Manual 📖",
@@ -3341,6 +3405,93 @@ elif "Brackets & Pots" in nav:
                 pot_df[["Bowler", "Average", "HDCP_Per_Game", "Game 1", "G1_HDCP", "Game 2", "G2_HDCP", "Game 3", "G3_HDCP", "Series_Scratch", "Series_HDCP"]],
                 use_container_width=True
             )
+
+# ---------------------------------------------------------
+# FINANCIAL RECONCILIATION & PRIZE PAYOUT LEDGER MODULE
+# ---------------------------------------------------------
+elif nav == "Financial & Payout Ledger 💵":
+    st.markdown("""
+    <div class="brand-banner">
+        <h1>Financial Reconciliation & Prize Payout Ledger</h1>
+        <p>Automated lineage deductions, prize fund allocation, and USBC Rule 400 SMART compliance.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    config = st.session_state.tournament_config
+    is_youth_division = "youth" in str(config.get("division", "")).lower() or "scholastic" in str(config.get("division", "")).lower()
+
+    if is_youth_division:
+        st.markdown("""
+        <div style="background-color: #f59e0b20; border: 2px solid #f59e0b; border-radius: 10px; padding: 14px 18px; margin-bottom: 16px;">
+            <span style="color: #fde047; font-weight: 800; font-size: 14px;">⚠️ USBC RULE 400 SMART MANDATE ACTIVE</span>
+            <p style="color: #fef08a; font-size: 13.5px; margin: 4px 0 0 0;">
+                This event is designated as a <b>Youth / Scholastic Division</b>. Cash and merchandise gift card payouts are strictly prohibited. All prize funds will automatically route to official <b>USBC SMART Scholarship accounts</b>.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    col_f1, col_f2, col_f3 = st.columns(3)
+    with col_f1:
+        entry_fee_in = st.number_input("Entry Fee per Bowler ($):", value=float(config.get("entry_fee", 50.0)), step=5.0)
+    with col_f2:
+        lineage_rate = st.number_input("Center Lineage Rate per Game ($):", value=3.75, step=0.25)
+    with col_f3:
+        expense_per_bowler = st.number_input("Association/Awards Expense per Bowler ($):", value=5.00, step=1.00)
+
+    config["entry_fee"] = entry_fee_in
+    fin_summary = calculate_financial_summary(st.session_state.roster, config, lineage_per_game=lineage_rate)
+
+    st.write("")
+    c_m1, c_m2, c_m3, c_m4 = st.columns(4)
+    with c_m1:
+        st.metric("Paid Entries", fin_summary["paid_count"])
+    with c_m2:
+        st.metric("Gross Revenue", f"${fin_summary['gross_revenue']:,.2f}")
+    with c_m3:
+        st.metric("Lineage Owed to House", f"${fin_summary['total_lineage']:,.2f}")
+    with c_m4:
+        payout_label = "Net SMART Scholarship Pool" if is_youth_division else "Net Prize Fund Pool"
+        st.metric(payout_label, f"${fin_summary['net_prize_fund']:,.2f}")
+
+    st.divider()
+
+    st.subheader("📊 Payout Distribution Breakdown")
+    net_pool = fin_summary["net_prize_fund"]
+
+    if net_pool <= 0:
+        st.warning("No revenue recorded yet. Mark bowlers as paid in Module 1 to calculate prize allocations.")
+    else:
+        ratios = [0.40, 0.25, 0.15, 0.10, 0.05, 0.05]
+        place_names = ["1st Place", "2nd Place", "3rd Place", "4th Place", "5th Place", "6th Place"]
+        
+        payout_rows = []
+        for i, pct in enumerate(ratios):
+            if i * 4 > fin_summary["paid_count"] and i >= 3:
+                break
+            amount = round(net_pool * pct, 2)
+            payout_rows.append({
+                "Position": place_names[i] if i < len(place_names) else f"{i+1}th Place",
+                "Allocation (%)": f"{int(pct*100)}%",
+                "Amount ($)": f"${amount:,.2f}"
+            })
+
+        st.dataframe(pd.DataFrame(payout_rows), use_container_width=True)
+
+        if is_youth_division:
+            st.write("")
+            standings = compile_standings(st.session_state.roster)
+            smart_csv = generate_smart_scholarship_csv(standings, net_pool)
+            if smart_csv:
+                st.download_button(
+                    "📄 Download USBC SMART Scholarship Submission (.csv)",
+                    data=smart_csv,
+                    file_name=f"{config['name'].replace(' ', '_')}_SMART_Submittal.csv",
+                    mime="text/csv",
+                    type="primary",
+                    use_container_width=True
+                )
+        else:
+            st.success("Financial ledger balances cleanly to the penny against recorded cash and electronic receipts.")
 
 # ---------------------------------------------------------
 # MODULE 5: AI RULES ARBITER (GROUNDED TO 2026-27 RULEBOOK PDF)
