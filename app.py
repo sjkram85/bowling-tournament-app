@@ -1,11 +1,11 @@
 import os
 import io
-import json
 import math
 import hashlib
 from datetime import datetime
 import pandas as pd
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Image as RLImage
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -26,7 +26,7 @@ st.set_page_config(
 
 LOGO_PATH = "CHUSBC.jpg"
 HAS_LOGO = os.path.exists(LOGO_PATH)
-USERS_DB_FILE = "users_db.json"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 st.markdown("""
 <style>
@@ -122,41 +122,56 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 2. PERSISTENT JSON REPOSITORY FOR USERS & AUDIT
+# 2. PERSISTENT GOOGLE SHEETS USER REPOSITORY
 # ---------------------------------------------------------
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.strip().encode("utf-8")).hexdigest()
 
 TARGET_ADMIN_HASH = "7e754bbef03e005db3d5089312104526685ba227e7f8e77a1fc9b6460fae2b1b"
 
-def load_user_database() -> dict:
-    default_registry = {
-        "skramer": {
-            "name": "Scott Kramer",
-            "password_hash": TARGET_ADMIN_HASH,
-            "role": "admin",
-            "status": "active",
-            "must_change_password": False,
-            "created_at": "Primary Admin"
-        }
-    }
-    if not os.path.exists(USERS_DB_FILE):
-        save_user_database(default_registry)
-        return default_registry
+def get_db_connection():
     try:
-        with open(USERS_DB_FILE, "r") as f:
-            data = json.load(f)
-            # Ensure primary admin always exists and is active
-            if "skramer" not in data:
-                data["skramer"] = default_registry["skramer"]
-                save_user_database(data)
-            return data
+        return st.connection("gsheets", type=GSheetsConnection)
     except Exception:
-        return default_registry
+        return None
 
-def save_user_database(db: dict):
-    with open(USERS_DB_FILE, "w") as f:
-        json.dump(db, f, indent=4)
+def fetch_users_df() -> pd.DataFrame:
+    conn = get_db_connection()
+    required_cols = ["username", "name", "password_hash", "role", "status", "must_change_password", "created_at"]
+    
+    if conn is not None:
+        try:
+            df = conn.read(ttl=0)
+            if df is not None and not df.empty:
+                df.columns = [str(c).strip().lower() for c in df.columns]
+                for col in required_cols:
+                    if col not in df.columns:
+                        df[col] = ""
+                return df
+        except Exception:
+            pass
+            
+    return pd.DataFrame([{
+        "username": "skramer",
+        "name": "Scott Kramer",
+        "password_hash": TARGET_ADMIN_HASH,
+        "role": "admin",
+        "status": "active",
+        "must_change_password": False,
+        "created_at": "Primary Admin"
+    }])
+
+def write_users_df(df: pd.DataFrame):
+    conn = get_db_connection()
+    if conn is not None:
+        try:
+            conn.update(data=df)
+            st.cache_data.clear()
+            return True
+        except Exception as e:
+            st.error(f"Error persisting to Google Sheets: {e}")
+            return False
+    return False
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -188,7 +203,7 @@ if not st.session_state.authenticated:
         if HAS_LOGO:
             st.image(LOGO_PATH, width=160)
 
-        users_db = load_user_database()
+        users_df = fetch_users_df()
 
         if st.session_state.pending_password_change:
             st.markdown("""
@@ -209,11 +224,11 @@ if not st.session_state.authenticated:
                         st.error("Passwords do not match.")
                     else:
                         u = st.session_state.username
-                        users_db = load_user_database()
-                        if u in users_db:
-                            users_db[u]["password_hash"] = hash_password(new_pwd)
-                            users_db[u]["must_change_password"] = False
-                            save_user_database(users_db)
+                        idx = users_df.index[users_df["username"] == u].tolist()
+                        if idx:
+                            users_df.loc[idx[0], "password_hash"] = hash_password(new_pwd)
+                            users_df.loc[idx[0], "must_change_password"] = False
+                            write_users_df(users_df)
                         st.session_state.pending_password_change = False
                         st.session_state.authenticated = True
                         log_audit_event(f"User '{u}' completed initial password change.")
@@ -236,20 +251,30 @@ if not st.session_state.authenticated:
 
                     if submitted:
                         is_skramer = (username_input == "skramer" and password_input == "Abigail!2015")
-                        user_info = users_db.get(username_input, {})
-                        is_reg = (username_input in users_db and 
-                                  user_info.get("password_hash") == hash_password(password_input))
+                        match_row = users_df[users_df["username"] == username_input]
 
-                        if is_skramer or is_reg:
-                            user_status = user_info.get("status", "active")
-                            if user_status == "pending":
+                        authenticated_match = False
+                        if not match_row.empty:
+                            stored_hash = str(match_row.iloc[0]["password_hash"])
+                            if stored_hash == hash_password(password_input):
+                                authenticated_match = True
+
+                        if is_skramer or authenticated_match:
+                            user_data = match_row.iloc[0] if not match_row.empty else {
+                                "name": "Scott Kramer",
+                                "role": "admin",
+                                "status": "active",
+                                "must_change_password": False
+                            }
+                            
+                            if str(user_data.get("status", "active")).lower() == "pending":
                                 st.warning("Your registration is currently pending review by an Administrator.")
                             else:
                                 st.session_state.username = username_input
-                                st.session_state.td_name = user_info.get("name", "Scott Kramer")
-                                st.session_state.td_role = user_info.get("role", "admin")
+                                st.session_state.td_name = str(user_data.get("name", "Scott Kramer"))
+                                st.session_state.td_role = str(user_data.get("role", "admin")).lower()
 
-                                if user_info.get("must_change_password", False):
+                                if bool(user_data.get("must_change_password", False)):
                                     st.session_state.pending_password_change = True
                                     st.rerun()
                                 else:
@@ -268,23 +293,25 @@ if not st.session_state.authenticated:
                     submit_req = st.form_submit_button("Submit Registration for Approval", use_container_width=True)
 
                     if submit_req:
-                        current_db = load_user_database()
+                        current_df = fetch_users_df()
                         if not req_user or not req_name or not req_pwd:
                             st.error("Username, Full Name, and Password are all required.")
                         elif len(req_pwd) < 6:
                             st.error("Password must be at least 6 characters.")
-                        elif req_user in current_db:
-                            st.error(f"Username '{req_user}' is already taken.")
+                        elif req_user in current_df["username"].values:
+                            st.error(f"Username '{req_user}' is already registered or requested.")
                         else:
-                            current_db[req_user] = {
+                            new_row = pd.DataFrame([{
+                                "username": req_user,
                                 "name": req_name,
                                 "password_hash": hash_password(req_pwd),
                                 "role": "td",
                                 "status": "pending",
                                 "must_change_password": False,
                                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
-                            }
-                            save_user_database(current_db)
+                            }])
+                            updated_df = pd.concat([current_df, new_row], ignore_index=True)
+                            write_users_df(updated_df)
                             log_audit_event(f"New self-registration submitted: '{req_user}' ({req_name}).")
                             st.success("Registration submitted! An administrator will review and approve your account.")
 
@@ -449,8 +476,8 @@ nav_options = [
     "5. TD Audit Log"
 ]
 
-current_users = load_user_database()
-pending_count = sum(1 for u in current_users.values() if u.get("status") == "pending")
+users_df = fetch_users_df()
+pending_count = len(users_df[users_df["status"] == "pending"])
 
 if st.session_state.td_role == "admin":
     label = f"6. TD User Management ⚙️ ({pending_count} pending)" if pending_count > 0 else "6. TD User Management ⚙️"
@@ -557,7 +584,7 @@ Input:
 """
                         try:
                             res = ai_client.models.generate_content(
-                                model="gemini-2.5-flash",
+                                model=GEMINI_MODEL,
                                 contents=prompt,
                                 config=types.GenerateContentConfig(temperature=0.0)
                             )
@@ -687,7 +714,7 @@ Bowler,Average,Starting Lane,Game 1,Game 2,Game 3
 """
                     try:
                         res = ai_client.models.generate_content(
-                            model="gemini-2.5-flash",
+                            model=GEMINI_MODEL,
                             contents=prompt,
                             config=types.GenerateContentConfig(temperature=0.0)
                         )
@@ -828,7 +855,7 @@ Format:
 """
                     try:
                         decision = ai_client.models.generate_content(
-                            model="gemini-2.5-flash",
+                            model=GEMINI_MODEL,
                             contents=prompt,
                             config=types.GenerateContentConfig(temperature=0.1)
                         )
@@ -861,29 +888,31 @@ elif "6. TD User Management" in nav:
     st.markdown("""
     <div class="brand-banner">
         <h1>Tournament Director & Staff Management</h1>
-        <p>Admin console for approving registration requests, creating TD credentials, resetting passwords, and managing authorization.</p>
+        <p>Admin console synchronized with Google Sheets for permanent account storage.</p>
     </div>
     """, unsafe_allow_html=True)
 
-    users_db = load_user_database()
+    users_df = fetch_users_df()
 
     # 1. Pending Approvals Section
-    pending_users = {u: data for u, data in users_db.items() if data.get("status") == "pending"}
+    pending_df = users_df[users_df["status"] == "pending"]
 
-    st.subheader(f"Account Requests Pending Approval ({len(pending_users)})")
-    if not pending_users:
+    st.subheader(f"Account Requests Pending Approval ({len(pending_df)})")
+    if pending_df.empty:
         st.info("No registration requests currently awaiting approval.")
     else:
-        for uname, udata in list(pending_users.items()):
+        for idx, row in pending_df.iterrows():
+            uname = row["username"]
+            real_name = row["name"]
             with st.container():
                 st.markdown(f"""
                 <div style="background-color: #1e293b; padding: 14px 18px; border-radius: 8px; border: 1px solid #ec489950; margin-bottom: 12px;">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <span style="font-size: 16px; font-weight: 700; color: #f8fafc;">{udata['name']} (<code style="color: #38bdf8;">{uname}</code>)</span>
+                        <span style="font-size: 16px; font-weight: 700; color: #f8fafc;">{real_name} (<code style="color: #38bdf8;">{uname}</code>)</span>
                         <span class="badge-pending">PENDING APPROVAL</span>
                     </div>
                     <div style="font-size: 13px; color: #94a3b8; margin-top: 6px;">
-                        <strong>Submitted:</strong> {udata.get('created_at', 'Recent')}
+                        <strong>Submitted:</strong> {row.get('created_at', 'Recent')}
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -893,38 +922,36 @@ elif "6. TD User Management" in nav:
                     selected_role = st.selectbox(f"Assign Role for {uname}:", ["td", "admin"], key=f"role_{uname}")
                 with col_appr:
                     if st.button(f"Approve & Activate ({uname})", key=f"appr_{uname}", type="primary", use_container_width=True):
-                        current_db = load_user_database()
-                        if uname in current_db:
-                            current_db[uname]["status"] = "active"
-                            current_db[uname]["role"] = selected_role
-                            save_user_database(current_db)
-                        log_audit_event(f"Admin approved registration for '{uname}' ({udata['name']}) as {selected_role}.")
+                        latest_df = fetch_users_df()
+                        target_idx = latest_df.index[latest_df["username"] == uname].tolist()
+                        if target_idx:
+                            latest_df.loc[target_idx[0], "status"] = "active"
+                            latest_df.loc[target_idx[0], "role"] = selected_role
+                            write_users_df(latest_df)
+                        log_audit_event(f"Admin approved registration for '{uname}' ({real_name}) as {selected_role}.")
                         st.success(f"Account '{uname}' approved.")
                         st.rerun()
                 with col_deny:
                     if st.button(f"Deny & Remove ({uname})", key=f"deny_{uname}", use_container_width=True):
-                        current_db = load_user_database()
-                        if uname in current_db:
-                            del current_db[uname]
-                            save_user_database(current_db)
+                        latest_df = fetch_users_df()
+                        latest_df = latest_df[latest_df["username"] != uname]
+                        write_users_df(latest_df)
                         log_audit_event(f"Admin denied registration request for '{uname}'.")
                         st.warning(f"Registration request for '{uname}' denied.")
                         st.rerun()
             st.divider()
 
     # 2. Active Staff Registry Display
-    st.subheader("Active Staff Registry")
-    active_list = []
-    for uname, udata in users_db.items():
-        if udata.get("status", "active") == "active":
-            active_list.append({
-                "Username": uname,
-                "Full Name": udata["name"],
-                "Role": udata["role"].upper(),
-                "Must Reset Pwd": "YES" if udata.get("must_change_password", False) else "NO",
-                "Registered": udata.get("created_at", "System")
-            })
-    st.dataframe(pd.DataFrame(active_list), use_container_width=True)
+    st.subheader("Active Staff Registry (Live from Google Sheets)")
+    active_df = users_df[users_df["status"] == "active"].copy()
+    display_df = pd.DataFrame({
+        "Username": active_df["username"],
+        "Full Name": active_df["name"],
+        "Role": active_df["role"].str.upper(),
+        "Must Reset Pwd": active_df["must_change_password"].apply(lambda x: "YES" if bool(x) else "NO"),
+        "Registered": active_df["created_at"]
+    })
+    st.dataframe(display_df, use_container_width=True)
 
     st.divider()
 
@@ -942,21 +969,23 @@ elif "6. TD User Management" in nav:
             submit_td = st.form_submit_button("Create Account Directly", type="primary", use_container_width=True)
 
             if submit_td:
-                current_db = load_user_database()
+                latest_df = fetch_users_df()
                 if not new_user or not new_name or not new_pw:
                     st.error("All fields are required.")
-                elif new_user in current_db:
+                elif new_user in latest_df["username"].values:
                     st.error(f"User '{new_user}' already exists.")
                 else:
-                    current_db[new_user] = {
+                    new_entry = pd.DataFrame([{
+                        "username": new_user,
                         "name": new_name,
                         "password_hash": hash_password(new_pw),
                         "role": new_role,
                         "status": "active",
                         "must_change_password": force_change,
                         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
-                    }
-                    save_user_database(current_db)
+                    }])
+                    updated_df = pd.concat([latest_df, new_entry], ignore_index=True)
+                    write_users_df(updated_df)
                     flag_note = "with mandatory password change" if force_change else "without mandatory password change"
                     log_audit_event(f"Admin registered new user: '{new_user}' ({new_name}) as {new_role} {flag_note}.")
                     st.success(f"Official '{new_name}' registered.")
@@ -965,9 +994,9 @@ elif "6. TD User Management" in nav:
     # 4. Reset User Password Section
     with col_reset:
         st.subheader("Reset / Override Password")
-        all_active_users = [u for u, d in users_db.items() if d.get("status", "active") == "active"]
+        active_users = users_df[users_df["status"] == "active"]["username"].tolist()
         with st.form("reset_pwd_form"):
-            target_user = st.selectbox("Select Account to Reset:", all_active_users)
+            target_user = st.selectbox("Select Account to Reset:", active_users)
             new_admin_pw = st.text_input("New Password:", type="password").strip()
             target_force = st.checkbox("Require user to change on next login", value=True)
             submit_reset = st.form_submit_button("Update Password", use_container_width=True)
@@ -978,11 +1007,12 @@ elif "6. TD User Management" in nav:
                 elif len(new_admin_pw) < 6:
                     st.error("Password must be at least 6 characters.")
                 else:
-                    current_db = load_user_database()
-                    if target_user in current_db:
-                        current_db[target_user]["password_hash"] = hash_password(new_admin_pw)
-                        current_db[target_user]["must_change_password"] = target_force
-                        save_user_database(current_db)
+                    latest_df = fetch_users_df()
+                    target_idx = latest_df.index[latest_df["username"] == target_user].tolist()
+                    if target_idx:
+                        latest_df.loc[target_idx[0], "password_hash"] = hash_password(new_admin_pw)
+                        latest_df.loc[target_idx[0], "must_change_password"] = target_force
+                        write_users_df(latest_df)
                     log_audit_event(f"Admin reset password for user '{target_user}'.")
                     st.success(f"Password for '{target_user}' updated.")
                     st.rerun()
@@ -990,7 +1020,7 @@ elif "6. TD User Management" in nav:
     # 5. Delete User Account Section
     with col_del:
         st.subheader("Delete User Account")
-        deletable_users = [u for u in users_db.keys() if u != "skramer"]
+        deletable_users = [u for u in users_df["username"].tolist() if u != "skramer"]
         
         if not deletable_users:
             st.info("No auxiliary user accounts to delete.")
@@ -1004,11 +1034,11 @@ elif "6. TD User Management" in nav:
                     if not confirm_delete:
                         st.error("Check the confirmation box before deleting.")
                     else:
-                        current_db = load_user_database()
-                        deleted_name = current_db.get(user_to_delete, {}).get("name", user_to_delete)
-                        if user_to_delete in current_db:
-                            del current_db[user_to_delete]
-                            save_user_database(current_db)
-                        log_audit_event(f"Admin deleted user account: '{user_to_delete}' ({deleted_name}).")
+                        latest_df = fetch_users_df()
+                        match_row = latest_df[latest_df["username"] == user_to_delete]
+                        del_name = match_row.iloc[0]["name"] if not match_row.empty else user_to_delete
+                        latest_df = latest_df[latest_df["username"] != user_to_delete]
+                        write_users_df(latest_df)
+                        log_audit_event(f"Admin deleted user account: '{user_to_delete}' ({del_name}).")
                         st.success(f"Account '{user_to_delete}' removed.")
                         st.rerun()
