@@ -1,10 +1,11 @@
 streamlit
-st-gsheets-connection
-pandas
+streamlit-gsheets
 pypdf
 qrcode
-Pillow
+pillow
+argon2-cffi
 python-docx
 reportlab
 google-genai
-argon2-cffi
+pandas
+streamlit-autorefresh
