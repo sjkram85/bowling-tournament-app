@@ -228,6 +228,37 @@ st.markdown("""
         border: 1px solid #334155;
         border-radius: 8px;
     }
+
+    /* Floating AI Coach Widget (Bottom-Right Pinned) */
+    div.floating-ai-anchor {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        z-index: 999999;
+    }
+    div.floating-ai-anchor div[data-testid="stPopover"] > button {
+        background: linear-gradient(135deg, #0284c7 0%, #1e3a8a 100%) !important;
+        color: #ffffff !important;
+        border: 2px solid #38bdf8 !important;
+        border-radius: 50px !important;
+        padding: 12px 22px !important;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6), 0 0 16px rgba(56, 189, 248, 0.45) !important;
+        font-size: 15px !important;
+        font-weight: 800 !important;
+        letter-spacing: 0.4px;
+    }
+    div.floating-ai-anchor div[data-testid="stPopover"] > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 24px rgba(56, 189, 248, 0.7) !important;
+    }
+    div[data-testid="stPopoverBody"] {
+        max-height: 520px;
+        width: 410px !important;
+        background-color: #0f172a !important;
+        border: 1.5px solid #38bdf8 !important;
+        border-radius: 12px !important;
+        padding: 16px !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -589,10 +620,6 @@ def parse_active_pairs(range_str: str, max_lanes: int = 40):
     return unique_pairs
 
 def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list, max_per_pair: int = 5, shuffle: bool = True, group_by_team: bool = True):
-    """
-    Distributes bowlers across pairs. If group_by_team is True, keeps all members
-    sharing the same 'Team_Name' grouped together on the exact same lane pair.
-    """
     if roster_df.empty or not pairs:
         return roster_df, "No roster or lane pairs provided."
 
@@ -602,7 +629,6 @@ def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list, max_per_pair: int = 
 
     updated_df["Team_Name"] = updated_df["Team_Name"].fillna("Singles").astype(str)
 
-    # 1. Group Bowlers into Units (Teams or Individuals)
     if group_by_team:
         team_groups = {}
         for idx, row in updated_df.iterrows():
@@ -628,7 +654,6 @@ def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list, max_per_pair: int = 
     if shuffle:
         random.shuffle(units)
 
-    # 2. Assign Units to Lane Pairs using Best-Fit Density
     pair_buckets = {p: [] for p in pairs}
     for unit in units:
         unit_size = len(unit)
@@ -643,7 +668,6 @@ def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list, max_per_pair: int = 
         if not assigned:
             return roster_df, "Unable to fit teams evenly across the active pairs without splitting. Try opening more lane pairs or increasing Max Bowlers per Pair."
 
-    # 3. Assign Starting Lane within Pair (Odd/Even alternating lead-offs)
     for p, row_indices in pair_buckets.items():
         lane_odd, lane_even = p
         for order_on_pair, r_idx in enumerate(row_indices):
@@ -1448,8 +1472,6 @@ def generate_sop_docx() -> io.BytesIO:
             set_cell_background(cell, "F8FAFC" if row_idx % 2 == 1 else "FFFFFF")
             set_cell_padding(cell, 100, 100, 140, 140)
             p = cell.paragraphs[0]
-            p.paragraph_format.line_spacing = 1.1
-            p.paragraph_format.space_after = Pt(2)
             r = p.add_run(val)
             r.font.size = Pt(9.5)
 
@@ -2920,3 +2942,73 @@ elif "TD User Management" in nav:
                         log_audit_event(f"Admin deleted user account: '{user_to_delete}' ({del_name}).")
                         st.success(f"Account '{user_to_delete}' removed.")
                         st.rerun()
+
+# ---------------------------------------------------------
+# FLOATING GEMINI DESK COACH (PINNED TO BOTTOM-RIGHT ACROSS ALL MODULES)
+# ---------------------------------------------------------
+if st.session_state.authenticated and st.session_state.session_initialized:
+    st.markdown('<div class="floating-ai-anchor">', unsafe_allow_html=True)
+    with st.popover("✨ Ask Gemini", help="Instant USBC rules rulings & tournament procedures"):
+        st.markdown(f"""
+        <div style="border-bottom: 1px solid #334155; padding-bottom: 8px; margin-bottom: 10px;">
+            <strong style="color: #38bdf8; font-size: 15px;">🎳 CHUSBC AI Desk Coach</strong><br/>
+            <span style="color: #94a3b8; font-size: 12px;">Active: {st.session_state.tournament_config['name']}</span><br/>
+            <span style="color: #cbd5e1; font-size: 11px;">Host: {st.session_state.tournament_config['center']} | Format: {st.session_state.tournament_config.get('format_mode', 'Standard')}</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.caption("⚡ Quick Dispute Presets:")
+        col_q1, col_q2 = st.columns(2)
+        preset_q = ""
+        with col_q1:
+            if st.button("Tardy Bowler (R10)", use_container_width=True, key="quick_r10"):
+                preset_q = "A bowler arrived 15 minutes late and their pair is in the middle of frame 3. What is the official USBC Rule 10 procedure?"
+            if st.button("Altering Ball (R17)", use_container_width=True, key="quick_r17"):
+                preset_q = "A bowler just used an Abralon pad to sand their ball between game 1 and game 2. What is the mandatory penalty under USBC Rule 17?"
+        with col_q2:
+            if st.button("Weight Holes (R18)", use_container_width=True, key="quick_r18"):
+                preset_q = "An opponent protests that a bowler has an unfilled balance hole or a hole without a gripping finger. What does USBC Rule 18 require?"
+            if st.button("Youth SMART (R400)", use_container_width=True, key="quick_r400"):
+                preset_q = "Can a youth bowler receive cash or a gift card prize in this event under USBC Rule 400?"
+
+        user_float_q = st.text_input("Or type your question / on-lane dispute:", value=preset_q, placeholder="e.g. How do I split tied side pot payouts?", key="float_ai_query")
+
+        if st.button("Get Official Ruling", type="primary", use_container_width=True, key="float_ai_submit"):
+            if not user_float_q.strip():
+                st.warning("Please type a question or choose a quick dispute preset.")
+            elif not ai_client:
+                st.error("Gemini API key is not configured.")
+            else:
+                with st.spinner("Consulting USBC Rulebook..."):
+                    float_prompt = f"""
+You are the Cecil Harford USBC (CHUSBC) Tournament Desk Operations AI Assistant.
+A Tournament Director is actively running an event at the desk right now and needs an immediate, definitive ruling.
+
+Active Tournament Context:
+- Tournament Name: {st.session_state.tournament_config['name']}
+- Host Center: {st.session_state.tournament_config['center']}
+- Division: {st.session_state.tournament_config['division']}
+- Format Mode: {st.session_state.tournament_config.get('format_mode', 'Standard')}
+- Active Lanes: {st.session_state.tournament_config['lanes_range']}
+- Handicap: {int(st.session_state.tournament_config.get('hdcp_pct', 0.90)*100)}% of {st.session_state.tournament_config.get('hdcp_base', 220)}
+- Rules Context: {st.session_state.tournament_config['rules_text']}
+
+Question / Dispute:
+{user_float_q}
+
+Provide a concise, direct ruling:
+1. **Official Ruling:** (1-2 sentences on what to do right now)
+2. **USBC Statute:** (Exact rule number and reason)
+3. **Desk Action:** (The exact button to click or instruction to give the bowler)
+"""
+                    try:
+                        ans = generate_with_failover(float_prompt, temperature=0.1)
+                        st.markdown(f"""
+                        <div style="background-color: #1e293b; border-left: 3px solid #38bdf8; padding: 12px; border-radius: 6px; font-size: 13px; margin-top: 10px;">
+                            {ans}
+                        </div>
+                        """, unsafe_allow_html=True)
+                        log_audit_event(f"Floating AI Coach answered dispute: '{user_float_q[:40]}...'")
+                    except Exception as err:
+                        st.error(f"Error consulting Gemini: {err}")
+    st.markdown('</div>', unsafe_allow_html=True)
