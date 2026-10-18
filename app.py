@@ -37,6 +37,7 @@ st.session_state.user_registry["skramer"] = {
     "name": "Scott Kramer",
     "password_hash": TARGET_ADMIN_HASH,
     "role": "admin",
+    "must_change_password": False,
     "created_at": "Primary Admin"
 }
 
@@ -48,6 +49,8 @@ if "td_name" not in st.session_state:
     st.session_state.td_name = ""
 if "td_role" not in st.session_state:
     st.session_state.td_role = "td"
+if "pending_password_change" not in st.session_state:
+    st.session_state.pending_password_change = False
 if "audit_trail" not in st.session_state:
     st.session_state.audit_trail = []
 
@@ -59,32 +62,65 @@ def log_audit_event(action: str):
         "action": action
     })
 
+# ---------------------------------------------------------
+# AUTHENTICATION & FIRST-TIME PASSWORD RESET WORKFLOW
+# ---------------------------------------------------------
 if not st.session_state.authenticated:
     st.columns([1, 2, 1])[1].write("")
     with st.columns([1, 2, 1])[1]:
-        st.markdown("### 🎳 Cecil Harford USBC Desk Portal")
-        st.caption("Authorized Tournament Directors & Officials Only")
-        with st.form("td_login"):
-            username_input = st.text_input("Username").strip().lower()
-            password_input = st.text_input("Password", type="password").strip()
-            submitted = st.form_submit_button("Verify & Open Desk")
+        # Intercept if user logged in with a temporary password and must reset it
+        if st.session_state.pending_password_change:
+            st.markdown("### 🔒 First-Time Login: Set Your New Password")
+            st.caption(f"Account: **{st.session_state.username}** ({st.session_state.td_name})")
+            with st.form("pwd_reset_form"):
+                new_pwd = st.text_input("Enter New Password", type="password").strip()
+                confirm_pwd = st.text_input("Confirm New Password", type="password").strip()
+                reset_btn = st.form_submit_button("Update Password & Enter Desk")
 
-            if submitted:
-                is_skramer = (username_input == "skramer" and password_input == "Abigail!2015")
-                is_reg = (username_input in st.session_state.user_registry and 
-                          st.session_state.user_registry[username_input]["password_hash"] == hash_password(password_input))
+                if reset_btn:
+                    if len(new_pwd) < 6:
+                        st.error("Password must be at least 6 characters long.")
+                    elif new_pwd != confirm_pwd:
+                        st.error("Passwords do not match.")
+                    else:
+                        u = st.session_state.username
+                        st.session_state.user_registry[u]["password_hash"] = hash_password(new_pwd)
+                        st.session_state.user_registry[u]["must_change_password"] = False
+                        st.session_state.pending_password_change = False
+                        st.session_state.authenticated = True
+                        log_audit_event(f"User '{u}' completed initial password change and unlocked desk.")
+                        st.success("Password set successfully. Loading workspace...")
+                        st.rerun()
+        else:
+            st.markdown("### 🎳 Cecil Harford USBC Desk Portal")
+            st.caption("Authorized Tournament Directors & Officials Only")
+            with st.form("td_login"):
+                username_input = st.text_input("Username").strip().lower()
+                password_input = st.text_input("Password", type="password").strip()
+                submitted = st.form_submit_button("Verify & Open Desk")
 
-                if is_skramer or is_reg:
-                    st.session_state.authenticated = True
-                    st.session_state.username = username_input
-                    user_info = st.session_state.user_registry.get(username_input, {})
-                    st.session_state.td_name = user_info.get("name", "Scott Kramer")
-                    st.session_state.td_role = user_info.get("role", "admin")
-                    log_audit_event(f"User '{username_input}' ({st.session_state.td_name}) logged into desk session.")
-                    st.success("Authorized.")
-                    st.rerun()
-                else:
-                    st.error("Invalid username or password.")
+                if submitted:
+                    is_skramer = (username_input == "skramer" and password_input == "Abigail!2015")
+                    is_reg = (username_input in st.session_state.user_registry and 
+                              st.session_state.user_registry[username_input]["password_hash"] == hash_password(password_input))
+
+                    if is_skramer or is_reg:
+                        user_info = st.session_state.user_registry.get(username_input, {})
+                        st.session_state.username = username_input
+                        st.session_state.td_name = user_info.get("name", "Scott Kramer")
+                        st.session_state.td_role = user_info.get("role", "admin")
+
+                        if user_info.get("must_change_password", False):
+                            st.session_state.pending_password_change = True
+                            st.warning("First login detected. You must change your temporary password.")
+                            st.rerun()
+                        else:
+                            st.session_state.authenticated = True
+                            log_audit_event(f"User '{username_input}' ({st.session_state.td_name}) logged into desk session.")
+                            st.success("Authorized.")
+                            st.rerun()
+                    else:
+                        st.error("Invalid username or password.")
     st.stop()
 
 # ---------------------------------------------------------
@@ -247,6 +283,7 @@ with st.sidebar:
         st.session_state.username = ""
         st.session_state.td_name = ""
         st.session_state.td_role = "td"
+        st.session_state.pending_password_change = False
         st.rerun()
 
 # ---------------------------------------------------------
@@ -589,13 +626,18 @@ elif nav == "6. TD User Management ⚙️":
         with st.form("add_td_form"):
             new_user = st.text_input("New TD Username (login handle):").strip().lower()
             new_name = st.text_input("Official Full Name:")
-            new_pw = st.text_input("Temporary Password:", type="password")
-            new_role = st.selectbox("Assigned Role:", ["td", "admin"], help="TDs can run tournaments; Admins can also add/manage other TDs.")
+            new_pw = st.text_input("Temporary Password:", type="password").strip()
+            new_role = st.selectbox(
+                "Assigned Role:",
+                ["td", "admin"],
+                help="TDs run tournaments and arbiter tools; Admins also manage user access."
+            )
+            force_change = st.checkbox("Require password change upon first login", value=True)
             submit_td = st.form_submit_button("Register Tournament Director")
 
             if submit_td:
                 if not new_user or not new_name or not new_pw:
-                    st.error("All fields (Username, Name, Password) are required.")
+                    st.error("All fields (Username, Name, Temporary Password) are required.")
                 elif new_user in st.session_state.user_registry:
                     st.error(f"Username '{new_user}' already exists.")
                 else:
@@ -603,9 +645,11 @@ elif nav == "6. TD User Management ⚙️":
                         "name": new_name,
                         "password_hash": hash_password(new_pw),
                         "role": new_role,
+                        "must_change_password": force_change,
                         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
                     }
-                    log_audit_event(f"Admin registered new official: '{new_user}' ({new_name}) as {new_role}.")
+                    flag_note = "with mandatory password change" if force_change else "without password change"
+                    log_audit_event(f"Admin registered new official: '{new_user}' ({new_name}) as {new_role} {flag_note}.")
                     st.success(f"Official '{new_name}' registered successfully.")
                     st.rerun()
 
@@ -617,6 +661,7 @@ elif nav == "6. TD User Management ⚙️":
                 "Username": uname,
                 "Full Name": udata["name"],
                 "Role": udata["role"].upper(),
+                "Must Reset Pwd": "YES" if udata.get("must_change_password", False) else "NO",
                 "Registered": udata.get("created_at", "System")
             })
         st.dataframe(pd.DataFrame(user_list), use_container_width=True)
