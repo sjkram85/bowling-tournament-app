@@ -1398,7 +1398,7 @@ if query_params.get("mode") == "bowler_portal":
                 st.metric("Total w/ HDCP", int(b_stat["Grand_Total"]), delta=f"{int(b_stat['Total_HDCP'])} HDCP")
 
     st.subheader("🏆 Live Tournament Standings")
-    cols_ view = [c for c in ["Bowler", "Team_Name", "Starting Lane", "Game 1", "Game 2", "Game 3", "Total_HDCP", "Grand_Total"] if c in standings.columns]
+    cols_view = [c for c in ["Bowler", "Team_Name", "Starting Lane", "Game 1", "Game 2", "Game 3", "Total_HDCP", "Grand_Total"] if c in standings.columns]
     st.dataframe(standings[cols_view], use_container_width=True)
     if st.button("🔄 Refresh Live Standings", use_container_width=True):
         st.rerun()
