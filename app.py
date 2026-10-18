@@ -1149,6 +1149,42 @@ def resolve_bracket_match(b1_id: str, b2_id: str, game_col: str, bracket_type: s
 # ---------------------------------------------------------
 # SOP DOCUMENT GENERATORS (DOCX & PDF)
 # ---------------------------------------------------------
+def generate_first_time_td_guide() -> str:
+    if not ai_client:
+        return (
+            "1. T-60 Min: Connect external monitor to laptop. Extend display (Win+P). Open ?mode=kiosk on secondary display and hit F11.\n"
+            "2. T-45 Min: In Module 1 (Tab 2), ingest roster and run Automated Lane Balancer (handles up to 40 lanes, keeps teams together). Download printable PDF lane sheets.\n"
+            "3. T-30 Min: Post the Express Entrance QR (?mode=self_checkin) at the door. Pre-paid bowlers check in automatically; unpaid or bracket bowlers are routed to the desk.\n"
+            "4. T-15 Min: Floor TDs scan ?mode=scorer QR code on their phones, create their Argon2 4-digit PIN, and claim lane pairs.\n"
+            "5. Squad Active: Roving TDs snap overhead monitors with phone camera OCR, input scores, and lock with their secret PIN. Central Desk monitors verified lanes on the Radar Matrix.\n"
+            "6. Concourse TV & Bowler Portal: Cast ?mode=leaderboard on center TVs and let bowlers track ranks on ?mode=bowler_portal.\n"
+            "7. Financials & Archive: Use Financials & Payout Ledger to balance collections against lineage and export SMART forms. In Module 3, archive event."
+        )
+
+    prompt = f"""
+Write a clear, encouraging, step-by-step checklist for a Cecil Harford USBC board member who has NEVER run a tournament or used this software before.
+
+Current Event Context:
+- Event: {st.session_state.tournament_config['name']}
+- Host Center: {st.session_state.tournament_config['center']}
+- Division: {st.session_state.tournament_config['division']}
+- Active Pairs: {st.session_state.tournament_config['lanes_range']}
+- Format Mode: {st.session_state.tournament_config.get('format_mode', 'Standard')}
+
+Structure the guide into 6 numbered chronological steps including generating printable PDF lane sheets, the Express Entrance Self-Check-In QR (?mode=self_checkin) that routes bracket and unpaid bowlers to the desk, how floor TDs connect their phones to ?mode=scorer with Argon2 PIN concurrence, financial drawer reconciliation, and how bowlers view live standings via ?mode=bowler_portal.
+"""
+    try:
+        return generate_with_failover(prompt, temperature=0.1)
+    except Exception:
+        return (
+            "1. Setup external monitor on desk facing bowlers (?mode=kiosk, F11).\n"
+            "2. Ingest roster, balance lanes in Module 1, and download printable PDF lane sheets.\n"
+            "3. Post Express Self-Check-In QR (?mode=self_checkin) at entrance; handle unpaid and bracket entries at desk.\n"
+            "4. Roving TDs open ?mode=scorer on their phones, snap monitors with AI OCR, and set a 4-digit PIN.\n"
+            "5. Open ?mode=leaderboard on concourse TVs and share ?mode=bowler_portal for live bowler tracking.\n"
+            "6. Reconcile finances and archive event."
+        )
+
 def generate_sop_docx() -> io.BytesIO:
     doc = Document()
     for section in doc.sections:
