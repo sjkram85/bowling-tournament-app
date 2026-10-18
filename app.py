@@ -6,6 +6,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
+from pypdf import PdfReader
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Image as RLImage
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -551,7 +552,10 @@ if nav == "1. Event & Roster Intake":
             )
 
         t_rules = st.text_area("Tournament Rules & Format:", value=st.session_state.tournament_config["rules_text"])
-        uploaded_doc = st.file_uploader("Upload Optional Tournament Flyer / Direction Sheet (.txt):", type=["txt"])
+        uploaded_doc = st.file_uploader(
+            "Upload Tournament Flyer / Rules Sheet (.pdf or .txt):", 
+            type=["pdf", "txt"]
+        )
 
         st.divider()
 
@@ -630,7 +634,19 @@ Input:
         if st.button("🔒 Save & Lock Tournament Configuration", type="primary", use_container_width=True):
             uploaded_content = ""
             if uploaded_doc is not None:
-                uploaded_content = f"\n[RULES FILE]:\n{uploaded_doc.read().decode('utf-8', errors='ignore')}"
+                if uploaded_doc.type == "application/pdf" or uploaded_doc.name.lower().endswith(".pdf"):
+                    try:
+                        reader = PdfReader(uploaded_doc)
+                        extracted_text = []
+                        for page in reader.pages:
+                            text = page.extract_text()
+                            if text:
+                                extracted_text.append(text)
+                        uploaded_content = f"\n[EXTRACTED PDF RULES]:\n" + "\n".join(extracted_text)
+                    except Exception as e:
+                        st.error(f"Error reading PDF: {e}")
+                else:
+                    uploaded_content = f"\n[RULES FILE]:\n{uploaded_doc.read().decode('utf-8', errors='ignore')}"
 
             st.session_state.tournament_config = {
                 "center": center,
@@ -642,7 +658,7 @@ Input:
                 "intake_completed": True
             }
             log_audit_event(f"Configuration locked: {t_name} with {len(st.session_state.roster)} bowlers.")
-            st.success("Configuration and roster locked. Proceed to Scores & Standings.")
+            st.success("Configuration, roster, and tournament rules locked. Gemini Rules Arbiter is now armed with this tournament's specific rules!")
 
 # ---------------------------------------------------------
 # MODULE 2: SCORES & STANDINGS
