@@ -617,6 +617,19 @@ def verify_td_pin(td_name: str, pin_str: str) -> bool:
         register_td_pin(td_name, pin_str)
     return is_valid
 
+# GLOBAL AUDIT LOGGING INITIALIZED EARLY (PREVENTS NAMEERROR IN ROUTES)
+if "audit_trail" not in st.session_state:
+    st.session_state.audit_trail = []
+
+def log_audit_event(action: str):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    td_user = st.session_state.get("mobile_scorer_td") or st.session_state.get("td_name") or st.session_state.get("username", "Staff")
+    st.session_state.audit_trail.append({
+        "timestamp": timestamp,
+        "td": td_user,
+        "action": action
+    })
+
 def notify_admin_new_registration(requested_user: str, requested_name: str, requested_email: str, requested_at: str):
     sender_email = st.secrets.get("EMAIL_SENDER", "")
     sender_password = st.secrets.get("EMAIL_APP_PASSWORD", "")
@@ -2178,16 +2191,6 @@ if "td_role" not in st.session_state:
     st.session_state.td_role = "td"
 if "pending_password_change" not in st.session_state:
     st.session_state.pending_password_change = False
-if "audit_trail" not in st.session_state:
-    st.session_state.audit_trail = []
-
-def log_audit_event(action: str):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    st.session_state.audit_trail.append({
-        "timestamp": timestamp,
-        "td": st.session_state.td_name or st.session_state.username,
-        "action": action
-    })
 
 if not st.session_state.authenticated:
     st.columns([1, 2, 1])[1].write("")
@@ -2524,7 +2527,6 @@ def arbitrate_rules_inquiry(query_text: str, event_context: str) -> str:
         return "Gemini API key is not configured."
 
     contents_payload = []
-    
     if RULEBOOK_BYTES is not None:
         contents_payload.append(
             types.Part.from_bytes(
