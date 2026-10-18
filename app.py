@@ -766,6 +766,155 @@ def generate_qr_image(url: str) -> io.BytesIO:
     return buf
 
 # ---------------------------------------------------------
+# 10. DETERMINISTIC SCORING ENGINE & DYNAMIC HANDICAP
+# ---------------------------------------------------------
+def calculate_handicap(avg: int, base: int = None, percentage: float = None) -> int:
+    if base is None:
+        base = int(st.session_state.tournament_config.get("hdcp_base", 220))
+    if percentage is None:
+        percentage = float(st.session_state.tournament_config.get("hdcp_pct", 0.90))
+
+    if avg >= base:
+        return 0
+    return math.floor(percentage * (base - avg))
+
+def compile_standings(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+
+    calc_df = df.copy()
+    for col in ["Game 1", "Game 2", "Game 3", "Average"]:
+        if col not in calc_df.columns:
+            calc_df[col] = 0
+        calc_df[col] = pd.to_numeric(calc_df[col], errors="coerce").fillna(0).astype(int)
+
+    base = int(st.session_state.tournament_config.get("hdcp_base", 220))
+    pct = float(st.session_state.tournament_config.get("hdcp_pct", 0.90))
+    games_count = int(st.session_state.tournament_config.get("games_count", 3))
+
+    calc_df["HDCP_Per_Game"] = calc_df["Average"].apply(lambda a: calculate_handicap(a, base=base, percentage=pct))
+    calc_df["Total_HDCP"] = calc_df["HDCP_Per_Game"] * games_count
+    calc_df["Scratch_Total"] = calc_df["Game 1"] + calc_df["Game 2"] + calc_df["Game 3"]
+    calc_df["Grand_Total"] = calc_df["Scratch_Total"] + calc_df["Total_HDCP"]
+    calc_df["High_Scratch_Game"] = calc_df[["Game 1", "Game 2", "Game 3"]].max(axis=1)
+
+    calc_df = calc_df.sort_values(
+        by=["Grand_Total", "High_Scratch_Game", "Scratch_Total"],
+        ascending=[False, False, False]
+    ).reset_index(drop=True)
+
+    calc_df.index += 1
+    calc_df.index.name = "Rank"
+    return calc_df
+
+def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name: str = "") -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    story = []
+
+    title_style = ParagraphStyle(
+        "DocTitle",
+        parent=styles["Heading1"],
+        fontSize=15,
+        leading=18,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=2
+    )
+    meta_style = ParagraphStyle(
+        "DocMeta",
+        parent=styles["Normal"],
+        fontSize=8.5,
+        textColor=colors.HexColor("#475569"),
+        spaceAfter=10
+    )
+
+    champ_str = f" | <b>CHAMPION: {champion_name}</b>" if champion_name else ""
+    header_text = f"""
+    <b>Cecil Harford USBC — {config['name']}</b><br/>
+    <font size="8" color="#475569">
+    Host: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}{champ_str}<br/>
+    TD on Duty: {st.session_state.td_name} | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}
+    </font>
+    """
+
+    if HAS_LOGO:
+        logo_img = RLImage(LOGO_PATH, width=54, height=54)
+        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[64, 476])
+        header_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+        ]))
+        story.append(header_table)
+    else:
+        story.append(Paragraph(f"Cecil Harford USBC — {config['name']}", title_style))
+        story.append(Paragraph(
+            f"Center: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}{champ_str}<br/>"
+            f"TD on Duty: {st.session_state.td_name} | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}",
+            meta_style
+        ))
+
+    table_data = [["Pos", "Bowler Name", "USBC ID", "Avg", "HDCP", "G1", "G2", "G3", "Scratch", "Total"]]
+    for rank, row in standings_df.reset_index().iterrows():
+        table_data.append([
+            str(row["Rank"]),
+            str(row["Bowler"]),
+            str(row.get("USBC ID", "-")),
+            str(row["Average"]),
+            str(row["Total_HDCP"]),
+            str(row["Game 1"]),
+            str(row["Game 2"]),
+            str(row["Game 3"]),
+            str(row["Scratch_Total"]),
+            str(row["Grand_Total"])
+        ])
+
+    table = Table(table_data, colWidths=[24, 140, 52, 32, 38, 38, 38, 38, 52, 58])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0284c7")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 8.5),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("ALIGN", (2, 0), (-1, -1), "CENTER"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 1), (-1, -1), 8),
+    ]))
+    story.append(table)
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def resolve_bracket_match(b1_id: str, b2_id: str, game_col: str, bracket_type: str, roster_df: pd.DataFrame):
+    row1 = roster_df[roster_df["USBC ID"].astype(str) == str(b1_id)]
+    row2 = roster_df[roster_df["USBC ID"].astype(str) == str(b2_id)]
+    
+    if row1.empty or row2.empty:
+        return "-", 0, "-", 0, None
+
+    r1, r2 = row1.iloc[0], row2.iloc[0]
+    s1 = int(pd.to_numeric(r1.get(game_col, 0), errors="coerce") or 0)
+    s2 = int(pd.to_numeric(r2.get(game_col, 0), errors="coerce") or 0)
+    
+    if bracket_type == "Handicap":
+        h1 = calculate_handicap(int(pd.to_numeric(r1.get("Average", 200), errors="coerce") or 200))
+        h2 = calculate_handicap(int(pd.to_numeric(r2.get("Average", 200), errors="coerce") or 200))
+        t1, t2 = s1 + h1, s2 + h2
+    else:
+        t1, t2 = s1, s2
+
+    if t1 > t2:
+        winner_id = b1_id
+    elif t2 > t1:
+        winner_id = b2_id
+    else:
+        winner_id = b1_id if int(r1.get("Average", 0)) >= int(r2.get("Average", 0)) else b2_id
+
+    return r1["Bowler"], t1, r2["Bowler"], t2, winner_id
+
+# ---------------------------------------------------------
 # 6A. EXTERNAL MONITOR / BOWLER KIOSK DISPLAY (?mode=kiosk)
 # ---------------------------------------------------------
 query_params = st.query_params
@@ -1000,7 +1149,6 @@ if query_params.get("mode") == "scorer":
     target_pair = parsed_pairs[selected_pair_idx]
     lane_odd, lane_even = target_pair
 
-    # Defensive check: ensure Starting Lane exists and pair_bowlers is filtered safely without KeyError
     if "Starting Lane" not in st.session_state.roster.columns:
         st.session_state.roster["Starting Lane"] = 1
 
@@ -1031,9 +1179,6 @@ if query_params.get("mode") == "scorer":
             </div>
             """, unsafe_allow_html=True)
 
-        # -------------------------------------------------------------
-        # 📸 MOBILE CAMERA SNAPSHOT (OVERHEAD MONITOR OCR)
-        # -------------------------------------------------------------
         with st.expander("📸 Snap Overhead Monitor / Recap Photo (AI OCR)", expanded=False):
             st.caption(f"Point phone camera at the screen for Lanes {lane_odd} & {lane_even}:")
             cam_pic = st.camera_input("Take photo of monitor:", key=f"cam_{lane_odd}_{selected_game_num}")
@@ -1057,9 +1202,6 @@ if query_params.get("mode") == "scorer":
                             else:
                                 st.warning("Could not clearly read scores from the monitor. Please enter them manually below.")
 
-        # -------------------------------------------------------------
-        # SCORE VERIFICATION FORM WITH PIN CONCURRENCE
-        # -------------------------------------------------------------
         with st.form(f"mobile_score_form_{lane_odd}_{selected_game_num}"):
             updated_scores_map = {}
             for b_idx, b_row in pair_bowlers.iterrows():
@@ -1112,6 +1254,195 @@ if query_params.get("mode") == "scorer":
                     st.rerun()
 
     st.stop()
+
+# ---------------------------------------------------------
+# 6D. PUBLIC CONCOURSE & TV LEADERBOARD DISPLAY (?mode=leaderboard)
+# ---------------------------------------------------------
+if query_params.get("mode") == "leaderboard":
+    st.markdown("""
+    <style>
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+        .block-container {
+            padding: 1rem 1.8rem 1rem 1.8rem;
+            max-width: 100% !important;
+        }
+        .tv-header {
+            background: linear-gradient(135deg, #1e3a8a 0%, #0b1120 100%);
+            border: 2px solid #38bdf8;
+            border-radius: 14px;
+            padding: 16px 24px;
+            margin-bottom: 14px;
+            box-shadow: 0 6px 24px rgba(0,0,0,0.6);
+        }
+        .tv-row {
+            background-color: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 10px 14px;
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            font-size: 19px;
+            font-weight: 700;
+        }
+        .tv-row-top5 {
+            background: linear-gradient(90deg, #1e293b 0%, #0f2b48 100%);
+            border-left: 6px solid #38bdf8;
+            border-top: 1px solid #38bdf850;
+            border-bottom: 1px solid #38bdf850;
+            border-right: 1px solid #38bdf850;
+        }
+        .tv-row-1st {
+            background: linear-gradient(90deg, #1e293b 0%, #1e3a24 100%);
+            border-left: 6px solid #34d399;
+            border-top: 1px solid #34d39950;
+            border-bottom: 1px solid #34d39950;
+            border-right: 1px solid #34d39950;
+        }
+        .cut-line {
+            border-bottom: 3px dashed #ef4444;
+            margin: 12px 0;
+            text-align: center;
+            height: 14px;
+        }
+        .cut-text {
+            background-color: #0b1120;
+            color: #f87171 !important;
+            padding: 0 16px;
+            font-size: 13px;
+            font-weight: 900;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+    cloud_state = fetch_active_tournament_state()
+    if cloud_state:
+        st.session_state.tournament_config = cloud_state["config"]
+        st.session_state.roster = pd.DataFrame(cloud_state["roster"])
+        st.session_state.brackets = cloud_state.get("brackets", [])
+
+    standings = compile_standings(st.session_state.roster)
+
+    c_logo, c_info, c_stats = st.columns([1, 4, 3])
+    with c_logo:
+        if HAS_LOGO:
+            st.image(LOGO_PATH, width=110)
+        else:
+            st.markdown("<h2 style='font-size: 32px;'>🎳</h2>", unsafe_allow_html=True)
+    with c_info:
+        st.markdown(f"""
+        <div style="padding-top: 4px;">
+            <span style="background: #38bdf820; color: #38bdf8; border: 1px solid #38bdf8; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 800; letter-spacing: 1px;">LIVE CONCOURSE LEADERBOARD</span>
+            <h1 style="color: #f8fafc; font-size: 26px; margin: 4px 0 0 0; font-weight: 900;">{st.session_state.tournament_config['name']}</h1>
+            <div style="color: #94a3b8; font-size: 14px; margin-top: 2px;">
+                Host: <b style="color: #cbd5e1;">{st.session_state.tournament_config['center']}</b> | 
+                Format: <b style="color: #cbd5e1;">{st.session_state.tournament_config.get('format_mode', 'Standard')}</b> | 
+                Handicap: <b style="color: #cbd5e1;">{int(st.session_state.tournament_config.get('hdcp_pct', 0.90)*100)}% of {st.session_state.tournament_config.get('hdcp_base', 220)}</b>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    with c_stats:
+        top_score = standings.iloc[0]["Grand_Total"] if not standings.empty else 0
+        cut_score = standings.iloc[4]["Grand_Total"] if len(standings) >= 5 else 0
+        hi_game = standings["High_Scratch_Game"].max() if not standings.empty else 0
+        total_field = len(st.session_state.roster)
+
+        st.markdown(f"""
+        <div style="display: flex; gap: 10px; justify-content: flex-end; padding-top: 10px;">
+            <div style="background-color: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 6px 14px; text-align: center;">
+                <div style="font-size: 10px; color: #94a3b8; font-weight: 800; text-transform: uppercase;">Leader</div>
+                <div style="font-size: 20px; font-weight: 900; color: #34d399;">{top_score}</div>
+            </div>
+            <div style="background-color: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 6px 14px; text-align: center;">
+                <div style="font-size: 10px; color: #94a3b8; font-weight: 800; text-transform: uppercase;">#5 Cut</div>
+                <div style="font-size: 20px; font-weight: 900; color: #38bdf8;">{cut_score}</div>
+            </div>
+            <div style="background-color: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 6px 14px; text-align: center;">
+                <div style="font-size: 10px; color: #94a3b8; font-weight: 800; text-transform: uppercase;">High Scratch</div>
+                <div style="font-size: 20px; font-weight: 900; color: #fde047;">{hi_game}</div>
+            </div>
+            <div style="background-color: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 6px 14px; text-align: center;">
+                <div style="font-size: 10px; color: #94a3b8; font-weight: 800; text-transform: uppercase;">Field</div>
+                <div style="font-size: 20px; font-weight: 900; color: #f8fafc;">{total_field}</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<hr style='border-color: #1e3a8a; margin: 10px 0 14px 0;'/>", unsafe_allow_html=True)
+
+    if standings.empty:
+        st.markdown("""
+        <div style="background-color: #1e293b; border: 2px solid #334155; border-radius: 12px; padding: 36px; text-align: center; margin-top: 30px;">
+            <h2 style="color: #38bdf8; margin: 0 0 10px 0;">Tournament Warm-Up & Practice In Session</h2>
+            <p style="color: #cbd5e1; font-size: 16px;">Live scoring will display overhead as scores are officially verified by floor officials.</p>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        # Table Header
+        st.markdown("""
+        <div style="display: flex; background-color: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px 14px; color: #94a3b8; font-size: 12.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">
+            <div style="width: 60px;">Pos</div>
+            <div style="flex-grow: 2;">Bowler Name / Affiliation</div>
+            <div style="width: 80px; text-align: center;">Lanes</div>
+            <div style="width: 80px; text-align: center;">Avg / HDCP</div>
+            <div style="width: 70px; text-align: center;">Gm 1</div>
+            <div style="width: 70px; text-align: center;">Gm 2</div>
+            <div style="width: 70px; text-align: center;">Gm 3</div>
+            <div style="width: 90px; text-align: center;">Scratch</div>
+            <div style="width: 100px; text-align: right;">Total Pinfall</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        for rank, row in standings.reset_index().iterrows():
+            pos = int(row["Rank"])
+            bowler = str(row["Bowler"])
+            start_lane = int(pd.to_numeric(row.get("Starting Lane", 1), errors="coerce") or 1)
+            pair_p = start_lane + 1 if start_lane % 2 != 0 else start_lane - 1
+            lane_str = f"{min(start_lane, pair_p)}-{max(start_lane, pair_p)}"
+            avg = int(row["Average"])
+            hdcp = int(row["Total_HDCP"])
+            g1 = int(row["Game 1"])
+            g2 = int(row["Game 2"])
+            g3 = int(row["Game 3"])
+            scratch = int(row["Scratch_Total"])
+            grand = int(row["Grand_Total"])
+            team_str = f" • <span style='color: #94a3b8; font-weight: normal; font-size: 15px;'>{row['Team_Name']}</span>" if row.get("Team_Name") and row["Team_Name"] != "Singles" else ""
+
+            row_class = "tv-row"
+            rank_badge_color = "#38bdf8"
+            if pos == 1:
+                row_class += " tv-row-1st"
+                rank_badge_color = "#34d399"
+            elif pos <= 5:
+                row_class += " tv-row-top5"
+
+            st.markdown(f"""
+            <div class="{row_class}">
+                <div style="width: 60px; font-weight: 900; color: {rank_badge_color};">#{pos}</div>
+                <div style="flex-grow: 2; color: #f8fafc;">{bowler}{team_str}</div>
+                <div style="width: 80px; text-align: center; color: #cbd5e1; font-size: 15px;">L{lane_str}</div>
+                <div style="width: 80px; text-align: center; color: #94a3b8; font-size: 14px;">{avg} <span style="font-size: 12px; color: #38bdf8;">(+{hdcp})</span></div>
+                <div style="width: 70px; text-align: center; color: {'#cbd5e1' if g1 > 0 else '#64748b'};">{g1 or '-'}</div>
+                <div style="width: 70px; text-align: center; color: {'#cbd5e1' if g2 > 0 else '#64748b'};">{g2 or '-'}</div>
+                <div style="width: 70px; text-align: center; color: {'#cbd5e1' if g3 > 0 else '#64748b'};">{g3 or '-'}</div>
+                <div style="width: 90px; text-align: center; color: #cbd5e1;">{scratch}</div>
+                <div style="width: 100px; text-align: right; font-weight: 900; color: #38bdf8; font-size: 21px;">{grand}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if pos == 5 and len(standings) > 5:
+                st.markdown("""
+                <div class="cut-line">
+                    <span class="cut-text">▼ TOP 5 CHAMPIONSHIP STEPLADDER CUT LINE ▼</span>
+                </div>
+                """, unsafe_allow_html=True)
+
+    # Concourse Auto-Refresh Every 12 Seconds
+    time.sleep(12.0)
+    st.rerun()
 
 # ---------------------------------------------------------
 # 7. TD AUTHENTICATION & LOGIN GATE
@@ -1417,10 +1748,6 @@ def generate_with_failover(prompt: str, temperature: float = 0.0) -> str:
     raise last_exception
 
 def extract_scores_from_overhead_photo(image_bytes: bytes, bowlers_on_pair: list, game_num: int) -> dict:
-    """
-    Extracts individual bowler game scores from a photo of an overhead bowling monitor or recap sheet.
-    Returns a dict: {bowler_name: score_int}
-    """
     if not ai_client:
         return {}
 
@@ -1510,7 +1837,8 @@ def generate_first_time_td_guide() -> str:
             "3. T-30 Min: As bowlers arrive, select name in Module 1 (Tab 3), collect fee, click 'Mark Paid & Display on Customer Screen'.\n"
             "4. T-15 Min: Floor TDs scan ?mode=scorer QR code on their phones, create their 4-digit PIN, and claim lane pairs.\n"
             "5. Squad Active: Roving TDs snap overhead monitors with phone camera OCR, input scores, and lock with their secret PIN. Central Desk monitors verified lanes on the Radar Matrix.\n"
-            "6. Finals & Archive: In Module 3, run stepladder finals, declare Champion, and click 'Archive Tournament' to store in Google Sheets."
+            "6. Concourse TV: Cast or open ?mode=leaderboard on the center bar or overhead TVs for live spectator scores.\n"
+            "7. Finals & Archive: In Module 3, run stepladder finals, declare Champion, and click 'Archive Tournament' to store in Google Sheets."
         )
 
     prompt = f"""
@@ -1523,7 +1851,7 @@ Current Event Context:
 - Active Pairs: {st.session_state.tournament_config['lanes_range']}
 - Format Mode: {st.session_state.tournament_config.get('format_mode', 'Standard')}
 
-Structure the guide into 6 numbered chronological steps including how floor TDs connect their phones to ?mode=scorer, snap overhead scoring screens with camera OCR, sign score submissions with PIN concurrence, and how Central Desk monitors the live Lane Radar Matrix.
+Structure the guide into 6 numbered chronological steps including how floor TDs connect their phones to ?mode=scorer, snap overhead scoring screens with camera OCR, sign score submissions with PIN concurrence, how Central Desk monitors the live Lane Radar Matrix, and how to beam the Public Concourse Leaderboard (?mode=leaderboard) to house TVs.
 """
     try:
         return generate_with_failover(prompt, temperature=0.1)
@@ -1533,161 +1861,227 @@ Structure the guide into 6 numbered chronological steps including how floor TDs 
             "2. Ingest roster and balance lanes across pairs in Module 1.\n"
             "3. Take payments and push check-in QR codes to bowler screen.\n"
             "4. Roving TDs open ?mode=scorer on their phones, snap monitors with AI OCR, and set a 4-digit PIN.\n"
-            "5. TDs lock submissions with PIN concurrence. Central Desk tracks verification in Module 2 Lane Radar Matrix.\n"
+            "5. Open ?mode=leaderboard on concourse/bar TVs for live spectator standings.\n"
             "6. Run stepladder and archive event in Module 3."
         )
 
 # ---------------------------------------------------------
-# 10. DETERMINISTIC SCORING ENGINE & DYNAMIC HANDICAP
+# 11. DYNAMIC SOP GENERATION (WORD & PDF)
 # ---------------------------------------------------------
-def calculate_handicap(avg: int, base: int = None, percentage: float = None) -> int:
-    if base is None:
-        base = int(st.session_state.tournament_config.get("hdcp_base", 220))
-    if percentage is None:
-        percentage = float(st.session_state.tournament_config.get("hdcp_pct", 0.90))
+def generate_sop_docx() -> io.BytesIO:
+    doc = Document()
+    for section in doc.sections:
+        section.top_margin = Inches(1.0)
+        section.bottom_margin = Inches(1.0)
+        section.left_margin = Inches(1.0)
+        section.right_margin = Inches(1.0)
 
-    if avg >= base:
-        return 0
-    return math.floor(percentage * (base - avg))
+    PRIMARY = RGBColor(14, 58, 138)
+    SECONDARY = RGBColor(2, 132, 199)
+    TEXT_DARK = RGBColor(15, 23, 42)
+    MUTED = RGBColor(100, 116, 139)
 
-def compile_standings(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return pd.DataFrame()
+    style_normal = doc.styles['Normal']
+    style_normal.font.name = 'Calibri'
+    style_normal.font.size = Pt(11)
+    style_normal.font.color.rgb = TEXT_DARK
+    style_normal.paragraph_format.line_spacing = 1.15
+    style_normal.paragraph_format.space_after = Pt(6)
 
-    calc_df = df.copy()
-    for col in ["Game 1", "Game 2", "Game 3", "Average"]:
-        if col not in calc_df.columns:
-            calc_df[col] = 0
-        calc_df[col] = pd.to_numeric(calc_df[col], errors="coerce").fillna(0).astype(int)
+    def set_cell_background(cell, hex_color):
+        tcPr = cell._tc.get_or_add_tcPr()
+        tcPr.append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="{hex_color}"/>'))
 
-    base = int(st.session_state.tournament_config.get("hdcp_base", 220))
-    pct = float(st.session_state.tournament_config.get("hdcp_pct", 0.90))
-    games_count = int(st.session_state.tournament_config.get("games_count", 3))
+    def set_cell_padding(cell, top=100, bottom=100, left=140, right=140):
+        tcPr = cell._tc.get_or_add_tcPr()
+        tcPr.append(parse_xml(
+            f'<w:tcMar {nsdecls("w")}>'
+            f'<w:top w:w="{top}" w:type="dxa"/><w:bottom w:w="{bottom}" w:type="dxa"/>'
+            f'<w:left w:w="{left}" w:type="dxa"/><w:right w:w="{right}" w:type="dxa"/>'
+            f'</w:tcMar>'
+        ))
 
-    calc_df["HDCP_Per_Game"] = calc_df["Average"].apply(lambda a: calculate_handicap(a, base=base, percentage=pct))
-    calc_df["Total_HDCP"] = calc_df["HDCP_Per_Game"] * games_count
-    calc_df["Scratch_Total"] = calc_df["Game 1"] + calc_df["Game 2"] + calc_df["Game 3"]
-    calc_df["Grand_Total"] = calc_df["Scratch_Total"] + calc_df["Total_HDCP"]
-    calc_df["High_Scratch_Game"] = calc_df[["Game 1", "Game 2", "Game 3"]].max(axis=1)
+    p_org = doc.add_paragraph()
+    p_org.paragraph_format.space_after = Pt(2)
+    r_org = p_org.add_run("CECIL HARFORD UNITED STATES BOWLING CONGRESS")
+    r_org.font.size = Pt(11)
+    r_org.font.bold = True
+    r_org.font.color.rgb = SECONDARY
 
-    calc_df = calc_df.sort_values(
-        by=["Grand_Total", "High_Scratch_Game", "Scratch_Total"],
-        ascending=[False, False, False]
-    ).reset_index(drop=True)
+    p_title = doc.add_paragraph()
+    p_title.paragraph_format.space_after = Pt(4)
+    r_title = p_title.add_run("Standard Operating Procedure: Tournament Desk Operations Console")
+    r_title.font.size = Pt(20)
+    r_title.font.bold = True
+    r_title.font.color.rgb = PRIMARY
 
-    calc_df.index += 1
-    calc_df.index.name = "Rank"
-    return calc_df
+    p_meta = doc.add_paragraph()
+    p_meta.paragraph_format.space_after = Pt(14)
+    r_meta = p_meta.add_run(
+        f"Document Identifier: SOP-TD-2026-01 | Event: {st.session_state.tournament_config['name']}\n"
+        f"Generated from Live Console: {datetime.now().strftime('%B %d, %Y')} | Active Center: {st.session_state.tournament_config['center']}"
+    )
+    r_meta.font.size = Pt(9.5)
+    r_meta.font.color.rgb = MUTED
 
-def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name: str = "") -> bytes:
+    t_div = doc.add_table(rows=1, cols=1)
+    t_div.alignment = WD_TABLE_ALIGNMENT.CENTER
+    c_div = t_div.cell(0, 0)
+    c_div.width = Inches(6.5)
+    set_cell_background(c_div, "0E3A8A")
+    c_div.height = Pt(3)
+
+    doc.add_paragraph().paragraph_format.space_after = Pt(8)
+
+    h1 = doc.add_heading(level=1)
+    h1.add_run("1. Purpose & System Overview").font.color.rgb = PRIMARY
+    doc.add_paragraph(
+        f"This Standard Operating Procedure (SOP) standardizes tournament desk operations for the {st.session_state.tournament_config['name']} "
+        "and all official Cecil Harford USBC (CHUSBC) championship events. The platform is configured with presets for all eight CHUSBC tournaments, "
+        "supporting multi-tier desk operations, team-aware automated lane balancing up to 40 lanes, roving mobile TD scoring with secret PIN concurrence, public concourse TV broadcasting, and cloud archiving."
+    )
+
+    h2 = doc.add_heading(level=1)
+    h2.add_run("2. Hardware Configuration & Station Setup").font.color.rgb = PRIMARY
+    doc.add_paragraph("Desk staff must arrive at the host facility at least 60 minutes prior to squad practice to configure equipment:")
+
+    t_hw = doc.add_table(rows=6, cols=3)
+    t_hw.alignment = WD_TABLE_ALIGNMENT.CENTER
+    hw_headers = ["Component", "Physical Position", "Operational Role"]
+    hw_widths = [Inches(1.8), Inches(1.9), Inches(2.8)]
+
+    for i, title in enumerate(hw_headers):
+        cell = t_hw.cell(0, i)
+        cell.width = hw_widths[i]
+        set_cell_background(cell, "0E3A8A")
+        set_cell_padding(cell, 120, 120, 140, 140)
+        p = cell.paragraphs[0]
+        r = p.add_run(title)
+        r.bold = True
+        r.font.color.rgb = RGBColor(255, 255, 255)
+        r.font.size = Pt(10)
+
+    hw_rows = [
+        ("TD Laptop", "Behind desk, facing official only", "Main operational workstation. Keep browser logged into the TD Console."),
+        ("External Desk Monitor", "Facing bowler registration queue", "Connected via HDMI/USB-C as 'Extended Display'. Runs ?mode=kiosk in fullscreen (F11)."),
+        ("Concourse / Bar TVs", "Overhead center concourse", "Connected via Chromecast or smart TV browser running ?mode=leaderboard for live spectator standings."),
+        ("Cash Box & Receipts", "Beside TD Laptop (secure)", "Holds cash entries, checks, and side pot pools. Must balance against console totals."),
+        ("Network / Hotspot", "Pre-tested before queue opens", "Ensure connection stability. Keep a staff cellular hotspot on standby for failover.")
+    ]
+    for row_idx, row_data in enumerate(hw_rows, start=1):
+        for col_idx, val in enumerate(row_data):
+            cell = t_hw.cell(row_idx, col_idx)
+            cell.width = hw_widths[col_idx]
+            set_cell_background(cell, "F8FAFC" if row_idx % 2 == 1 else "FFFFFF")
+            set_cell_padding(cell, 100, 100, 140, 140)
+            p = cell.paragraphs[0]
+            p.paragraph_format.line_spacing = 1.1
+            p.paragraph_format.space_after = Pt(2)
+            r = p.add_run(val)
+            r.font.size = Pt(9.5)
+
+    doc.add_paragraph().paragraph_format.space_after = Pt(6)
+
+    h_novice = doc.add_heading(level=1)
+    h_novice.add_run("3. First-Time Tournament Director (TD) Quickstart Guide").font.color.rgb = PRIMARY
+    guide_text = generate_first_time_td_guide()
+    p_guide = doc.add_paragraph(guide_text)
+    p_guide.paragraph_format.space_after = Pt(8)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf
+
+def generate_sop_pdf() -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
     story = []
 
     title_style = ParagraphStyle(
-        "DocTitle",
+        "SOPTitle",
         parent=styles["Heading1"],
         fontSize=15,
         leading=18,
-        textColor=colors.HexColor("#0f172a"),
+        textColor=colors.HexColor("#0e3a8a"),
         spaceAfter=2
     )
-    meta_style = ParagraphStyle(
-        "DocMeta",
+    h2_style = ParagraphStyle(
+        "SOPH2",
+        parent=styles["Heading2"],
+        fontSize=11,
+        leading=14,
+        textColor=colors.HexColor("#0284c7"),
+        spaceBefore=6,
+        spaceAfter=3
+    )
+    body_style = ParagraphStyle(
+        "SOPBody",
         parent=styles["Normal"],
-        fontSize=8.5,
-        textColor=colors.HexColor("#475569"),
-        spaceAfter=10
+        fontSize=8,
+        leading=11,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=4
     )
 
-    champ_str = f" | <b>CHAMPION: {champion_name}</b>" if champion_name else ""
     header_text = f"""
-    <b>Cecil Harford USBC — {config['name']}</b><br/>
+    <b>Cecil Harford USBC — Tournament Desk Standard Operating Procedure</b><br/>
     <font size="8" color="#475569">
-    Host: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}{champ_str}<br/>
-    TD on Duty: {st.session_state.td_name} | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}
+    Official Board Manual & First-Time TD Reference Guide | Event: {st.session_state.tournament_config['name']}<br/>
+    Host Center: {st.session_state.tournament_config['center']} | Effective: October 2026 | Document ID: SOP-TD-2026-01
     </font>
     """
 
     if HAS_LOGO:
-        logo_img = RLImage(LOGO_PATH, width=54, height=54)
-        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[64, 476])
+        logo_img = RLImage(LOGO_PATH, width=48, height=48)
+        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[56, 484])
         header_table.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
         ]))
         story.append(header_table)
     else:
-        story.append(Paragraph(f"Cecil Harford USBC — {config['name']}", title_style))
-        story.append(Paragraph(
-            f"Center: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}{champ_str}<br/>"
-            f"TD on Duty: {st.session_state.td_name} | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}",
-            meta_style
-        ))
+        story.append(Paragraph("Cecil Harford USBC — Tournament Desk Standard Operating Procedure", title_style))
+        story.append(Spacer(1, 4))
 
-    table_data = [["Pos", "Bowler Name", "USBC ID", "Avg", "HDCP", "G1", "G2", "G3", "Scratch", "Total"]]
-    for rank, row in standings_df.reset_index().iterrows():
-        table_data.append([
-            str(row["Rank"]),
-            str(row["Bowler"]),
-            str(row.get("USBC ID", "-")),
-            str(row["Average"]),
-            str(row["Total_HDCP"]),
-            str(row["Game 1"]),
-            str(row["Game 2"]),
-            str(row["Game 3"]),
-            str(row["Scratch_Total"]),
-            str(row["Grand_Total"])
-        ])
+    story.append(Paragraph("1. First-Time Tournament Director (TD) Quickstart Walkthrough", h2_style))
+    story.append(Paragraph(
+        "<b>Step 1 (T-60 Setup):</b> Connect desk monitor to laptop (Win+P -> Extend). Open ?mode=kiosk on secondary monitor (F11). Open ?mode=leaderboard on concourse TVs.<br/>"
+        "<b>Step 2 (T-45 Roster & Balancing):</b> Ingest roster in Module 1. Use the 'Automated Lane Balancer' tab to distribute bowlers across active lanes with team grouping.<br/>"
+        "<b>Step 3 (T-30 Bowler Line):</b> Select bowler in Module 1 -> Tab 3. Collect fee, click 'Mark Paid & Display on Customer Screen'. Bowler scans QR code on kiosk screen.<br/>"
+        "<b>Step 4 (T-15 Floor Scorer Setup):</b> Floor TDs scan ?mode=scorer QR code on their phones, set a 4-digit PIN, and claim lane pairs.<br/>"
+        "<b>Step 5 (Scoring with PIN Concurrence):</b> Roving TDs input pair scores on mobile (or snap overhead screens with camera OCR) and enter their secret PIN to lock them. Central Desk tracks verification in Module 2 Lane Radar Matrix.<br/>"
+        "<b>Step 6 (Finals & Archive):</b> Go to Module 3. Select match winners for top 5 stepladder, declare Champion, and click 'Archive Tournament & Save Official PDF'.",
+        body_style
+    ))
 
-    table = Table(table_data, colWidths=[24, 140, 52, 32, 38, 38, 38, 38, 52, 58])
-    table.setStyle(TableStyle([
+    rules_table_data = [
+        ["Statute", "Mandatory Desk Enforcement"],
+        ["Rule 17: Altering Surface", "No abrasive pads or liquid cleaners once competition starts. Remove ball immediately; frames bowled post-adjustment incur zero scores."],
+        ["Rule 18: Equipment Specs", "Balance holes are prohibited. All drilled holes must be occupied by gripping fingers on delivery. Non-compliant balls must be removed."],
+        ["Rule 10: Tardy Bowlers", "Late bowlers begin in current frame if not completed by all on pair. No warm-up frames. Missed frames are scored zero."],
+        ["Rule 400: Youth SMART", "CRITICAL MANDATE: All prizes and awards in youth divisions must be deposited into the USBC SMART program. Zero cash/gift card policy."]
+    ]
+    t_rules = Table(rules_table_data, colWidths=[120, 420])
+    t_rules.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0284c7")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), 8.5),
-        ("ALIGN", (0, 0), (0, -1), "CENTER"),
-        ("ALIGN", (2, 0), (-1, -1), "CENTER"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
-        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-        ("FONTSIZE", (0, 1), (-1, -1), 8),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
     ]))
-    story.append(table)
+    story.append(t_rules)
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
 
-def resolve_bracket_match(b1_id: str, b2_id: str, game_col: str, bracket_type: str, roster_df: pd.DataFrame):
-    row1 = roster_df[roster_df["USBC ID"].astype(str) == str(b1_id)]
-    row2 = roster_df[roster_df["USBC ID"].astype(str) == str(b2_id)]
-    
-    if row1.empty or row2.empty:
-        return "-", 0, "-", 0, None
-
-    r1, r2 = row1.iloc[0], row2.iloc[0]
-    s1 = int(pd.to_numeric(r1.get(game_col, 0), errors="coerce") or 0)
-    s2 = int(pd.to_numeric(r2.get(game_col, 0), errors="coerce") or 0)
-    
-    if bracket_type == "Handicap":
-        h1 = calculate_handicap(int(pd.to_numeric(r1.get("Average", 200), errors="coerce") or 200))
-        h2 = calculate_handicap(int(pd.to_numeric(r2.get("Average", 200), errors="coerce") or 200))
-        t1, t2 = s1 + h1, s2 + h2
-    else:
-        t1, t2 = s1, s2
-
-    if t1 > t2:
-        winner_id = b1_id
-    elif t2 > t1:
-        winner_id = b2_id
-    else:
-        winner_id = b1_id if int(r1.get("Average", 0)) >= int(r2.get("Average", 0)) else b2_id
-
-    return r1["Bowler"], t1, r2["Bowler"], t2, winner_id
-
 # ---------------------------------------------------------
-# 11. SIDEBAR NAVIGATION & CONTROLS
+# 12. SIDEBAR NAVIGATION & CONTROLS
 # ---------------------------------------------------------
 nav_options = [
     "1. Event & Roster Intake",
@@ -2052,7 +2446,7 @@ Input:
             field_size = len(st.session_state.roster)
 
             st.markdown(f"""
-            <div style="background-color: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 12px 16px; margin: 12px 0; font-size: 14px;">
+            <div style="background-color: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 12px 16px; margin-label: 12px 0; font-size: 14px;">
                 Active Pairs: <b>{len(parsed_pairs)} pairs</b> ({len(parsed_pairs)*2} lanes) | 
                 Current Roster: <b>{field_size} bowlers</b> | 
                 Max Capacity: <b>{total_capacity} bowlers</b> | 
@@ -2305,22 +2699,22 @@ elif nav == "2. Scores & Standings":
 
     detected_base = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
     scorer_url = f"{detected_base}/?mode=scorer"
+    leaderboard_url = f"{detected_base}/?mode=leaderboard"
     
-    with st.expander("📱 Roving Floor TD Scorer Launch (Connect Officials via Mobile)", expanded=False):
-        c_sc1, c_sc2 = st.columns([1, 2])
-        with c_sc1:
+    col_deploy_s, col_deploy_l = st.columns(2)
+    with col_deploy_s:
+        with st.expander("📱 Roving Floor TD Scorer Launch", expanded=False):
             scorer_qr = generate_qr_image(scorer_url)
-            st.image(scorer_qr, caption="Scan with phone camera to score lanes", width=180)
-        with c_sc2:
-            st.markdown(f"""
-            #### Deploy Mobile Scoring Marshals
-            Have roving TDs and board members scan the QR code to open the **PIN-Secured Floor Scorer Portal** on their phones.
-            
-            * **URL:** `{scorer_url}`
-            * Officials claim lane pairs, input scores from overhead monitors (manually or via **AI Camera Snapshot**), and sign with their secret 4-digit PIN.
-            * The **Lane Radar Matrix** below tracks real-time verification and timestamps across the entire bowling center.
-            """)
-            st.link_button("📲 Open Mobile Scorer View in New Tab", scorer_url, use_container_width=True)
+            st.image(scorer_qr, caption="Scan with phone camera to score lanes", width=160)
+            st.link_button("📲 Open Mobile Scorer Portal", scorer_url, use_container_width=True)
+            st.caption("Floor officials enter scores with Camera Snapshot OCR & PIN concurrence.")
+
+    with col_deploy_l:
+        with st.expander("📺 Concourse TV & Overhead Leaderboard", expanded=False):
+            lb_qr = generate_qr_image(leaderboard_url)
+            st.image(lb_qr, caption="Scan or open on Concourse / Bar Smart TVs", width=160)
+            st.link_button("🖥️ Launch Concourse TV Leaderboard", leaderboard_url, use_container_width=True)
+            st.caption("Autoscrolling, high-contrast overhead display for spectators & bowlers.")
 
     # 40-Lane Verification Radar Matrix
     st.subheader("🛰️ Central Desk Lane Radar Matrix")
@@ -2968,7 +3362,7 @@ Current Tournament Setup:
 - Current Field Size: {len(st.session_state.roster)} bowlers
 
 Rules & Architecture:
-- 3 tiers: TD Console, External Kiosk (?mode=kiosk), Bowler Mobile Check-in (?mode=checkin), and Mobile Floor Scorer (?mode=scorer).
+- 4 tiers: TD Console, External Kiosk (?mode=kiosk), Bowler Mobile Check-in (?mode=checkin), Mobile Floor Scorer (?mode=scorer), and Public Concourse Leaderboard (?mode=leaderboard).
 - Payment gate: Unpaid bowlers are locked from check-in until TD marks paid (Cash/Check/Venmo) and pushes to customer screen.
 - Scoring: Deterministic {int(st.session_state.tournament_config.get('hdcp_pct', 0.90)*100)}% of {st.session_state.tournament_config.get('hdcp_base', 220)} HDCP, cut to top 5 stepladder, permanent archiving to Google Sheets.
 - Floor Scorers: Roving TDs input & verify scores at lanes via ?mode=scorer with camera snapshot OCR and secret 4-digit PIN concurrence; Central Desk tracks status via Lane Radar Matrix.
@@ -3210,7 +3604,7 @@ if st.session_state.authenticated and st.session_state.session_initialized:
                 preset_q = "A bowler just used an Abralon pad to sand their ball between game 1 and game 2. What is the mandatory penalty under USBC Rule 17?"
         with col_q2:
             if st.button("Weight Holes (R18)", use_container_width=True, key="quick_r18"):
-                preset_q = "An opponent protests that a bowler has an unfilled balance hole or a hole without a gripping finger. What does USBC Rule 18 require?"
+                preset_q = "An opponent protests that a bowler has an extra un-gripped balance hole in their ball. What does USBC Rule 18 require?"
             if st.button("Youth SMART (R400)", use_container_width=True, key="quick_r400"):
                 preset_q = "Can a youth bowler receive cash or a gift card prize in this event under USBC Rule 400?"
 
