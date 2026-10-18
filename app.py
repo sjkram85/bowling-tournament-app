@@ -49,6 +49,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Optional: Auto-refresh Central Desk every 8 seconds to catch mobile check-ins
+from streamlit_autorefresh import st_autorefresh
+count = st_autorefresh(interval=8000, limit=None, key="central_desk_poller")
+
 LOGO_PATH = "CHUSBC.jpg"
 HAS_LOGO = os.path.exists(LOGO_PATH)
 
