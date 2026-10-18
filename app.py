@@ -4284,9 +4284,15 @@ elif "TD User Management" in nav:
                         st.rerun()
 
 # ---------------------------------------------------------
-# FLOATING GEMINI DESK COACH (AWARE OF ACTIVE MODULE & EXACT UI TABS)
+# FLOATING GEMINI DESK COACH (PERSISTENT STATE ACROSS REFRESHES)
 # ---------------------------------------------------------
 if st.session_state.authenticated and st.session_state.session_initialized:
+    # Initialize persistent copilot history in session state
+    if "copilot_query" not in st.session_state:
+        st.session_state.copilot_query = ""
+    if "copilot_response" not in st.session_state:
+        st.session_state.copilot_response = ""
+
     st.markdown('<div class="floating-ai-anchor">', unsafe_allow_html=True)
     with st.popover("✨ Ask Gemini", help="Live operations copilot & USBC rules arbiter"):
         total_field = len(st.session_state.roster)
@@ -4301,82 +4307,62 @@ if st.session_state.authenticated and st.session_state.session_initialized:
         </div>
         """, unsafe_allow_html=True)
 
-        # Context-Aware Presets dynamically generated per active screen
-        preset_prompt = ""
+        # Context-Aware Presets dynamically set persistent query in session state
         st.caption("⚡ Quick Actions for This Screen:")
+        c_p1, c_p2 = st.columns(2)
 
         if "1. Event & Roster Intake" in current_module:
-            c_p1, c_p2 = st.columns(2)
             with c_p1:
                 if st.button("How to balance lanes?", use_container_width=True, key="ctx_btn_1"):
-                    preset_prompt = "I am on Module 1 (Event & Roster Intake). Explain step-by-step how I should balance up to 40 lanes, keep teammates together, and print lane sheets."
+                    st.session_state.copilot_query = "I am on Module 1 (Event & Roster Intake). Explain step-by-step how I should balance up to 40 lanes, keep teammates together, and print lane sheets."
                 if st.button("Bowler check-in steps", use_container_width=True, key="ctx_btn_2"):
-                    preset_prompt = "A bowler just arrived at the desk. Walk me through checking them in, taking payment, and showing the QR code on the customer screen."
+                    st.session_state.copilot_query = "A bowler just arrived at the desk. Walk me through checking them in, taking payment, and showing the QR code on the customer screen."
             with c_p2:
                 if st.button("Floor TD PIN setup", use_container_width=True, key="ctx_btn_3"):
-                    preset_prompt = "How do floor officials create their 4-digit security PIN, and how do I reset it from Central Desk if they forget it?"
+                    st.session_state.copilot_query = "How do floor officials create their 4-digit security PIN, and how do I reset it from Central Desk if they forget it?"
                 if st.button("Tardy Bowler (R10)", use_container_width=True, key="ctx_btn_4"):
-                    preset_prompt = "A bowler arrived 15 minutes late and their pair is in the middle of frame 3. What is the official USBC Rule 10 procedure?"
+                    st.session_state.copilot_query = "A bowler arrived 15 minutes late and their pair is in the middle of frame 3. What is the official USBC Rule 10 procedure?"
 
         elif "2. Scores & Standings" in current_module:
-            c_p1, c_p2 = st.columns(2)
             with c_p1:
                 if st.button("Radar Matrix guide", use_container_width=True, key="ctx_btn_1"):
-                    preset_prompt = "I am looking at the Central Desk Lane Radar Matrix. What do the different status colors mean, and how do I know when a pair is locked?"
+                    st.session_state.copilot_query = "I am looking at the Central Desk Lane Radar Matrix. What do the different status colors mean, and how do I know when a pair is locked?"
                 if st.button("Camera OCR help", use_container_width=True, key="ctx_btn_2"):
-                    preset_prompt = "How does a floor official take a photo of an overhead scoring monitor with their phone, and what do they do if it does not read clearly?"
+                    st.session_state.copilot_query = "How does a floor official take a photo of an overhead scoring monitor with their phone, and what do they do if it does not read clearly?"
             with c_p2:
                 if st.button("Altering Ball (R17)", use_container_width=True, key="ctx_btn_3"):
-                    preset_prompt = "A bowler just used an Abralon pad to sand their ball between game 1 and game 2. What is the mandatory penalty under USBC Rule 17?"
+                    st.session_state.copilot_query = "A bowler just used an Abralon pad to sand their ball between game 1 and game 2. What is the mandatory penalty under USBC Rule 17?"
                 if st.button("Tiebreaker rules", use_container_width=True, key="ctx_btn_4"):
-                    preset_prompt = "Two bowlers have the exact same Grand Total score. How does the system automatically break ties under USBC rules?"
+                    st.session_state.copilot_query = "Two bowlers have the exact same Grand Total score. How does the system automatically break ties under USBC rules?"
 
         elif "3. Stepladder Finals" in current_module:
-            c_p1, c_p2 = st.columns(2)
             with c_p1:
                 if st.button("How to complete event", use_container_width=True, key="ctx_btn_1"):
-                    preset_prompt = "I am ready to finalize this tournament. What exact buttons do I click in Module 3 to crown the Champion and generate the hard-copy summary report?"
+                    st.session_state.copilot_query = "I am ready to finalize this tournament. What exact buttons do I click in Module 3 to crown the Champion and generate the hard-copy summary report?"
                 if st.button("Download Summary PDF", use_container_width=True, key="ctx_btn_2"):
-                    preset_prompt = "Where do I click to download the official hard-copy summary report with the signature blocks for our records?"
+                    st.session_state.copilot_query = "Where do I click to download the official hard-copy summary report with the signature blocks for our records?"
             with c_p2:
                 if st.button("Stepladder seeding", use_container_width=True, key="ctx_btn_3"):
-                    preset_prompt = "Explain how the top 5 seeded stepladder elimination ladder advances from Match 1 through the Championship."
+                    st.session_state.copilot_query = "Explain how the top 5 seeded stepladder elimination ladder advances from Match 1 through the Championship."
                 if st.button("Cloud archive help", use_container_width=True, key="ctx_btn_4"):
-                    preset_prompt = "How does archiving work, where does the saved tournament go in Google Sheets, and how do I access past archives?"
-
-        elif "4. Side Action" in current_module:
-            c_p1, c_p2 = st.columns(2)
-            with c_p1:
-                if st.button("Seed 8-Bowler Bracket", use_container_width=True, key="ctx_btn_1"):
-                    preset_prompt = "How do I randomly seed 8-bowler brackets, and what is the standard payout split ($25 1st, $10 2nd, $5 expense)?"
-            with c_p2:
-                if st.button("Side Pot payouts", use_container_width=True, key="ctx_btn_2"):
-                    preset_prompt = "How are High-Game and Series side pots calculated across Games 1, 2, and 3, and how are ties handled in the payout?"
-
-        elif "5. Financial" in current_module:
-            c_p1, c_p2 = st.columns(2)
-            with c_p1:
-                if st.button("Reconcile drawer", use_container_width=True, key="ctx_btn_1"):
-                    preset_prompt = "How do I balance our cash drawer against the center lineage fee and tournament prize fund in Module 5?"
-            with c_p2:
-                if st.button("Youth SMART export", use_container_width=True, key="ctx_btn_2"):
-                    preset_prompt = "This is a youth division. How do I export the official USBC SMART scholarship submission file under Rule 400?"
+                    st.session_state.copilot_query = "How does archiving work, where does the saved tournament go in Google Sheets, and how do I access past archives?"
 
         else:
-            c_p1, c_p2 = st.columns(2)
             with c_p1:
                 if st.button("What do I do here?", use_container_width=True, key="ctx_btn_1"):
-                    preset_prompt = f"I am currently viewing '{current_module}'. Give me a quick orientation of what actions I can perform on this screen."
+                    st.session_state.copilot_query = f"I am currently viewing '{current_module}'. Give me a quick orientation of what actions I can perform on this screen."
             with c_p2:
                 if st.button("Contact Tech Support", use_container_width=True, key="ctx_btn_2"):
-                    preset_prompt = "Who is the technical point of contact if I need urgent help or run into system errors?"
+                    st.session_state.copilot_query = "Who is the technical point of contact if I need urgent help or run into system errors?"
 
+        # Bind query to session state so background reruns do not clear it
         user_float_q = st.text_input(
             "Ask a question about this screen or a rule:",
-            value=preset_prompt,
+            value=st.session_state.copilot_query,
             placeholder="e.g. What do I click next?",
             key="float_ai_query"
         )
+        st.session_state.copilot_query = user_float_q
 
         if st.button("Get Help from Coach", type="primary", use_container_width=True, key="float_ai_submit"):
             if not user_float_q.strip():
@@ -4387,8 +4373,6 @@ if st.session_state.authenticated and st.session_state.session_initialized:
                 with st.spinner("Analyzing active screen and event state..."):
                     float_context = f"""
 You are the official Cecil Harford USBC (CHUSBC) Tournament Desk Operations Copilot and Rules Arbiter.
-You are assisting an on-duty Tournament Director (TD) or volunteer using the live Streamlit console.
-
 CURRENT RUNTIME CONTEXT:
 - Active Sidebar Module: {current_module}
 - Event Title: {st.session_state.tournament_config['name']}
@@ -4399,48 +4383,26 @@ CURRENT RUNTIME CONTEXT:
 - Paid Entries: {paid_field}
 - Technical Point of Contact (TPOC): Scott Kramer (scottjk85@gmail.com | 443.966.4460)
 
-EXACT UI ARCHITECTURE & TABS FOR MODULES:
-1. Module 1: '1. Event & Roster Intake' contains 4 main tabs:
-   - Tab 1: '⚙️ Event Settings & CHUSBC Presets' -> Has preset dropdown (8 CHUSBC tournaments), center selector, lane count/range, handicap base/pct, movement rule dropdown, and rules text area / flyer uploader. Button: '🔒 Save & Lock Tournament Configuration'.
-   - Tab 2: '📝 Roster Ingestion & 40-Lane Balancing' -> Contains 5 sub-tabs:
-       * Sub-tab '📸 Scan/Photo Clipboard (AI)': Take phone camera photo or upload sheet. Button: '🔍 Extract Bowlers from Photo with Gemini'.
-       * Sub-tab '🤖 Paste Signup Notes (Gemini AI)': Text area to paste unformatted notes/emails. Button: 'Extract Roster with Gemini'.
-       * Sub-tab '📁 Upload CSV': Upload master spreadsheet.
-       * Sub-tab '📋 Editable Master Grid': Direct spreadsheet editor (`st.data_editor`) with columns: USBC ID, Bowler, Average, Starting Lane, Division, Team_Name, Paid, Checked_In. Button: 'Save Roster Changes'.
-       * Sub-tab '🎳 Automated Lane Balancer': Select active pairs, max bowlers per pair, checkboxes '👥 Group Teammates' and '🎲 Blind Random Draw'. Buttons: '⚡ Balance & Assign Lanes Automatically' and '📄 Download Printable PDF Lane Assignment Roster'.
-   - Tab 3: '💳 Desk Intake & Entrance QR Posters' -> Has QR download for entrance self-check-in (?mode=self_checkin) and bowler portal (?mode=bowler_portal), secondary customer kiosk monitor launcher (?mode=kiosk), and bowler search dropdown. Buttons: 'Mark Paid' (Cash, Check, Venmo) and '📺 Push to Customer Screen'.
-   - Tab 4: '🔐 Floor TD PIN Registry (Argon2)' -> Lists floor officials with locked Argon2 PINs. Has Central Desk override form to set or reset 4-digit PINs.
-
-2. Module 2: '2. Scores & Standings':
-   - Has QR code / links to launch mobile roving floor scorer (?mode=scorer) and concourse TV leaderboard (?mode=leaderboard).
-   - '🛰️ Central Desk Lane Radar Matrix': Live status indicators for all active pairs across Game 1, 2, and 3 (🟢 PIN VERIFIED, 🟡 PROVISIONAL, 🔴 PENDING).
-   - 'Official Scoring Grid': Data editor for Game 1, Game 2, Game 3 scores and verifier timestamps. Button: 'Save Scores & Recalculate Standings'.
-   - Official Standings & All-Events Leaderboards with PDF download buttons.
-
-3. Module 3: '3. Stepladder Finals':
-   - Automated completion engine for top 5 qualifiers.
-   - Shows seeded matches (#4 vs #5, #3 vs M1 winner, #2 vs Semifinal, #1 vs Semifinalist) and declares Champion.
-   - Buttons: '📝 Record Official Champion in Audit Log', '🖨️ Download Official Hard-Copy Summary Report (PDF)', and '📦 Archive Tournament to Cloud & Reset Active State'.
-
-4. Module 4: '4. Side Action: Brackets & Pots 💰':
-   - Sub-tabs for '🌳 8-Bowler Elimination Brackets' and '💵 High-Game & Series Side Pots' ($10 buy-in: $3 G1, $3 G2, $3 G3, $1 Series).
-
-5. Module 5: '5. Financial & Payout Ledger 💵':
-   - Lineage, expense, and prize pool calculator. If youth event, enforces USBC Rule 400 and exports SMART scholarship CSV.
-
-INSTRUCTIONS FOR YOUR RESPONSE:
-- If the question is about how to operate the system or what button to click, refer to the EXACT tabs, buttons, and sub-tabs detailed above. Do not invent non-existent form fields.
-- If the user asks about an on-lane dispute or rule, first provide the USBC Rule citation from the 2026-2027 rulebook (Rule 10 for tardiness, Rule 17 for surface alteration, Rule 18 for balance holes, Rule 400 for SMART scholarships), then provide the immediate step-by-step action for the desk official.
-- Keep directions brief, bulleted, and actionable.
+Provide direct, numbered steps for desk operations, or exact USBC rulebook citations for playing disputes.
 """
                     try:
                         ans = arbitrate_rules_inquiry(user_float_q, float_context)
-                        st.markdown(f"""
-                        <div style="background-color: #1e293b; border-left: 3px solid #38bdf8; padding: 12px; border-radius: 6px; font-size: 13px; margin-top: 10px;">
-                            {ans}
-                        </div>
-                        """, unsafe_allow_html=True)
+                        # Save response in session state so background 8s ticks don't erase it
+                        st.session_state.copilot_response = ans
                         log_audit_event(f"Live AI Copilot assisted on '{current_module}': '{user_float_q[:40]}...'")
                     except Exception as err:
                         st.error(f"Error consulting Gemini: {err}")
+
+        # Display persistent answer across all background refresh ticks
+        if st.session_state.copilot_response:
+            st.markdown(f"""
+            <div style="background-color: #1e293b; border-left: 3px solid #38bdf8; padding: 12px; border-radius: 6px; font-size: 13px; margin-top: 10px;">
+                {st.session_state.copilot_response}
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("Clear Response", key="clear_copilot_btn", use_container_width=True):
+                st.session_state.copilot_response = ""
+                st.session_state.copilot_query = ""
+                st.rerun()
+
     st.markdown('</div>', unsafe_allow_html=True)
