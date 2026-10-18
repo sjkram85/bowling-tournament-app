@@ -4258,7 +4258,7 @@ elif "TD User Management" in nav:
                         st.rerun()
 
 # ---------------------------------------------------------
-# FLOATING GEMINI DESK COACH (AWARE OF ACTIVE MODULE & LIVE STATE)
+# FLOATING GEMINI DESK COACH (AWARE OF ACTIVE MODULE & EXACT UI TABS)
 # ---------------------------------------------------------
 if st.session_state.authenticated and st.session_state.session_initialized:
     st.markdown('<div class="floating-ai-anchor">', unsafe_allow_html=True)
@@ -4275,7 +4275,7 @@ if st.session_state.authenticated and st.session_state.session_initialized:
         </div>
         """, unsafe_allow_html=True)
 
-        # Context-Aware Presets based on Active Screen
+        # Context-Aware Presets dynamically generated per active screen
         preset_prompt = ""
         st.caption("⚡ Quick Actions for This Screen:")
 
@@ -4360,23 +4360,52 @@ if st.session_state.authenticated and st.session_state.session_initialized:
             else:
                 with st.spinner("Analyzing active screen and event state..."):
                     float_context = f"""
-You are the Cecil Harford USBC (CHUSBC) Tournament Desk Operations Copilot and Rules Arbiter.
-The Tournament Director or volunteer is currently using the live Streamlit console and needs direct, practical assistance.
+You are the official Cecil Harford USBC (CHUSBC) Tournament Desk Operations Copilot and Rules Arbiter.
+You are assisting an on-duty Tournament Director (TD) or volunteer using the live Streamlit console.
 
-CURRENT REAL-TIME CONTEXT:
-- Active Navigation Screen: {current_module}
-- Event Name: {st.session_state.tournament_config['name']}
-- Host Center: {st.session_state.tournament_config['center']}
+CURRENT RUNTIME CONTEXT:
+- Active Sidebar Module: {current_module}
+- Event Title: {st.session_state.tournament_config['name']}
+- Host Bowling Center: {st.session_state.tournament_config['center']}
 - Division: {st.session_state.tournament_config['division']}
-- Active Lanes: {st.session_state.tournament_config['lanes_range']}
-- Total Registered Bowlers: {total_field}
+- Active Pairs: {st.session_state.tournament_config['lanes_range']}
+- Total Bowlers on Roster: {total_field}
 - Paid Entries: {paid_field}
-- Technical POC: Scott Kramer (scottjk85@gmail.com, 443.966.4460)
+- Technical Point of Contact (TPOC): Scott Kramer (scottjk85@gmail.com | 443.966.4460)
 
-INSTRUCTIONS:
-1. If the user asks about the software or what to do next, provide concise, numbered steps specifying EXACT button labels, tabs, and fields on the active screen ({current_module}).
-2. If the user asks about an on-lane dispute or rule, cite the official 2026-2027 USBC Playing Rulebook and provide clear desk enforcement instructions.
-3. Keep the tone helpful, calm, and direct.
+EXACT UI ARCHITECTURE & TABS FOR MODULES:
+1. Module 1: '1. Event & Roster Intake' contains 4 main tabs:
+   - Tab 1: '⚙️ Event Settings & CHUSBC Presets' -> Has preset dropdown (8 CHUSBC tournaments), center selector, lane count/range, handicap base/pct, movement rule dropdown, and rules text area / flyer uploader. Button: '🔒 Save & Lock Tournament Configuration'.
+   - Tab 2: '📝 Roster Ingestion & 40-Lane Balancing' -> Contains 5 sub-tabs:
+       * Sub-tab '📸 Scan/Photo Clipboard (AI)': Take phone camera photo or upload sheet. Button: '🔍 Extract Bowlers from Photo with Gemini'.
+       * Sub-tab '🤖 Paste Signup Notes (Gemini AI)': Text area to paste unformatted notes/emails. Button: 'Extract Roster with Gemini'.
+       * Sub-tab '📁 Upload CSV': Upload master spreadsheet.
+       * Sub-tab '📋 Editable Master Grid': Direct spreadsheet editor (`st.data_editor`) with columns: USBC ID, Bowler, Average, Starting Lane, Division, Team_Name, Paid, Checked_In. Button: 'Save Roster Changes'.
+       * Sub-tab '🎳 Automated Lane Balancer': Select active pairs, max bowlers per pair, checkboxes '👥 Group Teammates' and '🎲 Blind Random Draw'. Buttons: '⚡ Balance & Assign Lanes Automatically' and '📄 Download Printable PDF Lane Assignment Roster'.
+   - Tab 3: '💳 Desk Intake & Entrance QR Posters' -> Has QR download for entrance self-check-in (?mode=self_checkin) and bowler portal (?mode=bowler_portal), secondary customer kiosk monitor launcher (?mode=kiosk), and bowler search dropdown. Buttons: 'Mark Paid' (Cash, Check, Venmo) and '📺 Push to Customer Screen'.
+   - Tab 4: '🔐 Floor TD PIN Registry (Argon2)' -> Lists floor officials with locked Argon2 PINs. Has Central Desk override form to set or reset 4-digit PINs.
+
+2. Module 2: '2. Scores & Standings':
+   - Has QR code / links to launch mobile roving floor scorer (?mode=scorer) and concourse TV leaderboard (?mode=leaderboard).
+   - '🛰️ Central Desk Lane Radar Matrix': Live status indicators for all active pairs across Game 1, 2, and 3 (🟢 PIN VERIFIED, 🟡 PROVISIONAL, 🔴 PENDING).
+   - 'Official Scoring Grid': Data editor for Game 1, Game 2, Game 3 scores and verifier timestamps. Button: 'Save Scores & Recalculate Standings'.
+   - Official Standings & All-Events Leaderboards with PDF download buttons.
+
+3. Module 3: '3. Stepladder Finals':
+   - Automated completion engine for top 5 qualifiers.
+   - Shows seeded matches (#4 vs #5, #3 vs M1 winner, #2 vs Semifinal, #1 vs Semifinalist) and declares Champion.
+   - Buttons: '📝 Record Official Champion in Audit Log', '🖨️ Download Official Hard-Copy Summary Report (PDF)', and '📦 Archive Tournament to Cloud & Reset Active State'.
+
+4. Module 4: '4. Side Action: Brackets & Pots 💰':
+   - Sub-tabs for '🌳 8-Bowler Elimination Brackets' and '💵 High-Game & Series Side Pots' ($10 buy-in: $3 G1, $3 G2, $3 G3, $1 Series).
+
+5. Module 5: '5. Financial & Payout Ledger 💵':
+   - Lineage, expense, and prize pool calculator. If youth event, enforces USBC Rule 400 and exports SMART scholarship CSV.
+
+INSTRUCTIONS FOR YOUR RESPONSE:
+- If the question is about how to operate the system or what button to click, refer to the EXACT tabs, buttons, and sub-tabs detailed above. Do not invent non-existent form fields.
+- If the user asks about an on-lane dispute or rule, first provide the USBC Rule citation from the 2026-2027 rulebook (Rule 10 for tardiness, Rule 17 for surface alteration, Rule 18 for balance holes, Rule 400 for SMART scholarships), then provide the immediate step-by-step action for the desk official.
+- Keep directions brief, bulleted, and actionable.
 """
                     try:
                         ans = arbitrate_rules_inquiry(user_float_q, float_context)
