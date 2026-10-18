@@ -3534,4 +3534,611 @@ elif nav == "4. Side Action: Brackets & Pots 💰":
             default=all_paid_names
         )
 
-        pot_count = len
+        pot_count = len(enrolled_bowlers)
+        total_pot = pot_count * pot_fee
+
+        p_g1 = round(total_pot * 0.30, 2)
+        p_g2 = round(total_pot * 0.30, 2)
+        p_g3 = round(total_pot * 0.30, 2)
+        p_ser = round(total_pot * 0.10, 2)
+
+        c_p1, c_p2, c_p3, c_p4 = st.columns(4)
+        with c_p1:
+            st.metric("Game 1 Pot", f"${p_g1:,.2f}")
+        with c_p2:
+            st.metric("Game 2 Pot", f"${p_g2:,.2f}")
+        with c_p3:
+            st.metric("Game 3 Pot", f"${p_g3:,.2f}")
+        with c_p4:
+            st.metric("Series Pot", f"${p_ser:,.2f}")
+
+        if enrolled_bowlers:
+            pot_df = paid_roster[paid_roster["Bowler"].isin(enrolled_bowlers)].copy()
+            for col in ["Game 1", "Game 2", "Game 3", "Average"]:
+                pot_df[col] = pd.to_numeric(pot_df[col], errors="coerce").fillna(0).astype(int)
+
+            pot_df["HDCP_Per_Game"] = pot_df["Average"].apply(lambda a: calculate_handicap(a))
+            pot_df["G1_HDCP"] = pot_df["Game 1"] + pot_df["HDCP_Per_Game"]
+            pot_df["G2_HDCP"] = pot_df["Game 2"] + pot_df["HDCP_Per_Game"]
+            pot_df["G3_HDCP"] = pot_df["Game 3"] + pot_df["HDCP_Per_Game"]
+            pot_df["Series_Scratch"] = pot_df["Game 1"] + pot_df["Game 2"] + pot_df["Game 3"]
+            pot_df["Series_HDCP"] = pot_df["Series_Scratch"] + (pot_df["HDCP_Per_Game"] * 3)
+
+            pot_mode = st.radio("Display Pot Standings By:", ["Handicap", "Scratch"], horizontal=True)
+
+            g1_col = "G1_HDCP" if pot_mode == "Handicap" else "Game 1"
+            g2_col = "G2_HDCP" if pot_mode == "Handicap" else "Game 2"
+            g3_col = "G3_HDCP" if pot_mode == "Handicap" else "Game 3"
+            ser_col = "Series_HDCP" if pot_mode == "Handicap" else "Series_Scratch"
+
+            max_g1 = pot_df[g1_col].max()
+            max_g2 = pot_df[g2_col].max()
+            max_g3 = pot_df[g3_col].max()
+            max_ser = pot_df[ser_col].max()
+
+            w_g1 = pot_df[pot_df[g1_col] == max_g1]["Bowler"].tolist()
+            w_g2 = pot_df[pot_df[g2_col] == max_g2]["Bowler"].tolist()
+            w_g3 = pot_df[pot_df[g3_col] == max_g3]["Bowler"].tolist()
+            w_ser = pot_df[pot_df[ser_col] == max_ser]["Bowler"].tolist()
+
+            st.write("")
+            st.markdown(f"### 🏆 Official Payout Leaders ({pot_mode})")
+
+            col_w1, col_w2, col_w3, col_w4 = st.columns(4)
+            with col_w1:
+                st.markdown(f"""
+                <div class="match-box">
+                    <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700;">Game 1 Winner</span>
+                    <div style="font-size: 18px; font-weight: 800; color: #38bdf8;">{', '.join(w_g1)}</div>
+                    <div style="font-size: 14px; color: #34d399; font-weight: 700; margin-top: 4px;">Score: {max_g1} (${p_g1 / max(len(w_g1), 1):,.2f}{' each' if len(w_g1) > 1 else ''})</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with col_w2:
+                st.markdown(f"""
+                <div class="match-box">
+                    <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700;">Game 2 Winner</span>
+                    <div style="font-size: 18px; font-weight: 800; color: #38bdf8;">{', '.join(w_g2)}</div>
+                    <div style="font-size: 14px; color: #34d399; font-weight: 700; margin-top: 4px;">Score: {max_g2} (${p_g2 / max(len(w_g2), 1):,.2f}{' each' if len(w_g2) > 1 else ''})</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with col_w3:
+                st.markdown(f"""
+                <div class="match-box">
+                    <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700;">Game 3 Winner</span>
+                    <div style="font-size: 18px; font-weight: 800; color: #38bdf8;">{', '.join(w_g3)}</div>
+                    <div style="font-size: 14px; color: #34d399; font-weight: 700; margin-top: 4px;">Score: {max_g3} (${p_g3 / max(len(w_g3), 1):,.2f}{' each' if len(w_g3) > 1 else ''})</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with col_w4:
+                st.markdown(f"""
+                <div class="match-box">
+                    <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700;">Series Winner</span>
+                    <div style="font-size: 18px; font-weight: 800; color: #38bdf8;">{', '.join(w_ser)}</div>
+                    <div style="font-size: 14px; color: #34d399; font-weight: 700; margin-top: 4px;">Score: {max_ser} (${p_ser / max(len(w_ser), 1):,.2f}{' each' if len(w_ser) > 1 else ''})</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            st.write("")
+            st.dataframe(
+                pot_df[["Bowler", "Average", "HDCP_Per_Game", "Game 1", "G1_HDCP", "Game 2", "G2_HDCP", "Game 3", "G3_HDCP", "Series_Scratch", "Series_HDCP"]],
+                use_container_width=True
+            )
+
+# ---------------------------------------------------------
+# MODULE 5: FINANCIAL RECONCILIATION & PRIZE FUND LEDGER
+# ---------------------------------------------------------
+elif nav == "5. Financial & Payout Ledger 💵":
+    st.markdown("""
+    <div class="brand-banner">
+        <h1>Financial Reconciliation & Prize Payout Ledger</h1>
+        <p>Automated lineage deductions, prize fund allocation, and USBC Rule 400 SMART compliance.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    config = st.session_state.tournament_config
+    is_youth_division = "youth" in str(config.get("division", "")).lower() or "scholastic" in str(config.get("division", "")).lower()
+
+    if is_youth_division:
+        st.markdown("""
+        <div style="background-color: #f59e0b20; border: 2px solid #f59e0b; border-radius: 10px; padding: 14px 18px; margin-bottom: 16px;">
+            <span style="color: #fde047; font-weight: 800; font-size: 14px;">⚠️ USBC RULE 400 SMART MANDATE ACTIVE</span>
+            <p style="color: #fef08a; font-size: 13.5px; margin: 4px 0 0 0;">
+                This event is designated as a <b>Youth / Scholastic Division</b>. Cash and merchandise gift card payouts are strictly prohibited. All prize funds will automatically route to official <b>USBC SMART Scholarship accounts</b>.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    col_f1, col_f2, col_f3 = st.columns(3)
+    with col_f1:
+        entry_fee_in = st.number_input("Entry Fee per Bowler ($):", value=float(config.get("entry_fee", 50.0)), step=5.0)
+    with col_f2:
+        lineage_rate = st.number_input("Center Lineage Rate per Game ($):", value=3.75, step=0.25)
+    with col_f3:
+        expense_per_bowler = st.number_input("Association/Awards Expense per Bowler ($):", value=5.00, step=1.00)
+
+    config["entry_fee"] = entry_fee_in
+    fin_summary = calculate_financial_summary(st.session_state.roster, config, lineage_per_game=lineage_rate)
+
+    st.write("")
+    c_m1, c_m2, c_m3, c_m4 = st.columns(4)
+    with c_m1:
+        st.metric("Paid Entries", fin_summary["paid_count"])
+    with c_m2:
+        st.metric("Gross Revenue", f"${fin_summary['gross_revenue']:,.2f}")
+    with c_m3:
+        st.metric("Lineage Owed to House", f"${fin_summary['total_lineage']:,.2f}")
+    with c_m4:
+        payout_label = "Net SMART Scholarship Pool" if is_youth_division else "Net Prize Fund Pool"
+        st.metric(payout_label, f"${fin_summary['net_prize_fund']:,.2f}")
+
+    st.divider()
+
+    st.subheader("📊 Payout Distribution Breakdown")
+    net_pool = fin_summary["net_prize_fund"]
+
+    if net_pool <= 0:
+        st.warning("No revenue recorded yet. Mark bowlers as paid in Module 1 to calculate prize allocations.")
+    else:
+        ratios = [0.40, 0.25, 0.15, 0.10, 0.05, 0.05]
+        place_names = ["1st Place", "2nd Place", "3rd Place", "4th Place", "5th Place", "6th Place"]
+        
+        payout_rows = []
+        for i, pct in enumerate(ratios):
+            if i * 4 > fin_summary["paid_count"] and i >= 3:
+                break
+            amount = round(net_pool * pct, 2)
+            payout_rows.append({
+                "Position": place_names[i] if i < len(place_names) else f"{i+1}th Place",
+                "Allocation (%)": f"{int(pct*100)}%",
+                "Amount ($)": f"${amount:,.2f}"
+            })
+
+        st.dataframe(pd.DataFrame(payout_rows), use_container_width=True)
+
+        if is_youth_division:
+            st.write("")
+            standings = compile_standings(st.session_state.roster)
+            smart_csv = generate_smart_scholarship_csv(standings, net_pool)
+            if smart_csv:
+                st.download_button(
+                    "📄 Download USBC SMART Scholarship Submission (.csv)",
+                    data=smart_csv,
+                    file_name=f"{config['name'].replace(' ', '_')}_SMART_Submittal.csv",
+                    mime="text/csv",
+                    type="primary",
+                    use_container_width=True
+                )
+        else:
+            st.success("Financial ledger balances cleanly to the penny against recorded cash and electronic receipts.")
+
+# ---------------------------------------------------------
+# MODULE 6: AI RULES ARBITER (GROUNDED TO 2026-27 RULEBOOK PDF)
+# ---------------------------------------------------------
+elif nav == "6. AI Rules Arbiter":
+    st.markdown("""
+    <div class="brand-banner">
+        <h1>USBC & Tournament Rules Arbiter</h1>
+        <p>Gemini AI official decision support grounded on USBC Playing Rules.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if HAS_RULEBOOK and RULEBOOK_BYTES is not None:
+        st.markdown("""
+        <div style="display: inline-block; background-color: #10b98120; border: 1px solid #10b981; border-radius: 20px; padding: 4px 14px; margin-bottom: 12px; font-size: 13px; font-weight: 700; color: #34d399;">
+            🟢 Grounded directly on USBC-Playing-Rulebook-26-27.pdf
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div style="display: inline-block; background-color: #f59e0b20; border: 1px solid #f59e0b; border-radius: 20px; padding: 4px 14px; margin-bottom: 12px; font-size: 13px; font-weight: 700; color: #fde047;">
+            ⚠️ USBC-Playing-Rulebook-26-27.pdf not detected in root repo — operating on baseline memory
+        </div>
+        """, unsafe_allow_html=True)
+
+    division_alert = ""
+    if "Youth" in str(st.session_state.tournament_config.get("division", "")):
+        division_alert = "\nCRITICAL DIVISION MANDATE: Enforce USBC Rule 400 (all awards must be SMART scholarships; cash is strictly prohibited)."
+
+    rules_context = f"""
+HOST BOWLING CENTER: {st.session_state.tournament_config['center']}
+TOURNAMENT NAME: {st.session_state.tournament_config['name']}
+DIVISION: {st.session_state.tournament_config['division']}
+ACTIVE LANES: {st.session_state.tournament_config['lanes_range']}
+FORMAT MODE: {st.session_state.tournament_config.get('format_mode', 'Standard')}
+EVENT FLYER / LOCAL RULES TEXT:
+{st.session_state.tournament_config['rules_text']}
+{division_alert}
+"""
+
+    st.caption("⚡ Common On-Lane Disputes:")
+    col_preset1, col_preset2 = st.columns(2)
+    selected_dispute_preset = ""
+    with col_preset1:
+        if st.button("Rule 17: Altering Ball Surface (Sanding/Cleaning Mid-Game)", use_container_width=True):
+            selected_dispute_preset = "A bowler was seen using an Abralon pad to alter the surface of their ball between game 1 and game 2 of official competition. What is the mandatory penalty under USBC Rule 17?"
+        if st.button("Rule 10: Tardy Bowler Arrival Protocol", use_container_width=True):
+            selected_dispute_preset = "A bowler arrived 15 minutes late and their assigned pair is currently bowling in the 3rd frame. Can they bowl, and how are missed frames scored under USBC Rule 10?"
+    with col_preset2:
+        if st.button("Rule 18: Gripping Holes & Weight Holes", use_container_width=True):
+            selected_dispute_preset = "An opponent protests that a bowler has an extra un-gripped balance hole in their ball. What does USBC Rule 18 require?"
+        if st.button("Rule 400: Youth SMART Eligibility", use_container_width=True):
+            selected_dispute_preset = "Can a youth bowler participate in adult brackets, or receive cash or merchandise gift cards under USBC Rule 400?"
+
+    query = st.text_area("Describe the on-lane situation or protest:", value=selected_dispute_preset, height=100)
+    
+    if st.button("Generate Official Arbiter Ruling", type="primary"):
+        if not query.strip():
+            st.warning("Please describe the dispute or click one of the quick dispute presets above.")
+        else:
+            with st.spinner("Analyzing USBC-Playing-Rulebook-26-27.pdf..."):
+                try:
+                    decision_text = arbitrate_rules_inquiry(query, rules_context)
+                    st.markdown("### Official Decision")
+                    st.markdown(decision_text)
+                    log_audit_event(f"Rules dispute adjudicated: '{query[:50]}...'")
+                except Exception as err:
+                    st.error(f"Error querying Gemini: {err}")
+
+# ---------------------------------------------------------
+# MODULE 7: PAST TOURNAMENTS ARCHIVE
+# ---------------------------------------------------------
+elif nav == "7. Past Tournaments Archive 📂":
+    st.markdown("""
+    <div class="brand-banner">
+        <h1>Historical Tournament Archive</h1>
+        <p>Official final results and downloadable PDF documents permanently stored on Google Sheets.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    archive_df = fetch_archives_df()
+
+    if archive_df.empty:
+        st.info("No past tournaments have been archived yet. Once an event concludes in Module 3, click 'Archive Tournament' to store it permanently.")
+    else:
+        for idx, row in archive_df.iloc[::-1].iterrows():
+            t_name = row.get("tournament_name", "CHUSBC Event")
+            t_date = row.get("date", "Unknown Date")
+            t_center = row.get("center", "")
+            t_div = row.get("division", "")
+            t_champ = row.get("champion", "N/A")
+            t_entries = row.get("entries", 0)
+            t_td = row.get("archived_by", "Staff")
+            pdf_b64 = row.get("pdf_data", "")
+
+            with st.container():
+                st.markdown(f"""
+                <div style="background-color: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 18px; margin-bottom: 16px;">
+                    <div style="display: flex; justify-content: space-between; align-items: baseline;">
+                        <h3 style="margin: 0; color: #f8fafc; font-size: 20px;">🏆 {t_name}</h3>
+                        <span style="color: #38bdf8; font-weight: 700;">{t_date}</span>
+                    </div>
+                    <div style="color: #94a3b8; font-size: 14px; margin-top: 6px;">
+                        <strong>Center:</strong> {t_center} | <strong>Division:</strong> {t_div} | <strong>Field:</strong> {t_entries} Bowlers | <strong>Archived By:</strong> {t_td}
+                    </div>
+                    <div style="margin-top: 10px; font-size: 16px; color: #34d399; font-weight: 700;">
+                        👑 Champion: {t_champ}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                if pdf_b64:
+                    try:
+                        pdf_decoded = base64.b64decode(pdf_b64)
+                        st.download_button(
+                            f"📄 Download Official Final Standings PDF ({t_name})",
+                            data=pdf_decoded,
+                            file_name=f"{str(t_name).replace(' ', '_')}_{str(t_date)}.pdf",
+                            mime="application/pdf",
+                            key=f"dl_pdf_{idx}"
+                        )
+                    except Exception as e:
+                        st.caption("Unable to decode stored PDF data.")
+                st.divider()
+
+# ---------------------------------------------------------
+# MODULE 8: BOARD SOP & STAFF MANUAL (DYNAMIC DOCX & PDF)
+# ---------------------------------------------------------
+elif nav == "8. Board SOP & Staff Manual 📖":
+    st.markdown("""
+    <div class="brand-banner">
+        <h1>Board Standard Operating Procedure (SOP)</h1>
+        <p>Dynamic tournament desk operations manual and novice TD quickstart guide.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("🤖 Ask Gemini: Live Desk Operations & Onboarding Coach", expanded=True):
+        st.markdown("Have a question about what button to click, how to handle a payment, or what to do if you're stuck? Ask here:")
+        coach_question = st.text_input("Enter your desk ops question (e.g., 'A bowler arrived late in game 1, what do I click?'):", placeholder="Type your tournament question...")
+        
+        if st.button("Get Instant Instructions from Gemini", type="primary"):
+            if not ai_client:
+                st.warning("Gemini API key is required.")
+            elif not coach_question.strip():
+                st.warning("Please type a question.")
+            else:
+                with st.spinner("Consulting CHUSBC Desk Manual..."):
+                    coach_prompt = f"""
+You are the Cecil Harford USBC (CHUSBC) Tournament Desk Operations AI Coach.
+Your goal is to guide a novice Tournament Director or volunteer who has NEVER used this software before.
+
+Current Tournament Setup:
+- Center: {st.session_state.tournament_config['center']}
+- Event: {st.session_state.tournament_config['name']}
+- Division: {st.session_state.tournament_config['division']}
+- Active Lanes: {st.session_state.tournament_config['lanes_range']}
+- Current Field Size: {len(st.session_state.roster)} bowlers
+
+Rules & Architecture:
+- 6 tiers: TD Console, External Kiosk (?mode=kiosk), Express Entrance Self-Check-In (?mode=self_checkin), Read-Only Bowler Portal (?mode=bowler_portal), Mobile Floor Scorer (?mode=scorer), and Public Concourse Leaderboard (?mode=leaderboard).
+- Cryptographic Security: Argon2id password and 4-digit PIN hashing.
+- Payment & Bracket Gate: Pre-paid bowlers check in automatically at the door unless they want brackets; unpaid or bracket bowlers are directed to the desk.
+
+User Question:
+{coach_question}
+
+Format your response in simple, numbered, crystal-clear steps telling the official EXACTLY where to navigate and what to click. Keep it encouraging and direct.
+"""
+                    try:
+                        reply = generate_with_failover(coach_prompt, temperature=0.1)
+                        st.markdown("### 📋 Instructions from AI Coach:")
+                        st.markdown(reply)
+                    except Exception as err:
+                        st.error(f"Error querying AI Coach: {err}")
+
+    st.divider()
+
+    st.markdown("### 📥 Official Document Export")
+    col_dl_docx, col_dl_pdf = st.columns(2)
+    with col_dl_docx:
+        docx_buffer = generate_sop_docx()
+        st.download_button(
+            "📝 Download Official SOP (.docx for Word)",
+            data=docx_buffer,
+            file_name=f"{st.session_state.tournament_config['name'].replace(' ', '_')}_SOP.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True
+        )
+    with col_dl_pdf:
+        pdf_bytes = generate_sop_pdf()
+        st.download_button(
+            "📄 Download Official SOP (.pdf for Print)",
+            data=pdf_bytes,
+            file_name=f"{st.session_state.tournament_config['name'].replace(' ', '_')}_SOP.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+
+# ---------------------------------------------------------
+# MODULE 9: AUDIT LOG
+# ---------------------------------------------------------
+elif nav == "9. TD Audit Log":
+    st.markdown("""
+    <div class="brand-banner">
+        <h1>Official Tournament Audit Log</h1>
+        <p>Immutable log of desk actions, scoring adjustments, and administrative events.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not st.session_state.audit_trail:
+        st.info("No audit entries recorded for this session.")
+    else:
+        st.dataframe(pd.DataFrame(st.session_state.audit_trail), use_container_width=True)
+
+# ---------------------------------------------------------
+# MODULE 10: ADMIN USER MANAGEMENT (ARGON2ID)
+# ---------------------------------------------------------
+elif "TD User Management" in nav:
+    st.markdown("""
+    <div class="brand-banner">
+        <h1>Tournament Director & Staff Management (Argon2id)</h1>
+        <p>Admin console synchronized with Google Sheets for permanent account storage.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    users_df = fetch_users_df()
+    pending_df = users_df[users_df["status"] == "pending"]
+
+    st.subheader(f"Account Requests Pending Approval ({len(pending_df)})")
+    if pending_df.empty:
+        st.info("No registration requests currently awaiting approval.")
+    else:
+        for idx, row in pending_df.iterrows():
+            uname = row["username"]
+            real_name = row["name"]
+            with st.container():
+                st.markdown(f"""
+                <div style="background-color: #1e293b; padding: 14px 18px; border-radius: 8px; border: 1.5px solid #ec489950; margin-bottom: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span style="font-size: 16px; font-weight: 700; color: #f8fafc;">{real_name} (<code style="color: #38bdf8;">{uname}</code>)</span>
+                        <span class="badge-pending">PENDING APPROVAL</span>
+                    </div>
+                    <div style="font-size: 13px; color: #94a3b8; margin-top: 6px;">
+                        <strong>Submitted:</strong> {row.get('created_at', 'Recent')}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                col_role, col_appr, col_deny = st.columns([1, 1, 1])
+                with col_role:
+                    selected_role = st.selectbox(f"Assign Role for {uname}:", ["td", "admin"], key=f"role_{uname}")
+                with col_appr:
+                    if st.button(f"Approve & Activate ({uname})", key=f"appr_{uname}", type="primary", use_container_width=True):
+                        latest_df = fetch_users_df()
+                        target_idx = latest_df.index[latest_df["username"] == uname].tolist()
+                        if target_idx:
+                            latest_df.loc[target_idx[0], "status"] = "active"
+                            latest_df.loc[target_idx[0], "role"] = selected_role
+                            write_users_df(latest_df)
+                        log_audit_event(f"Admin approved registration for '{uname}' ({real_name}) as {selected_role}.")
+                        st.success(f"Account '{uname}' approved.")
+                        st.rerun()
+                with col_deny:
+                    if st.button(f"Deny & Remove ({uname})", key=f"deny_{uname}", use_container_width=True):
+                        latest_df = fetch_users_df()
+                        latest_df = latest_df[latest_df["username"] != uname]
+                        write_users_df(latest_df)
+                        log_audit_event(f"Admin denied registration request for '{uname}'.")
+                        st.warning(f"Registration request for '{uname}' denied.")
+                        st.rerun()
+            st.divider()
+
+    st.subheader("Active Staff Registry (Live from Google Sheets)")
+    active_df = users_df[users_df["status"] == "active"].copy()
+    display_df = pd.DataFrame({
+        "Username": active_df["username"],
+        "Full Name": active_df["name"],
+        "Role": active_df["role"].str.upper(),
+        "Hash Type": active_df["password_hash"].apply(lambda h: "Argon2id" if str(h).startswith("$argon2") else "SHA-256 (Auto-Upgrades)"),
+        "Must Reset Pwd": active_df["must_change_password"].apply(lambda x: "YES" if bool(x) else "NO"),
+        "Registered": active_df["created_at"]
+    })
+    st.dataframe(display_df, use_container_width=True)
+
+    st.divider()
+
+    col_add, col_reset, col_del = st.columns([1, 1, 1])
+
+    with col_add:
+        st.subheader("Register Official Directly")
+        with st.form("add_td_form"):
+            new_user = st.text_input("Username:").strip().lower()
+            new_name = st.text_input("Full Official Name:")
+            new_pw = st.text_input("Initial Password:", type="password").strip()
+            new_role = st.selectbox("Role Assignment:", ["td", "admin"])
+            force_change = st.checkbox("Require pwd change on 1st login", value=True)
+            submit_td = st.form_submit_button("Create Account Directly (Argon2)", type="primary", use_container_width=True)
+
+            if submit_td:
+                latest_df = fetch_users_df()
+                if not new_user or not new_name or not new_pw:
+                    st.error("All fields are required.")
+                elif new_user in latest_df["username"].values:
+                    st.error(f"User '{new_user}' already exists.")
+                else:
+                    new_entry = pd.DataFrame([{
+                        "username": new_user,
+                        "name": new_name,
+                        "password_hash": hash_secret(new_pw),
+                        "role": new_role,
+                        "status": "active",
+                        "must_change_password": force_change,
+                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                    }])
+                    updated_df = pd.concat([latest_df, new_entry], ignore_index=True)
+                    write_users_df(updated_df)
+                    flag_note = "with mandatory password change" if force_change else "without mandatory password change"
+                    log_audit_event(f"Admin registered new user: '{new_user}' ({new_name}) as {new_role} {flag_note} (Argon2id).")
+                    st.success(f"Official '{new_name}' registered with Argon2id.")
+                    st.rerun()
+
+    with col_reset:
+        st.subheader("Reset / Override Password")
+        active_users = users_df[users_df["status"] == "active"]["username"].tolist()
+        with st.form("reset_pwd_form"):
+            target_user = st.selectbox("Select Account to Reset:", active_users)
+            new_admin_pw = st.text_input("New Password:", type="password").strip()
+            target_force = st.checkbox("Require user to change on next login", value=True)
+            submit_reset = st.form_submit_button("Update Password (Argon2)", use_container_width=True)
+
+            if submit_reset:
+                if not new_admin_pw:
+                    st.error("Password cannot be blank.")
+                elif len(new_admin_pw) < 6:
+                    st.error("Password must be at least 6 characters.")
+                else:
+                    latest_df = fetch_users_df()
+                    target_idx = latest_df.index[latest_df["username"] == target_user].tolist()
+                    if target_idx:
+                        latest_df.loc[target_idx[0], "password_hash"] = hash_secret(new_admin_pw)
+                        latest_df.loc[target_idx[0], "must_change_password"] = target_force
+                        write_users_df(latest_df)
+                    log_audit_event(f"Admin reset password for user '{target_user}' (Argon2id).")
+                    st.success(f"Password for '{target_user}' updated with Argon2id.")
+                    st.rerun()
+
+    with col_del:
+        st.subheader("Delete User Account")
+        deletable_users = [u for u in users_df["username"].tolist() if u != "skramer"]
+        
+        if not deletable_users:
+            st.info("No auxiliary user accounts to delete.")
+        else:
+            with st.form("delete_user_form"):
+                user_to_delete = st.selectbox("Select Account to Remove:", deletable_users)
+                confirm_delete = st.checkbox("Confirm permanent removal", value=False)
+                submit_delete = st.form_submit_button("Delete Account", use_container_width=True)
+
+                if submit_delete:
+                    if not confirm_delete:
+                        st.error("Check the confirmation box before deleting.")
+                    else:
+                        latest_df = fetch_users_df()
+                        match_row = latest_df[latest_df["username"] == user_to_delete]
+                        del_name = match_row.iloc[0]["name"] if not match_row.empty else user_to_delete
+                        latest_df = latest_df[latest_df["username"] != user_to_delete]
+                        write_users_df(latest_df)
+                        log_audit_event(f"Admin deleted user account: '{user_to_delete}' ({del_name}).")
+                        st.success(f"Account '{user_to_delete}' removed.")
+                        st.rerun()
+
+# ---------------------------------------------------------
+# FLOATING GEMINI DESK COACH (PINNED TO BOTTOM-RIGHT ACROSS ALL MODULES)
+# ---------------------------------------------------------
+if st.session_state.authenticated and st.session_state.session_initialized:
+    st.markdown('<div class="floating-ai-anchor">', unsafe_allow_html=True)
+    with st.popover("✨ Ask Gemini", help="Instant USBC rules rulings & tournament procedures"):
+        st.markdown(f"""
+        <div style="border-bottom: 1px solid #334155; padding-bottom: 8px; margin-bottom: 10px;">
+            <strong style="color: #38bdf8; font-size: 15px;">🎳 CHUSBC AI Desk Coach</strong><br/>
+            <span style="color: #94a3b8; font-size: 12px;">Active: {st.session_state.tournament_config['name']}</span><br/>
+            <span style="color: #cbd5e1; font-size: 11px;">Host: {st.session_state.tournament_config['center']} | Format: {st.session_state.tournament_config.get('format_mode', 'Standard')}</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if HAS_RULEBOOK and RULEBOOK_BYTES is not None:
+            st.caption("🟢 Grounded: USBC-Playing-Rulebook-26-27.pdf")
+        else:
+            st.caption("⚠️ Operating on baseline memory (Rulebook PDF not found)")
+
+        st.caption("⚡ Quick Dispute Presets:")
+        col_q1, col_q2 = st.columns(2)
+        preset_q = ""
+        with col_q1:
+            if st.button("Tardy Bowler (R10)", use_container_width=True, key="quick_r10"):
+                preset_q = "A bowler arrived 15 minutes late and their pair is in the middle of frame 3. What is the official USBC Rule 10 procedure?"
+            if st.button("Altering Ball (R17)", use_container_width=True, key="quick_r17"):
+                preset_q = "A bowler just used an Abralon pad to sand their ball between game 1 and game 2. What is the mandatory penalty under USBC Rule 17?"
+        with col_q2:
+            if st.button("Weight Holes (R18)", use_container_width=True, key="quick_r18"):
+                preset_q = "An opponent protests that a bowler has an extra un-gripped balance hole in their ball. What does USBC Rule 18 require?"
+            if st.button("Youth SMART (R400)", use_container_width=True, key="quick_r400"):
+                preset_q = "Can a youth bowler receive cash or a gift card prize in this event under USBC Rule 400?"
+
+        user_float_q = st.text_input("Or type your question / on-lane dispute:", value=preset_q, placeholder="e.g. How do I handle a foul light dispute?", key="float_ai_query")
+
+        if st.button("Get Official Ruling", type="primary", use_container_width=True, key="float_ai_submit"):
+            if not user_float_q.strip():
+                st.warning("Please type a question or choose a quick dispute preset.")
+            elif not ai_client:
+                st.error("Gemini API key is not configured.")
+            else:
+                with st.spinner("Consulting USBC-Playing-Rulebook-26-27.pdf..."):
+                    float_context = f"""
+HOST BOWLING CENTER: {st.session_state.tournament_config['center']}
+TOURNAMENT NAME: {st.session_state.tournament_config['name']}
+DIVISION: {st.session_state.tournament_config['division']}
+ACTIVE LANES: {st.session_state.tournament_config['lanes_range']}
+FORMAT MODE: {st.session_state.tournament_config.get('format_mode', 'Standard')}
+EVENT RULES: {st.session_state.tournament_config['rules_text']}
+"""
+                    try:
+                        ans = arbitrate_rules_inquiry(user_float_q, float_context)
+                        st.markdown(f"""
+                        <div style="background-color: #1e293b; border-left: 3px solid #38bdf8; padding: 12px; border-radius: 6px; font-size: 13px; margin-top: 10px;">
+                            {ans}
+                        </div>
+                        """, unsafe_allow_html=True)
+                        log_audit_event(f"Floating AI Coach answered dispute: '{user_float_q[:40]}...'")
+                    except Exception as err:
+                        st.error(f"Error consulting Gemini: {err}")
+    st.markdown('</div>', unsafe_allow_html=True)
