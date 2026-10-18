@@ -1,5 +1,6 @@
 import os
 import io
+import json
 import math
 import hashlib
 from datetime import datetime
@@ -25,6 +26,7 @@ st.set_page_config(
 
 LOGO_PATH = "CHUSBC.jpg"
 HAS_LOGO = os.path.exists(LOGO_PATH)
+USERS_DB_FILE = "users_db.json"
 
 st.markdown("""
 <style>
@@ -120,26 +122,41 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 2. AUTHENTICATION & MULTI-TD USER REPOSITORY
+# 2. PERSISTENT JSON REPOSITORY FOR USERS & AUDIT
 # ---------------------------------------------------------
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.strip().encode("utf-8")).hexdigest()
 
 TARGET_ADMIN_HASH = "7e754bbef03e005db3d5089312104526685ba227e7f8e77a1fc9b6460fae2b1b"
 
-if "user_registry" not in st.session_state:
-    st.session_state.user_registry = {}
-
-# Ensure skramer is initialized and active
-if "skramer" not in st.session_state.user_registry:
-    st.session_state.user_registry["skramer"] = {
-        "name": "Scott Kramer",
-        "password_hash": TARGET_ADMIN_HASH,
-        "role": "admin",
-        "status": "active",
-        "must_change_password": False,
-        "created_at": "Primary Admin"
+def load_user_database() -> dict:
+    default_registry = {
+        "skramer": {
+            "name": "Scott Kramer",
+            "password_hash": TARGET_ADMIN_HASH,
+            "role": "admin",
+            "status": "active",
+            "must_change_password": False,
+            "created_at": "Primary Admin"
+        }
     }
+    if not os.path.exists(USERS_DB_FILE):
+        save_user_database(default_registry)
+        return default_registry
+    try:
+        with open(USERS_DB_FILE, "r") as f:
+            data = json.load(f)
+            # Ensure primary admin always exists and is active
+            if "skramer" not in data:
+                data["skramer"] = default_registry["skramer"]
+                save_user_database(data)
+            return data
+    except Exception:
+        return default_registry
+
+def save_user_database(db: dict):
+    with open(USERS_DB_FILE, "w") as f:
+        json.dump(db, f, indent=4)
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -171,6 +188,8 @@ if not st.session_state.authenticated:
         if HAS_LOGO:
             st.image(LOGO_PATH, width=160)
 
+        users_db = load_user_database()
+
         if st.session_state.pending_password_change:
             st.markdown("""
             <div class="brand-banner">
@@ -190,8 +209,11 @@ if not st.session_state.authenticated:
                         st.error("Passwords do not match.")
                     else:
                         u = st.session_state.username
-                        st.session_state.user_registry[u]["password_hash"] = hash_password(new_pwd)
-                        st.session_state.user_registry[u]["must_change_password"] = False
+                        users_db = load_user_database()
+                        if u in users_db:
+                            users_db[u]["password_hash"] = hash_password(new_pwd)
+                            users_db[u]["must_change_password"] = False
+                            save_user_database(users_db)
                         st.session_state.pending_password_change = False
                         st.session_state.authenticated = True
                         log_audit_event(f"User '{u}' completed initial password change.")
@@ -214,14 +236,14 @@ if not st.session_state.authenticated:
 
                     if submitted:
                         is_skramer = (username_input == "skramer" and password_input == "Abigail!2015")
-                        user_info = st.session_state.user_registry.get(username_input, {})
-                        is_reg = (username_input in st.session_state.user_registry and 
+                        user_info = users_db.get(username_input, {})
+                        is_reg = (username_input in users_db and 
                                   user_info.get("password_hash") == hash_password(password_input))
 
                         if is_skramer or is_reg:
                             user_status = user_info.get("status", "active")
                             if user_status == "pending":
-                                st.warning("Your account registration is currently pending review by an Administrator.")
+                                st.warning("Your registration is currently pending review by an Administrator.")
                             else:
                                 st.session_state.username = username_input
                                 st.session_state.td_name = user_info.get("name", "Scott Kramer")
@@ -246,14 +268,15 @@ if not st.session_state.authenticated:
                     submit_req = st.form_submit_button("Submit Registration for Approval", use_container_width=True)
 
                     if submit_req:
+                        current_db = load_user_database()
                         if not req_user or not req_name or not req_pwd:
                             st.error("Username, Full Name, and Password are all required.")
                         elif len(req_pwd) < 6:
                             st.error("Password must be at least 6 characters.")
-                        elif req_user in st.session_state.user_registry:
-                            st.error(f"Username '{req_user}' is already registered or requested.")
+                        elif req_user in current_db:
+                            st.error(f"Username '{req_user}' is already taken.")
                         else:
-                            st.session_state.user_registry[req_user] = {
+                            current_db[req_user] = {
                                 "name": req_name,
                                 "password_hash": hash_password(req_pwd),
                                 "role": "td",
@@ -261,7 +284,8 @@ if not st.session_state.authenticated:
                                 "must_change_password": False,
                                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
                             }
-                            log_audit_event(f"New self-registration submitted: '{req_user}' ({req_name}). Pending approval.")
+                            save_user_database(current_db)
+                            log_audit_event(f"New self-registration submitted: '{req_user}' ({req_name}).")
                             st.success("Registration submitted! An administrator will review and approve your account.")
 
     st.stop()
@@ -425,7 +449,8 @@ nav_options = [
     "5. TD Audit Log"
 ]
 
-pending_count = sum(1 for u in st.session_state.user_registry.values() if u.get("status") == "pending")
+current_users = load_user_database()
+pending_count = sum(1 for u in current_users.values() if u.get("status") == "pending")
 
 if st.session_state.td_role == "admin":
     label = f"6. TD User Management ⚙️ ({pending_count} pending)" if pending_count > 0 else "6. TD User Management ⚙️"
@@ -840,8 +865,10 @@ elif "6. TD User Management" in nav:
     </div>
     """, unsafe_allow_html=True)
 
+    users_db = load_user_database()
+
     # 1. Pending Approvals Section
-    pending_users = {u: data for u, data in st.session_state.user_registry.items() if data.get("status") == "pending"}
+    pending_users = {u: data for u, data in users_db.items() if data.get("status") == "pending"}
 
     st.subheader(f"Account Requests Pending Approval ({len(pending_users)})")
     if not pending_users:
@@ -866,14 +893,20 @@ elif "6. TD User Management" in nav:
                     selected_role = st.selectbox(f"Assign Role for {uname}:", ["td", "admin"], key=f"role_{uname}")
                 with col_appr:
                     if st.button(f"Approve & Activate ({uname})", key=f"appr_{uname}", type="primary", use_container_width=True):
-                        st.session_state.user_registry[uname]["status"] = "active"
-                        st.session_state.user_registry[uname]["role"] = selected_role
+                        current_db = load_user_database()
+                        if uname in current_db:
+                            current_db[uname]["status"] = "active"
+                            current_db[uname]["role"] = selected_role
+                            save_user_database(current_db)
                         log_audit_event(f"Admin approved registration for '{uname}' ({udata['name']}) as {selected_role}.")
                         st.success(f"Account '{uname}' approved.")
                         st.rerun()
                 with col_deny:
                     if st.button(f"Deny & Remove ({uname})", key=f"deny_{uname}", use_container_width=True):
-                        del st.session_state.user_registry[uname]
+                        current_db = load_user_database()
+                        if uname in current_db:
+                            del current_db[uname]
+                            save_user_database(current_db)
                         log_audit_event(f"Admin denied registration request for '{uname}'.")
                         st.warning(f"Registration request for '{uname}' denied.")
                         st.rerun()
@@ -882,7 +915,7 @@ elif "6. TD User Management" in nav:
     # 2. Active Staff Registry Display
     st.subheader("Active Staff Registry")
     active_list = []
-    for uname, udata in st.session_state.user_registry.items():
+    for uname, udata in users_db.items():
         if udata.get("status", "active") == "active":
             active_list.append({
                 "Username": uname,
@@ -909,12 +942,13 @@ elif "6. TD User Management" in nav:
             submit_td = st.form_submit_button("Create Account Directly", type="primary", use_container_width=True)
 
             if submit_td:
+                current_db = load_user_database()
                 if not new_user or not new_name or not new_pw:
                     st.error("All fields are required.")
-                elif new_user in st.session_state.user_registry:
+                elif new_user in current_db:
                     st.error(f"User '{new_user}' already exists.")
                 else:
-                    st.session_state.user_registry[new_user] = {
+                    current_db[new_user] = {
                         "name": new_name,
                         "password_hash": hash_password(new_pw),
                         "role": new_role,
@@ -922,6 +956,7 @@ elif "6. TD User Management" in nav:
                         "must_change_password": force_change,
                         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")
                     }
+                    save_user_database(current_db)
                     flag_note = "with mandatory password change" if force_change else "without mandatory password change"
                     log_audit_event(f"Admin registered new user: '{new_user}' ({new_name}) as {new_role} {flag_note}.")
                     st.success(f"Official '{new_name}' registered.")
@@ -930,7 +965,7 @@ elif "6. TD User Management" in nav:
     # 4. Reset User Password Section
     with col_reset:
         st.subheader("Reset / Override Password")
-        all_active_users = [u for u, d in st.session_state.user_registry.items() if d.get("status", "active") == "active"]
+        all_active_users = [u for u, d in users_db.items() if d.get("status", "active") == "active"]
         with st.form("reset_pwd_form"):
             target_user = st.selectbox("Select Account to Reset:", all_active_users)
             new_admin_pw = st.text_input("New Password:", type="password").strip()
@@ -943,8 +978,11 @@ elif "6. TD User Management" in nav:
                 elif len(new_admin_pw) < 6:
                     st.error("Password must be at least 6 characters.")
                 else:
-                    st.session_state.user_registry[target_user]["password_hash"] = hash_password(new_admin_pw)
-                    st.session_state.user_registry[target_user]["must_change_password"] = target_force
+                    current_db = load_user_database()
+                    if target_user in current_db:
+                        current_db[target_user]["password_hash"] = hash_password(new_admin_pw)
+                        current_db[target_user]["must_change_password"] = target_force
+                        save_user_database(current_db)
                     log_audit_event(f"Admin reset password for user '{target_user}'.")
                     st.success(f"Password for '{target_user}' updated.")
                     st.rerun()
@@ -952,7 +990,7 @@ elif "6. TD User Management" in nav:
     # 5. Delete User Account Section
     with col_del:
         st.subheader("Delete User Account")
-        deletable_users = [u for u in st.session_state.user_registry.keys() if u != "skramer"]
+        deletable_users = [u for u in users_db.keys() if u != "skramer"]
         
         if not deletable_users:
             st.info("No auxiliary user accounts to delete.")
@@ -966,8 +1004,11 @@ elif "6. TD User Management" in nav:
                     if not confirm_delete:
                         st.error("Check the confirmation box before deleting.")
                     else:
-                        deleted_name = st.session_state.user_registry[user_to_delete].get("name", user_to_delete)
-                        del st.session_state.user_registry[user_to_delete]
+                        current_db = load_user_database()
+                        deleted_name = current_db.get(user_to_delete, {}).get("name", user_to_delete)
+                        if user_to_delete in current_db:
+                            del current_db[user_to_delete]
+                            save_user_database(current_db)
                         log_audit_event(f"Admin deleted user account: '{user_to_delete}' ({deleted_name}).")
                         st.success(f"Account '{user_to_delete}' removed.")
                         st.rerun()
