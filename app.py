@@ -237,15 +237,120 @@ if "Bowler_ID" in st.session_state.roster.columns and "USBC ID" not in st.sessio
     st.session_state.roster["USBC ID"] = st.session_state.roster["Bowler_ID"]
     st.session_state.roster.drop(columns=["Bowler_ID"], inplace=True)
 
-# Ensure USBC ID, Paid, and Checked_In columns exist
 for col, default in [("USBC ID", "N/A"), ("Paid", False), ("Checked_In", False)]:
     if col not in st.session_state.roster.columns:
         st.session_state.roster[col] = default
 
+# Cross-screen broadcast state for external monitor
+if "active_kiosk_usbc_id" not in st.session_state:
+    st.session_state.active_kiosk_usbc_id = None
+
+def generate_qr_image(url: str) -> io.BytesIO:
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=10,
+        border=3,
+    )
+    qr.add_data(url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="#0f172a", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
 # ---------------------------------------------------------
-# 4. MOBILE-OPTIMIZED BOWLER SELF-CHECK-IN ROUTE (?mode=checkin)
+# 4A. EXTERNAL MONITOR / BOWLER KIOSK DISPLAY (?mode=kiosk)
 # ---------------------------------------------------------
 query_params = st.query_params
+if query_params.get("mode") == "kiosk":
+    st.markdown("""
+    <style>
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+        .block-container {
+            padding-top: 1.5rem;
+            max-width: 900px;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+    active_usbc = st.session_state.active_kiosk_usbc_id
+    detected_base = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
+
+    col_k1, col_k2, col_k3 = st.columns([1, 4, 1])
+    with col_k2:
+        if HAS_LOGO:
+            col_l1, col_l2, col_l3 = st.columns([1, 1, 1])
+            with col_l2:
+                st.image(LOGO_PATH, width=160)
+
+        # 1. Active Check-in View on Monitor
+        if active_usbc:
+            match = st.session_state.roster[st.session_state.roster["USBC ID"].astype(str) == str(active_usbc)]
+            if not match.empty:
+                b_row = match.iloc[0]
+                b_name = b_row["Bowler"]
+                b_avg = b_row["Average"]
+                b_lane = int(b_row["Starting Lane"])
+                pair_partner = b_lane + 1 if b_lane % 2 != 0 else b_lane - 1
+                pair_display = f"Lanes {min(b_lane, pair_partner)} & {max(b_lane, pair_partner)}"
+
+                checkin_url = f"{detected_base}/?mode=checkin&usbc_id={active_usbc}"
+                qr_buf = generate_qr_image(checkin_url)
+
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%); border: 2px solid #38bdf8; border-radius: 16px; padding: 24px; text-align: center; box-shadow: 0 8px 24px rgba(0,0,0,0.5); margin-bottom: 20px;">
+                    <span style="background: #38bdf820; color: #38bdf8; border: 1px solid #38bdf8; padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: 800; letter-spacing: 1px;">WELCOME TO THE LANES</span>
+                    <h1 style="color: #f8fafc; font-size: 38px; margin: 12px 0 4px 0; font-weight: 800;">{b_name}</h1>
+                    <div style="color: #94a3b8; font-size: 16px;">USBC ID: <b style="color: #cbd5e1;">{active_usbc}</b> | Entering Avg: <b style="color: #cbd5e1;">{b_avg}</b></div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                col_q1, col_q2, col_q3 = st.columns([1, 2, 1])
+                with col_q2:
+                    st.image(qr_buf, use_container_width=True)
+
+                st.markdown(f"""
+                <div style="background-color: #1e293b; border: 2px solid #38bdf8; border-radius: 12px; padding: 18px; text-align: center; margin-top: 14px;">
+                    <div style="font-size: 13px; color: #94a3b8; text-transform: uppercase; font-weight: 700; letter-spacing: 1px;">Assigned Starting Pair</div>
+                    <div style="font-size: 36px; font-weight: 900; color: #38bdf8; margin: 4px 0;">{pair_display}</div>
+                    <div style="font-size: 15px; color: #e2e8f0;">Lead-off Delivery on <b>Lane {b_lane}</b></div>
+                </div>
+                <div style="text-align: center; color: #64748b; font-size: 14px; margin-top: 14px;">
+                    📲 Point your phone camera at the QR code above to confirm check-in.
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.session_state.active_kiosk_usbc_id = None
+                st.rerun()
+        else:
+            # 2. Idle Welcome View on Monitor
+            total = len(st.session_state.roster)
+            checked = len(st.session_state.roster[st.session_state.roster["Checked_In"] == True])
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%); border: 1px solid #1e40af; border-radius: 16px; padding: 36px 24px; text-align: center; margin-top: 20px;">
+                <h1 style="color: #f8fafc; font-size: 36px; margin: 0; font-weight: 900;">Cecil Harford USBC</h1>
+                <h3 style="color: #38bdf8; font-size: 22px; margin: 10px 0 0 0;">{st.session_state.tournament_config['name']}</h3>
+                <p style="color: #94a3b8; font-size: 15px; margin: 6px 0 0 0;">Host Center: <b>{st.session_state.tournament_config['center']}</b></p>
+                <div style="margin-top: 24px; display: inline-block; background-color: #0f172a80; border: 1px solid #334155; border-radius: 30px; padding: 8px 24px;">
+                    <span style="font-size: 18px; color: #34d399; font-weight: 800;">{checked} / {total}</span>
+                    <span style="font-size: 14px; color: #94a3b8; margin-left: 6px;">Bowlers Checked In</span>
+                </div>
+            </div>
+            <div style="text-align: center; margin-top: 36px; color: #475569; font-size: 15px;">
+                Please approach the desk official with your entry fee to receive your lane assignment.
+            </div>
+            """, unsafe_allow_html=True)
+
+    # Auto-refresh loop to catch TD updates in real time
+    time.sleep(2.0)
+    st.rerun()
+
+# ---------------------------------------------------------
+# 4B. MOBILE-OPTIMIZED BOWLER SELF-CHECK-IN ROUTE (?mode=checkin)
+# ---------------------------------------------------------
 if query_params.get("mode") == "checkin":
     target_id = query_params.get("usbc_id", "")
     roster_match = st.session_state.roster[st.session_state.roster["USBC ID"].astype(str) == str(target_id)]
@@ -611,21 +716,6 @@ def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name
     buffer.seek(0)
     return buffer.getvalue()
 
-def generate_qr_image(url: str) -> io.BytesIO:
-    qr = qrcode.QRCode(
-        version=1,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
-        box_size=10,
-        border=3,
-    )
-    qr.add_data(url)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="#0f172a", back_color="white")
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    return buf
-
 # ---------------------------------------------------------
 # 8. SIDEBAR NAVIGATION
 # ---------------------------------------------------------
@@ -912,10 +1002,26 @@ Input:
                 log_audit_event("TD updated roster grid.")
                 st.success("Roster updated.")
 
-    # TAB 3: DESK INTAKE & PAYMENT TERMINAL
+    # TAB 3: DESK INTAKE & PAYMENT TERMINAL (WITH EXTERNAL KIOSK SUPPORT)
     with intake_tab_terminal:
         st.subheader("Payment Gate & QR Check-In Terminal")
         st.caption("Bowlers present at the desk. Confirm payment before revealing the official check-in QR code.")
+
+        # Dual-monitor launch toolbar
+        detected_base = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
+        kiosk_launch_url = f"{detected_base}/?mode=kiosk"
+
+        col_kiosk_btn, col_kiosk_clear = st.columns([2, 1])
+        with col_kiosk_btn:
+            st.link_button("🖥️ Open External Bowler Kiosk Window", kiosk_launch_url, use_container_width=True)
+            st.caption("Drag that window to the monitor facing the bowlers and press F11 for fullscreen.")
+        with col_kiosk_clear:
+            if st.button("🔄 Reset External Display (Show Welcome)", use_container_width=True):
+                st.session_state.active_kiosk_usbc_id = None
+                log_audit_event("TD reset customer kiosk display to idle banner.")
+                st.rerun()
+
+        st.divider()
 
         total_bowlers = len(st.session_state.roster)
         paid_bowlers = len(st.session_state.roster[st.session_state.roster["Paid"] == True])
@@ -973,44 +1079,47 @@ Input:
 
                 if not b_paid:
                     payment_type = st.radio("Select Payment Method Received:", ["Cash", "Check", "Venmo / Electronic"], horizontal=True)
-                    if st.button(f"Mark Paid ({payment_type}) & Unlock QR", type="primary", use_container_width=True):
+                    if st.button(f"Mark Paid ({payment_type}) & Display on Customer Screen", type="primary", use_container_width=True):
                         idx = st.session_state.roster.index[st.session_state.roster["USBC ID"].astype(str) == b_usbc].tolist()
                         if idx:
                             st.session_state.roster.loc[idx[0], "Paid"] = True
-                            log_audit_event(f"Payment collected for {search_query} ({payment_type}).")
-                            st.success("Payment logged! Displaying QR code...")
+                            st.session_state.active_kiosk_usbc_id = b_usbc
+                            log_audit_event(f"Payment collected for {search_query} ({payment_type}) & pushed to customer screen.")
+                            st.success("Payment logged! Now displaying QR code on customer-facing monitor.")
                             st.rerun()
                 else:
                     st.success("Entry fee paid. Bowler is authorized for check-in.")
-                    if st.button("Mark as Unpaid (Revert)", use_container_width=True):
-                        idx = st.session_state.roster.index[st.session_state.roster["USBC ID"].astype(str) == b_usbc].tolist()
-                        if idx:
-                            st.session_state.roster.loc[idx[0], "Paid"] = False
-                            st.session_state.roster.loc[idx[0], "Checked_In"] = False
-                            log_audit_event(f"Payment reverted to Unpaid for {search_query}.")
+                    col_p1, col_p2 = st.columns(2)
+                    with col_p1:
+                        if st.button("📺 Push to Customer Screen", type="primary", use_container_width=True):
+                            st.session_state.active_kiosk_usbc_id = b_usbc
+                            log_audit_event(f"Pushed {search_query} to external customer screen.")
                             st.rerun()
+                    with col_p2:
+                        if st.button("Mark as Unpaid (Revert)", use_container_width=True):
+                            idx = st.session_state.roster.index[st.session_state.roster["USBC ID"].astype(str) == b_usbc].tolist()
+                            if idx:
+                                st.session_state.roster.loc[idx[0], "Paid"] = False
+                                st.session_state.roster.loc[idx[0], "Checked_In"] = False
+                                if st.session_state.active_kiosk_usbc_id == b_usbc:
+                                    st.session_state.active_kiosk_usbc_id = None
+                                log_audit_event(f"Payment reverted to Unpaid for {search_query}.")
+                                st.rerun()
 
             with col_actions:
                 if not b_paid:
-                    st.info("👈 Collect entry fee and click **'Mark Paid'** to generate this bowler's check-in QR code.")
+                    st.info("👈 Collect entry fee and click **'Mark Paid'** to push this bowler's check-in QR code to the customer-facing monitor.")
                 else:
-                    detected_base = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
                     checkin_url = f"{detected_base}/?mode=checkin&usbc_id={b_usbc}"
-                    
                     qr_buf = generate_qr_image(checkin_url)
 
-                    st.markdown(f"#### 📲 Have {search_query} Scan with Phone:")
-                    st.image(qr_buf, width=220)
+                    # Indicator of what is showing on the customer screen
+                    is_currently_on_kiosk = (st.session_state.active_kiosk_usbc_id == b_usbc)
+                    status_text = "🟢 Currently Live on Customer Screen" if is_currently_on_kiosk else "⚪ Not currently on Customer Screen"
                     
-                    custom_url_input = st.text_input(
-                        "App Base Domain Override (if URL changed):",
-                        value=detected_base,
-                        key="override_base_url"
-                    )
-                    if custom_url_input != detected_base:
-                        checkin_url = f"{custom_url_input.rstrip('/')}/?mode=checkin&usbc_id={b_usbc}"
-
-                    st.caption(f"Encoded Target: `{checkin_url}`")
+                    st.markdown(f"#### 📲 Desk Preview ({search_query}):")
+                    st.caption(f"Status: **{status_text}**")
+                    st.image(qr_buf, width=200)
 
                     if not b_checked:
                         if st.button("Manual TD Check-In Override (No Phone)", use_container_width=True):
