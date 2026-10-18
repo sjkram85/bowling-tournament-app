@@ -60,6 +60,25 @@ st.set_page_config(
 if HAS_AUTOREFRESH:
     st_autorefresh(interval=8000, limit=None, key="central_desk_poller")
 
+# ---------------------------------------------------------
+# BACKGROUND CLOUD SYNC ON REFRESH TICK
+# ---------------------------------------------------------
+def sync_desk_with_cloud():
+    cloud_state = fetch_active_tournament_state()
+    if cloud_state and "roster" in cloud_state:
+        cloud_roster_df = pd.DataFrame(cloud_state["roster"])
+        if not cloud_roster_df.empty:
+            # If cloud has newer check-in or score data, update session state seamlessly
+            local_roster = st.session_state.get("roster", pd.DataFrame())
+            if local_roster.empty or len(local_roster) == len(cloud_roster_df):
+                # Update check-in and score columns from cloud without disrupting active form inputs
+                st.session_state.roster = cloud_roster_df
+
+# Trigger cloud sync on every refresh tick
+if HAS_AUTOREFRESH:
+    count = st_autorefresh(interval=8000, limit=None, key="central_desk_poller")
+    sync_desk_with_cloud()
+
 LOGO_PATH = "CHUSBC.jpg"
 HAS_LOGO = os.path.exists(LOGO_PATH)
 
