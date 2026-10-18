@@ -107,7 +107,7 @@ st.markdown("""
 
     /* Helper Captions & Subtext */
     .stCaption, small, .stCaption p, div[data-testid="stCaptionContainer"] {
-        color: #cbd5e1 !important; /* Soft, bright silver instead of dark gray */
+        color: #cbd5e1 !important;
         font-size: 13.5px !important;
         line-height: 1.4 !important;
     }
@@ -172,7 +172,7 @@ st.markdown("""
         color: #38bdf8 !important;
     }
 
-    /* Tab Navigation (Tabs along the top of each module) */
+    /* Tab Navigation */
     button[data-baseweb="tab"] {
         color: #94a3b8 !important;
         font-weight: 600 !important;
@@ -244,7 +244,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 2. PERSISTENT GOOGLE SHEETS REPOSITORY & EMAIL NOTIFICATIONS
+# 2. PERSISTENT GOOGLE SHEETS REPOSITORY & CLOUD PERSISTENCE
 # ---------------------------------------------------------
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.strip().encode("utf-8")).hexdigest()
@@ -320,6 +320,55 @@ def write_archives_df(df: pd.DataFrame):
         except Exception as e:
             st.error(f"Error persisting archive to Google Sheets: {e}")
             return False
+    return False
+
+# --- Active Tournament Cloud Persistence Functions ---
+def fetch_active_tournament_state():
+    """Retrieves the currently in-flight tournament state from Google Sheets."""
+    conn = get_db_connection()
+    if conn is not None:
+        try:
+            df = conn.read(worksheet="Active_Tournament", ttl=0)
+            if df is not None and not df.empty:
+                payload_str = str(df.iloc[0].get("payload", ""))
+                if payload_str and payload_str != "nan":
+                    return json.loads(payload_str)
+        except Exception:
+            pass
+    return None
+
+def write_active_tournament_state(config: dict, roster_df: pd.DataFrame, brackets: list):
+    """Saves the live in-flight tournament state to Google Sheets."""
+    conn = get_db_connection()
+    if conn is not None:
+        try:
+            payload = {
+                "config": config,
+                "roster": roster_df.to_dict(orient="records"),
+                "brackets": brackets,
+                "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "saved_by": st.session_state.get("td_name", "Staff")
+            }
+            save_df = pd.DataFrame([{"id": "CURRENT_TOURNAMENT", "payload": json.dumps(payload)}])
+            conn.update(worksheet="Active_Tournament", data=save_df)
+            st.cache_data.clear()
+            return True
+        except Exception as e:
+            st.error(f"Error saving active tournament: {e}")
+            return False
+    return False
+
+def clear_active_tournament_state():
+    """Clears the active tournament slot in Google Sheets."""
+    conn = get_db_connection()
+    if conn is not None:
+        try:
+            empty_df = pd.DataFrame([{"id": "CURRENT_TOURNAMENT", "payload": ""}])
+            conn.update(worksheet="Active_Tournament", data=empty_df)
+            st.cache_data.clear()
+            return True
+        except Exception:
+            pass
     return False
 
 def notify_admin_new_registration(requested_user: str, requested_name: str, requested_at: str):
@@ -566,6 +615,8 @@ if query_params.get("mode") == "checkin":
                     match_idx = st.session_state.roster.index[st.session_state.roster["USBC ID"].astype(str) == str(target_id)].tolist()
                     if match_idx:
                         st.session_state.roster.loc[match_idx[0], "Checked_In"] = True
+                        # Auto-persist check-in
+                        write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
 
                 st.markdown(f"""
                 <div style="background-color: #10b98120; border: 2px solid #10b981; border-radius: 10px; padding: 20px; text-align: center; margin-bottom: 20px;">
@@ -1316,7 +1367,7 @@ def generate_sop_pdf() -> bytes:
     return buffer.getvalue()
 
 # ---------------------------------------------------------
-# 9. SIDEBAR NAVIGATION
+# 9. SIDEBAR NAVIGATION & CLOUD PERSISTENCE CONTROLS
 # ---------------------------------------------------------
 nav_options = [
     "1. Event & Roster Intake",
@@ -1360,6 +1411,33 @@ with st.sidebar:
     st.caption(f"📍 **{st.session_state.tournament_config['center']}**")
     st.caption(f"🏆 {st.session_state.tournament_config['name']}")
 
+    # --- Live Tournament Cloud Save/Restore Controls ---
+    st.markdown("### 💾 Live Cloud State")
+    c_save, c_load = st.columns(2)
+    with c_save:
+        if st.button("Save Live", type="primary", use_container_width=True, help="Save tournament roster, payments, and scores to Google Sheets"):
+            saved = write_active_tournament_state(
+                st.session_state.tournament_config,
+                st.session_state.roster,
+                st.session_state.brackets
+            )
+            if saved:
+                st.toast("✅ Active tournament saved to Google Sheets!", icon="💾")
+                log_audit_event("TD manually saved live tournament state to Google Sheets.")
+    with c_load:
+        if st.button("Restore", use_container_width=True, help="Reload latest active tournament from Google Sheets"):
+            cloud_state = fetch_active_tournament_state()
+            if cloud_state:
+                st.session_state.tournament_config = cloud_state["config"]
+                st.session_state.roster = pd.DataFrame(cloud_state["roster"])
+                st.session_state.brackets = cloud_state.get("brackets", [])
+                st.toast(f"✅ Restored snapshot saved at {cloud_state.get('saved_at')}!", icon="🔄")
+                log_audit_event("TD restored tournament state from Google Sheets backup.")
+                st.rerun()
+            else:
+                st.toast("⚠️ No saved active tournament found in cloud.", icon="⚠️")
+
+    st.write("")
     if st.button("Sign Out / Close Desk", use_container_width=True):
         log_audit_event("User logged out.")
         st.session_state.authenticated = False
@@ -1368,6 +1446,38 @@ with st.sidebar:
         st.session_state.td_role = "td"
         st.session_state.pending_password_change = False
         st.rerun()
+
+# ---------------------------------------------------------
+# AUTO-RECOVERY NOTIFICATION (WHEN CLOUD EVENT EXISTS)
+# ---------------------------------------------------------
+if "checked_initial_cloud" not in st.session_state:
+    st.session_state.checked_initial_cloud = True
+    cloud_active = fetch_active_tournament_state()
+    if cloud_active:
+        st.session_state.pending_cloud_recovery = cloud_active
+    else:
+        st.session_state.pending_cloud_recovery = None
+
+if st.session_state.get("pending_cloud_recovery") is not None:
+    rec_data = st.session_state.pending_cloud_recovery
+    st.info(f"""
+    💾 **Active Tournament Backup Detected in Cloud:**  
+    Event: **{rec_data['config']['name']}** ({rec_data['config']['center']})  
+    Saved: **{rec_data.get('saved_at', 'Recent')}** by **{rec_data.get('saved_by', 'Staff')}** with **{len(rec_data['roster'])} bowlers**.
+    """)
+    col_rec1, col_rec2 = st.columns([1, 4])
+    with col_rec1:
+        if st.button("🔄 Resume Active Event", type="primary", use_container_width=True):
+            st.session_state.tournament_config = rec_data["config"]
+            st.session_state.roster = pd.DataFrame(rec_data["roster"])
+            st.session_state.brackets = rec_data.get("brackets", [])
+            st.session_state.pending_cloud_recovery = None
+            log_audit_event("TD resumed active tournament from startup cloud prompt.")
+            st.rerun()
+    with col_rec2:
+        if st.button("Dismiss / Start Blank", use_container_width=True):
+            st.session_state.pending_cloud_recovery = None
+            st.rerun()
 
 # ---------------------------------------------------------
 # MODULE 1: COMPREHENSIVE INTAKE (SETTINGS -> ROSTER -> DESK TERMINAL)
@@ -1442,8 +1552,10 @@ if nav == "1. Event & Roster Intake":
                 "rules_text": t_rules + uploaded_content,
                 "intake_completed": True
             }
+            # Auto-persist to Google Sheets
+            write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
             log_audit_event(f"Configuration locked: {t_name} with {len(st.session_state.roster)} bowlers.")
-            st.success("Configuration, roster, and tournament rules locked.")
+            st.success("Configuration, roster, and tournament rules locked & saved to cloud.")
 
     with intake_tab_entry:
         st.subheader("Bowler Entry & Roster Intake")
@@ -1521,6 +1633,7 @@ Rules:
                                     parsed_df[g] = 0
 
                                 st.session_state.roster = parsed_df
+                                write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
                                 log_audit_event(f"Gemini scanned and extracted {len(parsed_df)} bowlers from photo.")
                                 st.success(f"Successfully extracted {len(parsed_df)} bowlers! Check the 'Editable Master Grid' tab to review.")
                                 st.rerun()
@@ -1558,6 +1671,7 @@ Input:
                             new_roster_df["Paid"] = False
                             new_roster_df["Checked_In"] = False
                             st.session_state.roster = new_roster_df
+                            write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
                             log_audit_event(f"Gemini parsed {len(new_roster_df)} bowler entries.")
                             st.success(f"Parsed and added {len(new_roster_df)} bowlers!")
                             st.rerun()
@@ -1582,6 +1696,7 @@ Input:
                     if "Checked_In" not in df_upload.columns:
                         df_upload["Checked_In"] = False
                     st.session_state.roster = df_upload
+                    write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
                     st.success("CSV Imported successfully.")
                 except Exception as err:
                     st.error(f"Error loading CSV: {err}")
@@ -1598,8 +1713,9 @@ Input:
                     if col not in edited_roster.columns:
                         edited_roster[col] = 0
                 st.session_state.roster = edited_roster
+                write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
                 log_audit_event("TD updated roster grid.")
-                st.success("Roster updated.")
+                st.success("Roster updated & saved to cloud.")
 
     with intake_tab_terminal:
         st.subheader("Payment Gate & QR Check-In Terminal")
@@ -1692,6 +1808,7 @@ Input:
                         if idx:
                             st.session_state.roster.loc[idx[0], "Paid"] = True
                             write_kiosk_state(card_payload)
+                            write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
                             log_audit_event(f"Payment collected for {search_query} ({payment_type}) & pushed to customer screen.")
                             st.success("Payment logged! Now displaying QR code on customer-facing monitor.")
                             st.rerun()
@@ -1712,6 +1829,7 @@ Input:
                                 current_kiosk = read_kiosk_state()
                                 if current_kiosk and current_kiosk.get("usbc_id") == b_usbc:
                                     clear_kiosk_state()
+                                write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
                                 log_audit_event(f"Payment reverted to Unpaid for {search_query}.")
                                 st.rerun()
 
@@ -1738,6 +1856,7 @@ Input:
                             idx = st.session_state.roster.index[st.session_state.roster["USBC ID"].astype(str) == b_usbc].tolist()
                             if idx:
                                 st.session_state.roster.loc[idx[0], "Checked_In"] = True
+                                write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
                                 log_audit_event(f"TD manually checked in {search_query}.")
                                 st.rerun()
 
@@ -1813,6 +1932,7 @@ USBC ID,Bowler,Average,Starting Lane,Game 1,Game 2,Game 3,Paid,Checked_In
                         raw_csv_text = generate_with_failover(prompt, temperature=0.0)
                         cleaned = raw_csv_text.replace("```csv", "").replace("```", "").strip()
                         st.session_state.roster = pd.read_csv(io.StringIO(cleaned))
+                        write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
                         log_audit_event("Gemini updated scores from live recap.")
                         st.rerun()
                     except Exception as e:
@@ -1830,7 +1950,9 @@ USBC ID,Bowler,Average,Starting Lane,Game 1,Game 2,Game 3,Paid,Checked_In
     )
     if st.button("Save Scores & Recalculate Standings", type="primary"):
         st.session_state.roster = edited_scores
+        write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
         log_audit_event("Scores saved and recalculated.")
+        st.toast("✅ Scores updated & backed up to cloud!", icon="💾")
         st.rerun()
 
     if not standings.empty:
@@ -1918,8 +2040,12 @@ elif nav == "3. Stepladder Finals":
 
                     updated_archives = pd.concat([archive_df, new_archive_record], ignore_index=True)
                     write_archives_df(updated_archives)
+                    
+                    # Clear live slot in Google Sheets upon archive
+                    clear_active_tournament_state()
+                    
                     log_audit_event(f"Tournament '{st.session_state.tournament_config['name']}' officially archived with Champion: {champion}.")
-                    st.success("Official PDF and tournament record permanently archived to Google Sheets!")
+                    st.success("Official PDF permanently archived to Google Sheets and active tournament cleared!")
 
 # ---------------------------------------------------------
 # MODULE 4: SIDE ACTION: 8-BOWLER BRACKETS & SIDE POTS
@@ -1963,6 +2089,7 @@ elif "Brackets & Pots" in nav:
                             "created_at": datetime.now().strftime("%H:%M")
                         }
                         st.session_state.brackets.append(new_bracket)
+                    write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
                     log_audit_event(f"Generated {num_brackets_to_gen} {b_type} 8-bowler bracket(s).")
                     st.success(f"Generated {num_brackets_to_gen} bracket(s) successfully.")
                     st.rerun()
@@ -1970,6 +2097,7 @@ elif "Brackets & Pots" in nav:
         with col_clear:
             if st.button("🗑️ Reset All Brackets", use_container_width=True):
                 st.session_state.brackets = []
+                write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
                 log_audit_event("TD cleared all bracket records.")
                 st.rerun()
 
