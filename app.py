@@ -232,7 +232,6 @@ if "roster" not in st.session_state:
         {"Bowler_ID": "CH-106", "Bowler": "Derek Jackson", "Average": 182, "Starting Lane": 3, "Game 1": 178, "Game 2": 195, "Game 3": 210, "Paid": False, "Checked_In": False},
     ])
 
-# Ensure Bowler_ID, Paid, and Checked_In columns exist
 for col, default in [("Bowler_ID", "CH-000"), ("Paid", False), ("Checked_In", False)]:
     if col not in st.session_state.roster.columns:
         st.session_state.roster[col] = default
@@ -280,7 +279,6 @@ if query_params.get("mode") == "checkin":
                 """, unsafe_allow_html=True)
             else:
                 if not is_checked_in:
-                    # Execute check-in
                     match_idx = st.session_state.roster.index[st.session_state.roster["Bowler_ID"] == target_id].tolist()
                     if match_idx:
                         st.session_state.roster.loc[match_idx[0], "Checked_In"] = True
@@ -756,7 +754,6 @@ if nav == "1. Event & Roster Intake":
         st.subheader("Payment Gate & QR Check-In Terminal")
         st.caption("Bowlers present at the desk. Confirm payment before revealing the official check-in QR code.")
 
-        # Live terminal counters
         total_bowlers = len(st.session_state.roster)
         paid_bowlers = len(st.session_state.roster[st.session_state.roster["Paid"] == True])
         checked_bowlers = len(st.session_state.roster[st.session_state.roster["Checked_In"] == True])
@@ -786,7 +783,6 @@ if nav == "1. Event & Roster Intake":
 
         st.write("")
 
-        # Bowler selection for desk terminal
         bowler_names = st.session_state.roster["Bowler"].tolist()
         search_query = st.selectbox("Search / Select Bowler at Desk:", ["-- Select Bowler Arriving at Desk --"] + bowler_names)
 
@@ -819,7 +815,7 @@ if nav == "1. Event & Roster Intake":
                         if idx:
                             st.session_state.roster.loc[idx[0], "Paid"] = True
                             log_audit_event(f"Payment collected for {search_query} ({payment_type}).")
-                            st.success(f"Payment logged! Displaying QR code...")
+                            st.success("Payment logged! Displaying QR code...")
                             st.rerun()
                 else:
                     st.success("Entry fee paid. Bowler is authorized for check-in.")
@@ -835,16 +831,25 @@ if nav == "1. Event & Roster Intake":
                 if not b_paid:
                     st.info("👈 Collect entry fee and click **'Mark Paid'** to generate this bowler's check-in QR code.")
                 else:
-                    # Construct check-in URL
-                    app_base_url = "https://bowling-tournament-app-lqhyyvug8k2zrhzbf9lswd.streamlit.app"
-                    checkin_url = f"{app_base_url}/?mode=checkin&bowler_id={b_id}"
+                    # Resolve domain from secrets or fallback
+                    detected_base = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
+                    checkin_url = f"{detected_base}/?mode=checkin&bowler_id={b_id}"
+                    
                     qr_buf = generate_qr_image(checkin_url)
 
                     st.markdown(f"#### 📲 Have {search_query} Scan with Phone:")
                     st.image(qr_buf, width=220)
-                    st.caption(f"Direct link: `{checkin_url}`")
+                    
+                    custom_url_input = st.text_input(
+                        "App Base Domain Override (if URL changed):",
+                        value=detected_base,
+                        key="override_base_url"
+                    )
+                    if custom_url_input != detected_base:
+                        checkin_url = f"{custom_url_input.rstrip('/')}/?mode=checkin&bowler_id={b_id}"
 
-                    # Backup manual override button for TD
+                    st.caption(f"Encoded Target: `{checkin_url}`")
+
                     if not b_checked:
                         if st.button("Manual TD Check-In Override (No Phone)", use_container_width=True):
                             idx = st.session_state.roster.index[st.session_state.roster["Bowler_ID"] == b_id].tolist()
@@ -1110,7 +1115,7 @@ elif nav == "3. Stepladder Finals":
                     updated_archives = pd.concat([archive_df, new_archive_record], ignore_index=True)
                     write_archives_df(updated_archives)
                     log_audit_event(f"Tournament '{st.session_state.tournament_config['name']}' officially archived with Champion: {champion}.")
-                    st.success(f"Official PDF and tournament record permanently archived to Google Sheets!")
+                    st.success("Official PDF and tournament record permanently archived to Google Sheets!")
 
 # ---------------------------------------------------------
 # MODULE 4: AI RULES ARBITER
