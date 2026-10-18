@@ -2259,41 +2259,92 @@ Format your decision as:
     except Exception:
         return generate_with_failover(prompt, temperature=0.1)
 
-def generate_first_time_td_guide() -> str:
-    if not ai_client:
-        return (
-            "1. T-60 Min: Connect external monitor to laptop. Extend display (Win+P). Open ?mode=kiosk on secondary display and hit F11.\n"
-            "2. T-45 Min: In Module 1 (Tab 2), ingest roster and run Automated Lane Balancer (handles up to 40 lanes, keeps teams together). Download printable PDF lane sheets.\n"
-            "3. T-30 Min: Post the Express Entrance QR (?mode=self_checkin) at the door. Pre-paid bowlers check in automatically; unpaid or bracket bowlers are routed to the desk.\n"
-            "4. T-15 Min: Floor TDs scan ?mode=scorer QR code on their phones, create their Argon2 4-digit PIN, and claim lane pairs.\n"
-            "5. Squad Active: Roving TDs snap overhead monitors with phone camera OCR, input scores, and lock with their secret PIN. Central Desk monitors verified lanes on the Radar Matrix.\n"
-            "6. Concourse TV & Bowler Portal: Cast ?mode=leaderboard on center TVs and let bowlers track ranks on ?mode=bowler_portal.\n"
-            "7. Financials & Archive: Use Financials & Payout Ledger to balance collections against lineage and export SMART forms. In Module 3, archive event."
-        )
+# ---------------------------------------------------------
+# SIDEBAR NAVIGATION & ROUTING
+# ---------------------------------------------------------
+nav_options = [
+    "1. Event & Roster Intake",
+    "2. Scores & Standings",
+    "3. Stepladder Finals",
+    "4. Side Action: Brackets & Pots 💰",
+    "5. Financial & Payout Ledger 💵",
+    "6. AI Rules Arbiter",
+    "7. Past Tournaments Archive 📂",
+    "8. Board SOP & Staff Manual 📖",
+    "9. TD Audit Log"
+]
 
-    prompt = f"""
-Write a clear, encouraging, step-by-step checklist for a Cecil Harford USBC board member who has NEVER run a tournament or used this software before.
+users_df = fetch_users_df()
+pending_count = len(users_df[users_df["status"] == "pending"])
 
-Current Event Context:
-- Event: {st.session_state.tournament_config['name']}
-- Host Center: {st.session_state.tournament_config['center']}
-- Division: {st.session_state.tournament_config['division']}
-- Active Pairs: {st.session_state.tournament_config['lanes_range']}
-- Format Mode: {st.session_state.tournament_config.get('format_mode', 'Standard')}
+if st.session_state.td_role == "admin":
+    label = f"10. TD User Management ⚙️ ({pending_count} pending)" if pending_count > 0 else "10. TD User Management ⚙️"
+    nav_options.append(label)
 
-Structure the guide into 6 numbered chronological steps including generating printable PDF lane sheets, the Express Entrance Self-Check-In QR (?mode=self_checkin) that routes bracket and unpaid bowlers to the desk, how floor TDs connect their phones to ?mode=scorer with Argon2 PIN concurrence, financial drawer reconciliation, and how bowlers view live standings via ?mode=bowler_portal.
-"""
-    try:
-        return generate_with_failover(prompt, temperature=0.1)
-    except Exception:
-        return (
-            "1. Setup external monitor on desk facing bowlers (?mode=kiosk, F11).\n"
-            "2. Ingest roster, balance lanes in Module 1, and download printable PDF lane sheets.\n"
-            "3. Post Express Self-Check-In QR (?mode=self_checkin) at entrance; handle unpaid and bracket entries at desk.\n"
-            "4. Roving TDs open ?mode=scorer on their phones, snap monitors with AI OCR, and set a 4-digit PIN.\n"
-            "5. Open ?mode=leaderboard on concourse TVs and share ?mode=bowler_portal for live bowler tracking.\n"
-            "6. Reconcile finances and archive event."
-        )
+with st.sidebar:
+    if HAS_LOGO:
+        st.image(LOGO_PATH, width=130)
+    else:
+        st.markdown("""
+        <div style="padding-bottom: 12px;">
+            <span style="font-size: 22px; font-weight: 800; color: #f8fafc;">🎳 CHUSBC DESK</span>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    badge_class = "badge-admin" if st.session_state.td_role == "admin" else "badge-td"
+    st.markdown(f"""
+    <div style="background-color: #1e293b; padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 16px;">
+        <div style="font-size: 14px; font-weight: 700; color: #f1f5f9;">{st.session_state.td_name}</div>
+        <div style="margin-top: 4px;"><span class="{badge_class}">{st.session_state.td_role.upper()}</span></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    nav = st.radio("OPERATIONAL CONSOLE", nav_options)
+    
+    st.divider()
+    st.caption(f"📍 **{st.session_state.tournament_config['center']}**")
+    st.caption(f"🏆 {st.session_state.tournament_config['name']}")
+
+    if st.button("🔄 Switch Tournament / Preset", use_container_width=True):
+        st.session_state.session_initialized = False
+        st.rerun()
+
+    st.markdown("### 💾 Live Cloud State")
+    c_save, c_load = st.columns(2)
+    with c_save:
+        if st.button("Save Live", type="primary", use_container_width=True, help="Save tournament roster, payments, and scores to Google Sheets"):
+            saved = write_active_tournament_state(
+                st.session_state.tournament_config,
+                st.session_state.roster,
+                st.session_state.brackets
+            )
+            if saved:
+                st.toast("✅ Active tournament saved to Google Sheets!", icon="💾")
+                log_audit_event("TD manually saved live tournament state to Google Sheets.")
+    with c_load:
+        if st.button("Restore", use_container_width=True, help="Reload latest active tournament from Google Sheets"):
+            cloud_state = fetch_active_tournament_state()
+            if cloud_state:
+                st.session_state.tournament_config = cloud_state["config"]
+                st.session_state.roster = pd.DataFrame(cloud_state["roster"])
+                st.session_state.brackets = cloud_state.get("brackets", [])
+                st.session_state.td_pins = cloud_state.get("td_pins", {})
+                st.toast(f"✅ Restored snapshot saved at {cloud_state.get('saved_at')}!", icon="🔄")
+                log_audit_event("TD restored tournament state from Google Sheets backup.")
+                st.rerun()
+            else:
+                st.toast("⚠️ No saved active tournament found in cloud.", icon="⚠️")
+
+    st.write("")
+    if st.button("Sign Out / Close Desk", use_container_width=True):
+        log_audit_event("User logged out.")
+        st.session_state.authenticated = False
+        st.session_state.username = ""
+        st.session_state.td_name = ""
+        st.session_state.td_role = "td"
+        st.session_state.pending_password_change = False
+        st.session_state.session_initialized = False
+        st.rerun()
 
 # ---------------------------------------------------------
 # MODULE 1: COMPREHENSIVE INTAKE (SETTINGS -> ROSTER -> DESK TERMINAL)
@@ -3137,7 +3188,7 @@ elif nav == "3. Stepladder Finals":
 # ---------------------------------------------------------
 # MODULE 4: SIDE ACTION: 8-BOWLER BRACKETS & SIDE POTS
 # ---------------------------------------------------------
-elif "Brackets & Pots" in nav:
+elif nav == "4. Side Action: Brackets & Pots 💰":
     st.markdown("""
     <div class="brand-banner">
         <h1>Side Action: 8-Bowler Brackets & Side Pots</h1>
