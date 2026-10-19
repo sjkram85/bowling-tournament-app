@@ -440,7 +440,7 @@ CHUSBC_PRESET_PROFILES = {
 }
 
 # ---------------------------------------------------------
-# 3. ARGON2 CRYPTOGRAPHIC ENGINE & CLOUD PERSISTENCE (SPLIT TABS)
+# 3. ARGON2 CRYPTOGRAPHIC ENGINE & CLOUD PERSISTENCE
 # ---------------------------------------------------------
 ph = PasswordHasher(
     time_cost=2,
@@ -548,33 +548,11 @@ def fetch_active_tournament_state():
     conn = get_db_connection()
     if conn is not None:
         try:
-            df_config = conn.read(worksheet="Active_Tournament", ttl=0)
-            config_data = {}
-            brackets = []
-            td_pins = {}
-            
-            if df_config is not None and not df_config.empty:
-                payload_str = str(df_config.iloc[0].get("payload", ""))
+            df = conn.read(worksheet="Active_Tournament", ttl=0)
+            if df is not None and not df.empty:
+                payload_str = str(df.iloc[0].get("payload", ""))
                 if payload_str and payload_str != "nan":
-                    parsed = json.loads(payload_str)
-                    config_data = parsed.get("config", {})
-                    brackets = parsed.get("brackets", [])
-                    td_pins = parsed.get("td_pins", {})
-
-            df_roster = conn.read(worksheet="Active_Roster", ttl=0)
-            roster_records = []
-            if df_roster is not None and not df_roster.empty:
-                df_roster.columns = [str(c).strip() for c in df_roster.columns]
-                roster_records = df_roster.to_dict(orient="records")
-
-            if config_data or roster_records:
-                return {
-                    "config": config_data,
-                    "roster": roster_records,
-                    "brackets": brackets,
-                    "td_pins": td_pins,
-                    "saved_at": df_config.iloc[0].get("saved_at", "N/A") if df_config is not None and not df_config.empty else "N/A"
-                }
+                    return json.loads(payload_str)
         except Exception:
             pass
     return None
@@ -583,27 +561,16 @@ def write_active_tournament_state(config: dict, roster_df: pd.DataFrame, bracket
     conn = get_db_connection()
     if conn is not None:
         try:
-            metadata_payload = {
+            payload = {
                 "config": config,
+                "roster": roster_df.to_dict(orient="records"),
                 "brackets": brackets,
                 "td_pins": st.session_state.get("td_pins", {}),
                 "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "saved_by": st.session_state.get("td_name", "Staff")
             }
-            save_df = pd.DataFrame([{
-                "id": "CURRENT_TOURNAMENT",
-                "payload": json.dumps(metadata_payload),
-                "saved_at": metadata_payload["saved_at"]
-            }])
+            save_df = pd.DataFrame([{"id": "CURRENT_TOURNAMENT", "payload": json.dumps(payload)}])
             conn.update(worksheet="Active_Tournament", data=save_df)
-
-            if roster_df is not None and not roster_df.empty:
-                roster_clean_df = roster_df.copy()
-            else:
-                roster_clean_df = pd.DataFrame(columns=DEFAULT_ROSTER_COLS)
-            
-            conn.update(worksheet="Active_Roster", data=roster_clean_df)
-
             st.cache_data.clear()
             return True
         except Exception:
@@ -614,11 +581,8 @@ def clear_active_tournament_state():
     conn = get_db_connection()
     if conn is not None:
         try:
-            empty_meta = pd.DataFrame([{"id": "CURRENT_TOURNAMENT", "payload": "", "saved_at": ""}])
-            empty_roster = pd.DataFrame(columns=DEFAULT_ROSTER_COLS)
-            
-            conn.update(worksheet="Active_Tournament", data=empty_meta)
-            conn.update(worksheet="Active_Roster", data=empty_roster)
+            empty_df = pd.DataFrame([{"id": "CURRENT_TOURNAMENT", "payload": ""}])
+            conn.update(worksheet="Active_Tournament", data=empty_df)
             st.cache_data.clear()
             return True
         except Exception:
@@ -1178,6 +1142,7 @@ if not st.session_state.authenticated and query_params.get("mode") not in ["kios
 if query_params.get("mode") == "kiosk":
     st.markdown("<style>header {visibility: hidden;} footer {visibility: hidden;}</style>", unsafe_allow_html=True)
     active_card = read_kiosk_state()
+    detected_base = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
     if active_card:
         st.markdown(f"<h1>Welcome, {active_card['name']}!</h1><p>Assigned Pair: {active_card['pair_display']}</p>", unsafe_allow_html=True)
     else:
@@ -1249,7 +1214,7 @@ if not st.session_state.session_initialized and st.session_state.authenticated:
     st.stop()
 
 # ---------------------------------------------------------
-# SIDEBAR NAVIGATION & ROUTING
+# SIDEBAR NAVIGATION & ROUTing
 # ---------------------------------------------------------
 nav_options = [
     "1. Event & Roster Intake",
