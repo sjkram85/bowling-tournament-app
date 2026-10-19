@@ -1,42 +1,41 @@
-import base64
-import hashlib
-import io
-import json
-import math
 import os
-import random
-import smtplib
+import io
 import time
-from datetime import datetime
+import math
+import json
+import base64
+import random
+import hashlib
+import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-
+from datetime import datetime
 import pandas as pd
-import qrcode
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
+from pypdf import PdfReader
+import qrcode
 
 # Argon2 Cryptographic Hashing
 from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHashError, VerifyMismatchError
+from argon2.exceptions import VerifyMismatchError, InvalidHashError
 
 # Word document generation
 from docx import Document
-from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls
-from docx.shared import Inches, Pt, RGBColor
-from google import genai
-from google.genai import types
-from pypdf import PdfReader
-from reportlab.lib import colors
 
 # PDF generation
 from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.platypus import Image as RLImage
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-from streamlit_gsheets import GSheetsConnection
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Image as RLImage, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+
+from google import genai
+from google.genai import types
 
 # ---------------------------------------------------------
 # 1. PAGE SETUP & HIGH-VISIBILITY CONTRAST THEME
@@ -45,7 +44,7 @@ st.set_page_config(
     page_title="CHUSBC Tournament Desk Ops",
     page_icon="🎳",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="expanded"
 )
 
 LOGO_PATH = "CHUSBC.jpg"
@@ -61,9 +60,12 @@ KIOSK_FILE_PATH = os.path.join("/tmp", "chusbc_kiosk_state.json")
 
 # Initialize Argon2id Password Hasher
 ph = PasswordHasher(
-    time_cost=2, memory_cost=65536, parallelism=2, hash_len=32, salt_len=16
+    time_cost=2,
+    memory_cost=65536,
+    parallelism=2,
+    hash_len=32,
+    salt_len=16
 )
-
 
 def read_kiosk_state():
     if os.path.exists(KIOSK_FILE_PATH):
@@ -74,7 +76,6 @@ def read_kiosk_state():
             return None
     return None
 
-
 def write_kiosk_state(card_payload):
     try:
         with open(KIOSK_FILE_PATH, "w") as f:
@@ -82,14 +83,12 @@ def write_kiosk_state(card_payload):
     except Exception:
         pass
 
-
 def clear_kiosk_state():
     try:
         if os.path.exists(KIOSK_FILE_PATH):
             os.remove(KIOSK_FILE_PATH)
     except Exception:
         pass
-
 
 @st.cache_resource
 def load_official_rulebook_bytes():
@@ -101,12 +100,10 @@ def load_official_rulebook_bytes():
             return None
     return None
 
-
 RULEBOOK_BYTES = load_official_rulebook_bytes()
 
 # Client Platform Detection Injection
-st.markdown(
-    """
+st.markdown("""
 <script>
     const ua = navigator.userAgent;
     let platform = "Desktop/Unknown";
@@ -119,12 +116,9 @@ st.markdown(
     document.body.classList.add(platform.toLowerCase());
     if (isMobile) { document.body.classList.add("mobile-device"); }
 </script>
-""",
-    unsafe_allow_html=True,
-)
+""", unsafe_allow_html=True)
 
-st.markdown(
-    """
+st.markdown("""
 <style>
     .stApp {
         background-color: #0b1120;
@@ -306,9 +300,7 @@ st.markdown(
         padding: 16px !important;
     }
 </style>
-""",
-    unsafe_allow_html=True,
-)
+""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # 2. CHUSBC TOURNAMENT PRESET ARCHITECTURE
@@ -329,7 +321,7 @@ CHUSBC_PRESET_PROFILES = {
             "USBC Certified. 3 Games across assigned pairs. Open to all adult certified bowlers. "
             "Handicap: 90% of 220 based on highest winter book average. Optional All-Events scratch & handicap. "
             "All prize fees returned 100%."
-        ),
+        )
     },
     "CHUSBC Women’s Championship Tournament": {
         "center": "APG Brewner Lanes",
@@ -346,7 +338,7 @@ CHUSBC_PRESET_PROFILES = {
             "USBC Certified. Open to all female USBC members of Cecil Harford USBC. "
             "Handicap: 90% of 220. 4-person team, 2-person doubles, and individual singles. "
             "Scratch and handicap prize payouts."
-        ),
+        )
     },
     "Lighthouse Ladies Singles": {
         "center": "Harford Lanes",
@@ -362,7 +354,7 @@ CHUSBC_PRESET_PROFILES = {
         "rules_text": (
             "Annual Lighthouse Ladies Singles Championship. 3 qualifying games moving pairs each game. "
             "Cut to top 5 stepladder finals. Handicap 90% of 215."
-        ),
+        )
     },
     "Senior Singles Championship": {
         "center": "Forest Hill Lanes",
@@ -379,7 +371,7 @@ CHUSBC_PRESET_PROFILES = {
             "USBC Certified Senior Singles. Age 50+ as of tournament date. "
             "Divisions: Super Senior (75+), Senior A (70-74), B (65-69), C (60-64), D (55-59), E (50-54). "
             "Handicap: 90% of 220. Separate payout funds per age bracket."
-        ),
+        )
     },
     "CHUSBC Annual Mixed Championship": {
         "center": "Forest Hill Lanes",
@@ -395,7 +387,7 @@ CHUSBC_PRESET_PROFILES = {
         "rules_text": (
             "CHUSBC Mixed Championship. 4-bowler team (2 Men / 2 Women required) and Doubles (1 Man / 1 Woman). "
             "Handicap: 90% of 220. 3 games across pairs."
-        ),
+        )
     },
     "Valentine’s Scotch Doubles": {
         "center": "Harford Lanes",
@@ -411,7 +403,7 @@ CHUSBC_PRESET_PROFILES = {
         "rules_text": (
             "Valentine's Scotch Doubles. 2 bowlers per team. Bowler A rolls first ball, Bowler B shoots spare, "
             "alternating strike shot lead each frame. Combined team average handicap based on 90% of 430."
-        ),
+        )
     },
     "Valentine’s 9 Pin No-Tap": {
         "center": "Elk Lanes",
@@ -427,7 +419,7 @@ CHUSBC_PRESET_PROFILES = {
         "rules_text": (
             "Valentine's 9-Pin No-Tap Tournament. Hitting 9 pins on first ball delivery is scored as an automatic strike. "
             "3 games total. 90% of 220 handicap."
-        ),
+        )
     },
     "Ultimate League Championship": {
         "center": "APG Brewner Lanes",
@@ -443,21 +435,23 @@ CHUSBC_PRESET_PROFILES = {
         "rules_text": (
             "Invitational Tournament of Champions for CHUSBC winter league winning teams. "
             "Qualifying 3 games into seeded single-elimination match play bracket to crown the Association League Champion."
-        ),
-    },
+        )
+    }
 }
 
 # ---------------------------------------------------------
 # 3. ARGON2 CRYPTOGRAPHIC ENGINE & CLOUD PERSISTENCE (SPLIT TABS)
 # ---------------------------------------------------------
 ph = PasswordHasher(
-    time_cost=2, memory_cost=65536, parallelism=2, hash_len=32, salt_len=16
+    time_cost=2,
+    memory_cost=65536,
+    parallelism=2,
+    hash_len=32,
+    salt_len=16
 )
-
 
 def hash_secret(secret_str: str) -> str:
     return ph.hash(str(secret_str).strip())
-
 
 def verify_secret(stored_hash: str, plain_secret: str) -> tuple[bool, bool]:
     if not stored_hash or not plain_secret:
@@ -478,11 +472,7 @@ def verify_secret(stored_hash: str, plain_secret: str) -> tuple[bool, bool]:
             return True, True
         return False, False
 
-
-TARGET_ADMIN_LEGACY_HASH = (
-    "7e754bbef03e005db3d5089312104526685ba227e7f8e77a1fc9b6460fae2b1b"
-)
-
+TARGET_ADMIN_LEGACY_HASH = "7e754bbef03e005db3d5089312104526685ba227e7f8e77a1fc9b6460fae2b1b"
 
 def get_db_connection():
     try:
@@ -490,19 +480,10 @@ def get_db_connection():
     except Exception:
         return None
 
-
 def fetch_users_df() -> pd.DataFrame:
-    required_cols = [
-        "username",
-        "name",
-        "email",
-        "password_hash",
-        "role",
-        "status",
-        "must_change_password",
-        "created_at",
-    ]
-    if (conn := get_db_connection()) is not None:
+    conn = get_db_connection()
+    required_cols = ["username", "name", "email", "password_hash", "role", "status", "must_change_password", "created_at"]
+    if conn is not None:
         try:
             df = conn.read(worksheet="Sheet1", ttl=0)
             if df is not None and not df.empty:
@@ -513,25 +494,21 @@ def fetch_users_df() -> pd.DataFrame:
                 return df
         except Exception:
             pass
-
-    return pd.DataFrame(
-        [
-            {
-                "username": "skramer",
-                "name": "Scott Kramer",
-                "email": "scottjk85@gmail.com",
-                "password_hash": TARGET_ADMIN_LEGACY_HASH,
-                "role": "admin",
-                "status": "active",
-                "must_change_password": False,
-                "created_at": "Primary Admin",
-            }
-        ]
-    )
-
+            
+    return pd.DataFrame([{
+        "username": "skramer",
+        "name": "Scott Kramer",
+        "email": "scottjk85@gmail.com",
+        "password_hash": TARGET_ADMIN_LEGACY_HASH,
+        "role": "admin",
+        "status": "active",
+        "must_change_password": False,
+        "created_at": "Primary Admin"
+    }])
 
 def write_users_df(df: pd.DataFrame):
-    if (conn := get_db_connection()) is not None:
+    conn = get_db_connection()
+    if conn is not None:
         try:
             conn.update(worksheet="Sheet1", data=df)
             st.cache_data.clear()
@@ -540,19 +517,10 @@ def write_users_df(df: pd.DataFrame):
             return False
     return False
 
-
 def fetch_archives_df() -> pd.DataFrame:
-    archive_cols = [
-        "tournament_name",
-        "center",
-        "division",
-        "date",
-        "entries",
-        "champion",
-        "pdf_data",
-        "archived_by",
-    ]
-    if (conn := get_db_connection()) is not None:
+    conn = get_db_connection()
+    archive_cols = ["tournament_name", "center", "division", "date", "entries", "champion", "pdf_data", "archived_by"]
+    if conn is not None:
         try:
             df = conn.read(worksheet="Archived_Tournaments", ttl=0)
             if df is not None and not df.empty:
@@ -565,9 +533,9 @@ def fetch_archives_df() -> pd.DataFrame:
             pass
     return pd.DataFrame(columns=archive_cols)
 
-
 def write_archives_df(df: pd.DataFrame):
-    if (conn := get_db_connection()) is not None:
+    conn = get_db_connection()
+    if conn is not None:
         try:
             conn.update(worksheet="Archived_Tournaments", data=df)
             st.cache_data.clear()
@@ -576,15 +544,15 @@ def write_archives_df(df: pd.DataFrame):
             return False
     return False
 
-
 def fetch_active_tournament_state():
-    if (conn := get_db_connection()) is not None:
+    conn = get_db_connection()
+    if conn is not None:
         try:
             df_config = conn.read(worksheet="Active_Tournament", ttl=0)
             config_data = {}
             brackets = []
             td_pins = {}
-
+            
             if df_config is not None and not df_config.empty:
                 payload_str = str(df_config.iloc[0].get("payload", ""))
                 if payload_str and payload_str != "nan":
@@ -605,43 +573,35 @@ def fetch_active_tournament_state():
                     "roster": roster_records,
                     "brackets": brackets,
                     "td_pins": td_pins,
-                    "saved_at": df_config.iloc[0].get("saved_at", "N/A")
-                    if df_config is not None and not df_config.empty
-                    else "N/A",
+                    "saved_at": df_config.iloc[0].get("saved_at", "N/A") if df_config is not None and not df_config.empty else "N/A"
                 }
         except Exception:
             pass
     return None
 
-
-def write_active_tournament_state(
-    config: dict, roster_df: pd.DataFrame, brackets: list
-):
-    if (conn := get_db_connection()) is not None:
+def write_active_tournament_state(config: dict, roster_df: pd.DataFrame, brackets: list):
+    conn = get_db_connection()
+    if conn is not None:
         try:
             metadata_payload = {
                 "config": config,
                 "brackets": brackets,
                 "td_pins": st.session_state.get("td_pins", {}),
                 "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "saved_by": st.session_state.get("td_name", "Staff"),
+                "saved_by": st.session_state.get("td_name", "Staff")
             }
-            save_df = pd.DataFrame(
-                [
-                    {
-                        "id": "CURRENT_TOURNAMENT",
-                        "payload": json.dumps(metadata_payload),
-                        "saved_at": metadata_payload["saved_at"],
-                    }
-                ]
-            )
+            save_df = pd.DataFrame([{
+                "id": "CURRENT_TOURNAMENT",
+                "payload": json.dumps(metadata_payload),
+                "saved_at": metadata_payload["saved_at"]
+            }])
             conn.update(worksheet="Active_Tournament", data=save_df)
 
             if roster_df is not None and not roster_df.empty:
                 roster_clean_df = roster_df.copy()
             else:
                 roster_clean_df = pd.DataFrame(columns=DEFAULT_ROSTER_COLS)
-
+            
             conn.update(worksheet="Active_Roster", data=roster_clean_df)
 
             st.cache_data.clear()
@@ -650,15 +610,13 @@ def write_active_tournament_state(
             return False
     return False
 
-
 def clear_active_tournament_state():
-    if (conn := get_db_connection()) is not None:
+    conn = get_db_connection()
+    if conn is not None:
         try:
-            empty_meta = pd.DataFrame(
-                [{"id": "CURRENT_TOURNAMENT", "payload": "", "saved_at": ""}]
-            )
+            empty_meta = pd.DataFrame([{"id": "CURRENT_TOURNAMENT", "payload": "", "saved_at": ""}])
             empty_roster = pd.DataFrame(columns=DEFAULT_ROSTER_COLS)
-
+            
             conn.update(worksheet="Active_Tournament", data=empty_meta)
             conn.update(worksheet="Active_Roster", data=empty_roster)
             st.cache_data.clear()
@@ -666,7 +624,6 @@ def clear_active_tournament_state():
         except Exception:
             pass
     return False
-
 
 def register_td_pin(td_name: str, pin_str: str) -> bool:
     if not td_name or len(str(pin_str).strip()) < 4:
@@ -677,10 +634,9 @@ def register_td_pin(td_name: str, pin_str: str) -> bool:
     write_active_tournament_state(
         st.session_state.tournament_config,
         st.session_state.roster,
-        st.session_state.brackets,
+        st.session_state.brackets
     )
     return True
-
 
 def verify_td_pin(td_name: str, pin_str: str) -> bool:
     pins = st.session_state.get("td_pins", {})
@@ -692,27 +648,20 @@ def verify_td_pin(td_name: str, pin_str: str) -> bool:
         register_td_pin(td_name, pin_str)
     return is_valid
 
-
 # GLOBAL AUDIT LOGGING INITIALIZED EARLY
 if "audit_trail" not in st.session_state:
     st.session_state.audit_trail = []
 
-
 def log_audit_event(action: str):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    td_user = (
-        st.session_state.get("mobile_scorer_td")
-        or st.session_state.get("td_name")
-        or st.session_state.get("username", "Staff")
-    )
-    st.session_state.audit_trail.append(
-        {"timestamp": timestamp, "td": td_user, "action": action}
-    )
+    td_user = st.session_state.get("mobile_scorer_td") or st.session_state.get("td_name") or st.session_state.get("username", "Staff")
+    st.session_state.audit_trail.append({
+        "timestamp": timestamp,
+        "td": td_user,
+        "action": action
+    })
 
-
-def notify_admin_new_registration(
-    requested_user: str, requested_name: str, requested_email: str, requested_at: str
-):
+def notify_admin_new_registration(requested_user: str, requested_name: str, requested_email: str, requested_at: str):
     sender_email = st.secrets.get("EMAIL_SENDER", "")
     sender_password = st.secrets.get("EMAIL_APP_PASSWORD", "")
     target_admin = "scottjk85@gmail.com"
@@ -726,9 +675,7 @@ def notify_admin_new_registration(
         msg["From"] = f"CHUSBC Desk Alert <{sender_email}>"
         msg["To"] = target_admin
 
-        app_url = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip(
-            "/"
-        )
+        app_url = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
 
         html_body = f"""
         <html>
@@ -779,7 +726,6 @@ def notify_admin_new_registration(
     except Exception:
         return False
 
-
 def notify_user_account_approved(target_email: str, target_name: str, username: str):
     sender_email = st.secrets.get("EMAIL_SENDER", "")
     sender_password = st.secrets.get("EMAIL_APP_PASSWORD", "")
@@ -793,9 +739,7 @@ def notify_user_account_approved(target_email: str, target_name: str, username: 
         msg["From"] = f"CHUSBC Desk Alert <{sender_email}>"
         msg["To"] = target_email
 
-        app_url = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip(
-            "/"
-        )
+        app_url = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
 
         html_body = f"""
         <html>
@@ -828,13 +772,11 @@ def notify_user_account_approved(target_email: str, target_name: str, username: 
     except Exception:
         return False
 
-
 # ---------------------------------------------------------
 # 4. LANE BALANCER & GEMINI API CLIENT HOISTED
 # ---------------------------------------------------------
 api_key = st.secrets.get("GEMINI_API_KEY", None)
 ai_client = genai.Client(api_key=api_key) if api_key else None
-
 
 def generate_with_failover(prompt: str, temperature: float = 0.0) -> str:
     if not ai_client:
@@ -849,18 +791,13 @@ def generate_with_failover(prompt: str, temperature: float = 0.0) -> str:
                 res = ai_client.models.generate_content(
                     model=model_name,
                     contents=prompt,
-                    config=types.GenerateContentConfig(temperature=temperature),
+                    config=types.GenerateContentConfig(temperature=temperature)
                 )
                 return res.text
             except Exception as e:
                 last_exception = e
                 err_msg = str(e).lower()
-                if (
-                    "503" in err_msg
-                    or "unavailable" in err_msg
-                    or "429" in err_msg
-                    or "quota" in err_msg
-                ):
+                if "503" in err_msg or "unavailable" in err_msg or "429" in err_msg or "quota" in err_msg:
                     time.sleep(1.5)
                     continue
                 else:
@@ -868,10 +805,7 @@ def generate_with_failover(prompt: str, temperature: float = 0.0) -> str:
 
     raise last_exception
 
-
-def extract_scores_from_overhead_photo(
-    image_bytes: bytes, bowlers_on_pair: list, game_num: int
-) -> dict:
+def extract_scores_from_overhead_photo(image_bytes: bytes, bowlers_on_pair: list, game_num: int) -> dict:
     if not ai_client:
         return {}
 
@@ -888,13 +822,12 @@ Output ONLY raw JSON with no markdown formatting or backticks.
         response = ai_client.models.generate_content(
             model=PRIMARY_MODEL,
             contents=[content_part, prompt],
-            config=types.GenerateContentConfig(temperature=0.0),
+            config=types.GenerateContentConfig(temperature=0.0)
         )
         cleaned = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(cleaned)
     except Exception:
         return {}
-
 
 def arbitrate_rules_inquiry(query_text: str, event_context: str) -> str:
     if not ai_client:
@@ -903,7 +836,10 @@ def arbitrate_rules_inquiry(query_text: str, event_context: str) -> str:
     contents_payload = []
     if RULEBOOK_BYTES is not None:
         contents_payload.append(
-            types.Part.from_bytes(data=RULEBOOK_BYTES, mime_type="application/pdf")
+            types.Part.from_bytes(
+                data=RULEBOOK_BYTES,
+                mime_type="application/pdf"
+            )
         )
 
     prompt = f"""
@@ -921,12 +857,11 @@ Format your decision as:
         res = ai_client.models.generate_content(
             model=PRIMARY_MODEL,
             contents=contents_payload,
-            config=types.GenerateContentConfig(temperature=0.1),
+            config=types.GenerateContentConfig(temperature=0.1)
         )
         return res.text
     except Exception:
         return generate_with_failover(prompt, temperature=0.1)
-
 
 def parse_active_pairs(range_str: str, max_lanes: int = 40):
     lanes = set()
@@ -961,20 +896,17 @@ def parse_active_pairs(range_str: str, max_lanes: int = 40):
             pair_partner = l1 + 1 if l1 % 2 != 0 else l1 - 1
             pairs.append((min(l1, pair_partner), max(l1, pair_partner)))
             i += 1
-
+            
     seen = set()
     unique_pairs = []
     for p in pairs:
         if p not in seen:
             seen.add(p)
             unique_pairs.append(p)
-
+            
     return unique_pairs
 
-
-def get_bowler_lane_for_game(
-    starting_lane: int, game_num: int, movement_rule: str, max_lanes: int = 40
-) -> int:
+def get_bowler_lane_for_game(starting_lane: int, game_num: int, movement_rule: str, max_lanes: int = 40) -> int:
     if game_num <= 1:
         return starting_lane
 
@@ -992,14 +924,7 @@ def get_bowler_lane_for_game(
     current_lane = ((starting_lane - 1 + lanes_shift) % max_lanes) + 1
     return int(current_lane)
 
-
-def auto_assign_lanes(
-    roster_df: pd.DataFrame,
-    pairs: list,
-    max_per_pair: int = 5,
-    shuffle: bool = True,
-    group_by_team: bool = True,
-):
+def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list, max_per_pair: int = 5, shuffle: bool = True, group_by_team: bool = True):
     if roster_df.empty or not pairs:
         return roster_df, "No roster or lane pairs provided."
 
@@ -1013,11 +938,7 @@ def auto_assign_lanes(
         team_groups = {}
         for idx, row in updated_df.iterrows():
             t_name = str(row["Team_Name"]).strip()
-            unit_key = (
-                t_name
-                if t_name and t_name.lower() not in ["singles", "open", "none", ""]
-                else f"Indiv_{idx}"
-            )
+            unit_key = t_name if t_name and t_name.lower() not in ["singles", "open", "none", ""] else f"Indiv_{idx}"
             if unit_key not in team_groups:
                 team_groups[unit_key] = []
             team_groups[unit_key].append(idx)
@@ -1026,19 +947,14 @@ def auto_assign_lanes(
         units = [[idx] for idx in updated_df.index]
 
     total_bowlers = len(updated_df)
-    if total_bowlers > (total_capacity := len(pairs) * max_per_pair):
-        return (
-            roster_df,
-            f"Capacity exceeded! {total_bowlers} bowlers cannot fit on {len(pairs)} pairs (Max capacity: {total_capacity}).",
-        )
+    total_capacity = len(pairs) * max_per_pair
+    if total_bowlers > total_capacity:
+        return roster_df, f"Capacity exceeded! {total_bowlers} bowlers cannot fit on {len(pairs)} pairs (Max capacity: {total_capacity})."
 
     for u in units:
         if len(u) > max_per_pair:
-            sample_name = updated_df.loc[u[0], "Team_Name"]
-            return (
-                roster_df,
-                f"Team '{sample_name}' has {len(u)} bowlers, which exceeds max capacity.",
-            )
+            sample_name = updated_df.loc[u[0], 'Team_Name']
+            return roster_df, f"Team '{sample_name}' has {len(u)} bowlers, which exceeds max capacity."
 
     if shuffle:
         random.shuffle(units)
@@ -1053,7 +969,7 @@ def auto_assign_lanes(
                 pair_buckets[p].extend(unit)
                 assigned = True
                 break
-
+                
         if not assigned:
             return roster_df, "Unable to fit teams evenly across active pairs."
 
@@ -1063,47 +979,22 @@ def auto_assign_lanes(
             assigned_lane = lane_odd if (order_on_pair % 2 == 0) else lane_even
             updated_df.loc[r_idx, "Starting Lane"] = int(assigned_lane)
 
-    updated_df["Starting Lane"] = (
-        pd.to_numeric(updated_df["Starting Lane"], errors="coerce")
-        .fillna(1)
-        .astype(int)
-    )
-    updated_df = updated_df.sort_values(
-        by=["Starting Lane", "Team_Name", "Bowler"]
-    ).reset_index(drop=True)
+    updated_df["Starting Lane"] = pd.to_numeric(updated_df["Starting Lane"], errors="coerce").fillna(1).astype(int)
+    updated_df = updated_df.sort_values(by=["Starting Lane", "Team_Name", "Bowler"]).reset_index(drop=True)
     return updated_df, None
-
 
 # ---------------------------------------------------------
 # 5. INITIALIZE STATE & AUTH GATE
 # ---------------------------------------------------------
 if "tournament_config" not in st.session_state:
-    st.session_state.tournament_config = dict(
-        CHUSBC_PRESET_PROFILES["Annual CHUSBC Open Championship Tournament"]
-    )
-    st.session_state.tournament_config[
-        "name"
-    ] = "Annual CHUSBC Open Championship Tournament"
+    st.session_state.tournament_config = dict(CHUSBC_PRESET_PROFILES["Annual CHUSBC Open Championship Tournament"])
+    st.session_state.tournament_config["name"] = "Annual CHUSBC Open Championship Tournament"
     st.session_state.tournament_config["intake_completed"] = False
 
 DEFAULT_ROSTER_COLS = [
-    "USBC ID",
-    "Bowler",
-    "Average",
-    "Starting Lane",
-    "Division",
-    "Team_Name",
-    "Game 1",
-    "Game 2",
-    "Game 3",
-    "Paid",
-    "Checked_In",
-    "G1_Verified_By",
-    "G1_Verified_At",
-    "G2_Verified_By",
-    "G2_Verified_At",
-    "G3_Verified_By",
-    "G3_Verified_At",
+    "USBC ID", "Bowler", "Average", "Starting Lane", "Division", "Team_Name",
+    "Game 1", "Game 2", "Game 3", "Paid", "Checked_In",
+    "G1_Verified_By", "G1_Verified_At", "G2_Verified_By", "G2_Verified_At", "G3_Verified_By", "G3_Verified_At"
 ]
 
 if "roster" not in st.session_state:
@@ -1127,14 +1018,8 @@ if "td_pins" not in st.session_state:
 if "session_initialized" not in st.session_state:
     st.session_state.session_initialized = False
 
-
 def generate_qr_image(url: str) -> io.BytesIO:
-    qr = qrcode.QRCode(
-        version=1,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
-        box_size=10,
-        border=3,
-    )
+    qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=10, border=3)
     qr.add_data(url)
     qr.make(fit=True)
     img = qr.make_image(fill_color="#0f172a", back_color="white")
@@ -1142,7 +1027,6 @@ def generate_qr_image(url: str) -> io.BytesIO:
     img.save(buf, format="PNG")
     buf.seek(0)
     return buf
-
 
 # ---------------------------------------------------------
 # AUTHENTICATION & LOGIN GATE
@@ -1160,14 +1044,7 @@ if "pending_password_change" not in st.session_state:
 
 query_params = st.query_params
 
-if not st.session_state.authenticated and query_params.get("mode") not in [
-    "kiosk",
-    "checkin",
-    "self_checkin",
-    "bowler_portal",
-    "scorer",
-    "leaderboard",
-]:
+if not st.session_state.authenticated and query_params.get("mode") not in ["kiosk", "checkin", "self_checkin", "bowler_portal", "scorer", "leaderboard"]:
     st.columns([1, 2, 1])[1].write("")
     with st.columns([1, 2, 1])[1]:
         if HAS_LOGO:
@@ -1176,23 +1053,16 @@ if not st.session_state.authenticated and query_params.get("mode") not in [
         users_df = fetch_users_df()
 
         if st.session_state.pending_password_change:
-            st.markdown(
-                """
+            st.markdown("""
             <div class="brand-banner">
                 <h1>🔒 Account Activation (Argon2)</h1>
                 <p>Welcome to Cecil Harford USBC Tournament Desk. Please establish your personal password.</p>
             </div>
-            """,
-                unsafe_allow_html=True,
-            )
+            """, unsafe_allow_html=True)
             with st.form("pwd_reset_form"):
                 new_pwd = st.text_input("Enter New Password", type="password").strip()
-                confirm_pwd = st.text_input(
-                    "Confirm New Password", type="password"
-                ).strip()
-                reset_btn = st.form_submit_button(
-                    "Update Password & Enter Desk", use_container_width=True
-                )
+                confirm_pwd = st.text_input("Confirm New Password", type="password").strip()
+                reset_btn = st.form_submit_button("Update Password & Enter Desk", use_container_width=True)
 
                 if reset_btn:
                     if len(new_pwd) < 6:
@@ -1208,85 +1078,54 @@ if not st.session_state.authenticated and query_params.get("mode") not in [
                             write_users_df(users_df)
                         st.session_state.pending_password_change = False
                         st.session_state.authenticated = True
-                        log_audit_event(
-                            f"User '{u}' completed initial password change."
-                        )
+                        log_audit_event(f"User '{u}' completed initial password change.")
                         st.rerun()
         else:
-            st.markdown(
-                """
+            st.markdown("""
             <div class="brand-banner">
                 <h1>🎳 Cecil Harford USBC</h1>
                 <p>Tournament Management & Rules Arbitration Portal</p>
             </div>
-            """,
-                unsafe_allow_html=True,
-            )
+            """, unsafe_allow_html=True)
 
-            auth_tab_login, auth_tab_register = st.tabs(
-                ["🔑 Sign In", "📝 Request Access"]
-            )
+            auth_tab_login, auth_tab_register = st.tabs(["🔑 Sign In", "📝 Request Access"])
 
             with auth_tab_login:
                 with st.form("td_login"):
                     username_input = st.text_input("Username").strip().lower()
                     password_input = st.text_input("Password", type="password").strip()
-                    submitted = st.form_submit_button(
-                        "Sign In to Tournament Desk", use_container_width=True
-                    )
+                    submitted = st.form_submit_button("Sign In to Tournament Desk", use_container_width=True)
 
                     if submitted:
-                        is_skramer = (
-                            username_input == "skramer"
-                            and password_input == "Abigail!2015"
-                        )
+                        is_skramer = (username_input == "skramer" and password_input == "Abigail!2015")
                         match_row = users_df[users_df["username"] == username_input]
 
                         authenticated_match = False
                         needs_upgrade = False
                         if not match_row.empty:
                             stored_hash = str(match_row.iloc[0]["password_hash"])
-                            authenticated_match, needs_upgrade = verify_secret(
-                                stored_hash, password_input
-                            )
+                            authenticated_match, needs_upgrade = verify_secret(stored_hash, password_input)
 
                         if is_skramer or authenticated_match:
                             if needs_upgrade and not match_row.empty:
-                                idx_u = users_df.index[
-                                    users_df["username"] == username_input
-                                ].tolist()
+                                idx_u = users_df.index[users_df["username"] == username_input].tolist()
                                 if idx_u:
-                                    users_df.loc[
-                                        idx_u[0], "password_hash"
-                                    ] = hash_secret(password_input)
+                                    users_df.loc[idx_u[0], "password_hash"] = hash_secret(password_input)
                                     write_users_df(users_df)
 
-                            user_data = (
-                                match_row.iloc[0]
-                                if not match_row.empty
-                                else {
-                                    "name": "Scott Kramer",
-                                    "role": "admin",
-                                    "status": "active",
-                                    "must_change_password": False,
-                                }
-                            )
-
-                            if (
-                                str(user_data.get("status", "active")).lower()
-                                == "pending"
-                            ):
-                                st.warning(
-                                    "Your registration is currently pending review by an Administrator."
-                                )
+                            user_data = match_row.iloc[0] if not match_row.empty else {
+                                "name": "Scott Kramer",
+                                "role": "admin",
+                                "status": "active",
+                                "must_change_password": False
+                            }
+                            
+                            if str(user_data.get("status", "active")).lower() == "pending":
+                                st.warning("Your registration is currently pending review by an Administrator.")
                             else:
                                 st.session_state.username = username_input
-                                st.session_state.td_name = str(
-                                    user_data.get("name", "Scott Kramer")
-                                )
-                                st.session_state.td_role = str(
-                                    user_data.get("role", "admin")
-                                ).lower()
+                                st.session_state.td_name = str(user_data.get("name", "Scott Kramer"))
+                                st.session_state.td_role = str(user_data.get("role", "admin")).lower()
 
                                 if bool(user_data.get("must_change_password", False)):
                                     st.session_state.pending_password_change = True
@@ -1294,9 +1133,7 @@ if not st.session_state.authenticated and query_params.get("mode") not in [
                                 else:
                                     st.session_state.authenticated = True
                                     st.session_state.session_initialized = False
-                                    log_audit_event(
-                                        f"User '{username_input}' logged in."
-                                    )
+                                    log_audit_event(f"User '{username_input}' logged in.")
                                     st.rerun()
                         else:
                             st.error("Invalid username or password.")
@@ -1307,12 +1144,8 @@ if not st.session_state.authenticated and query_params.get("mode") not in [
                     req_user = st.text_input("Desired Username:").strip().lower()
                     req_name = st.text_input("Full Name:").strip()
                     req_email = st.text_input("Email Address:").strip().lower()
-                    req_pwd = st.text_input(
-                        "Desired Password:", type="password"
-                    ).strip()
-                    submit_req = st.form_submit_button(
-                        "Submit Registration", use_container_width=True
-                    )
+                    req_pwd = st.text_input("Desired Password:", type="password").strip()
+                    submit_req = st.form_submit_button("Submit Registration", use_container_width=True)
 
                     if submit_req:
                         current_df = fetch_users_df()
@@ -1322,27 +1155,19 @@ if not st.session_state.authenticated and query_params.get("mode") not in [
                             st.error(f"Username '{req_user}' already exists.")
                         else:
                             timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-                            new_row = pd.DataFrame(
-                                [
-                                    {
-                                        "username": req_user,
-                                        "name": req_name,
-                                        "email": req_email,
-                                        "password_hash": hash_secret(req_pwd),
-                                        "role": "td",
-                                        "status": "pending",
-                                        "must_change_password": False,
-                                        "created_at": timestamp_str,
-                                    }
-                                ]
-                            )
-                            updated_df = pd.concat(
-                                [current_df, new_row], ignore_index=True
-                            )
+                            new_row = pd.DataFrame([{
+                                "username": req_user,
+                                "name": req_name,
+                                "email": req_email,
+                                "password_hash": hash_secret(req_pwd),
+                                "role": "td",
+                                "status": "pending",
+                                "must_change_password": False,
+                                "created_at": timestamp_str
+                            }])
+                            updated_df = pd.concat([current_df, new_row], ignore_index=True)
                             write_users_df(updated_df)
-                            notify_admin_new_registration(
-                                req_user, req_name, req_email, timestamp_str
-                            )
+                            notify_admin_new_registration(req_user, req_name, req_email, timestamp_str)
                             st.success("Registration submitted for admin approval!")
 
     st.stop()
@@ -1351,16 +1176,10 @@ if not st.session_state.authenticated and query_params.get("mode") not in [
 # EXTERNAL ROUTES (?mode=kiosk, checkin, self_checkin, etc.)
 # ---------------------------------------------------------
 if query_params.get("mode") == "kiosk":
-    st.markdown(
-        "<style>header {visibility: hidden;} footer {visibility: hidden;}</style>",
-        unsafe_allow_html=True,
-    )
+    st.markdown("<style>header {visibility: hidden;} footer {visibility: hidden;}</style>", unsafe_allow_html=True)
     active_card = read_kiosk_state()
     if active_card:
-        st.markdown(
-            f"<h1>Welcome, {active_card['name']}!</h1><p>Assigned Pair: {active_card['pair_display']}</p>",
-            unsafe_allow_html=True,
-        )
+        st.markdown(f"<h1>Welcome, {active_card['name']}!</h1><p>Assigned Pair: {active_card['pair_display']}</p>", unsafe_allow_html=True)
     else:
         st.markdown("<h1>Cecil Harford USBC Kiosk</h1>", unsafe_allow_html=True)
     time.sleep(2.0)
@@ -1379,15 +1198,12 @@ elif query_params.get("mode") == "checkin":
 # 8. POST-LOGIN WORKSPACE GATEWAY
 # ---------------------------------------------------------
 if not st.session_state.session_initialized and st.session_state.authenticated:
-    st.markdown(
-        f"""
+    st.markdown(f"""
     <div class="brand-banner">
         <h1>Welcome, {st.session_state.td_name}</h1>
         <p>Cecil Harford USBC Tournament Desk Management Portal</p>
     </div>
-    """,
-        unsafe_allow_html=True,
-    )
+    """, unsafe_allow_html=True)
 
     col_opt_new, col_opt_resume, col_opt_archive = st.columns(3)
     cloud_state = fetch_active_tournament_state()
@@ -1395,14 +1211,8 @@ if not st.session_state.session_initialized and st.session_state.authenticated:
     archives_df = fetch_archives_df()
 
     with col_opt_new:
-        selected_preset = st.selectbox(
-            "Choose Tournament Profile:",
-            list(CHUSBC_PRESET_PROFILES.keys()),
-            key="preset_select_gate",
-        )
-        if st.button(
-            "Launch Selected Tournament", type="primary", use_container_width=True
-        ):
+        selected_preset = st.selectbox("Choose Tournament Profile:", list(CHUSBC_PRESET_PROFILES.keys()), key="preset_select_gate")
+        if st.button("Launch Selected Tournament", type="primary", use_container_width=True):
             p_data = CHUSBC_PRESET_PROFILES[selected_preset]
             st.session_state.tournament_config = {
                 "center": p_data["center"],
@@ -1414,12 +1224,10 @@ if not st.session_state.session_initialized and st.session_state.authenticated:
                 "hdcp_pct": p_data["hdcp_pct"],
                 "format_mode": p_data["format_mode"],
                 "games_count": p_data["games_count"],
-                "movement_rule": p_data.get(
-                    "movement_rule", "Move Right 1 Pair (+2 Lanes)"
-                ),
+                "movement_rule": p_data.get("movement_rule", "Move Right 1 Pair (+2 Lanes)"),
                 "entry_fee": p_data.get("entry_fee", 50.0),
                 "rules_text": p_data["rules_text"],
-                "intake_completed": False,
+                "intake_completed": False
             }
             st.session_state.roster = pd.DataFrame(columns=DEFAULT_ROSTER_COLS)
             st.session_state.brackets = []
@@ -1429,11 +1237,7 @@ if not st.session_state.session_initialized and st.session_state.authenticated:
             st.rerun()
 
     with col_opt_resume:
-        if st.button(
-            "Resume Active Event",
-            disabled=not has_active_cloud,
-            use_container_width=True,
-        ):
+        if st.button("Resume Active Event", disabled=not has_active_cloud, use_container_width=True):
             st.session_state.tournament_config = cloud_state["config"]
             st.session_state.roster = pd.DataFrame(cloud_state["roster"])
             st.session_state.brackets = cloud_state.get("brackets", [])
@@ -1456,7 +1260,7 @@ nav_options = [
     "6. AI Rules Arbiter",
     "7. Past Tournaments Archive 📂",
     "8. Board SOP & Staff Manual 📖",
-    "9. TD Audit Log",
+    "9. TD Audit Log"
 ]
 
 users_df = fetch_users_df()
@@ -1468,10 +1272,7 @@ with st.sidebar:
     if HAS_LOGO:
         st.image(LOGO_PATH, width=130)
     badge_class = "badge-admin" if st.session_state.td_role == "admin" else "badge-td"
-    st.markdown(
-        f"<div class='match-box'><b>{st.session_state.td_name}</b><br/><span class='{badge_class}'>{st.session_state.td_role.upper()}</span></div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"<div class='match-box'><b>{st.session_state.td_name}</b><br/><span class='{badge_class}'>{st.session_state.td_role.upper()}</span></div>", unsafe_allow_html=True)
     nav = st.radio("OPERATIONAL CONSOLE", nav_options)
     st.divider()
     if st.button("Sign Out / Close Desk", use_container_width=True):
@@ -1491,42 +1292,22 @@ def render_live_checkin_counters_fragment():
             st.session_state.roster = cloud_df
 
     total_bowlers = len(st.session_state.roster)
-    paid_bowlers = (
-        len(st.session_state.roster[st.session_state.roster["Paid"] == True])
-        if total_bowlers > 0
-        else 0
-    )
-    checked_bowlers = (
-        len(st.session_state.roster[st.session_state.roster["Checked_In"] == True])
-        if total_bowlers > 0
-        else 0
-    )
+    paid_bowlers = len(st.session_state.roster[st.session_state.roster["Paid"] == True]) if total_bowlers > 0 else 0
+    checked_bowlers = len(st.session_state.roster[st.session_state.roster["Checked_In"] == True]) if total_bowlers > 0 else 0
 
     c_t1, c_t2, c_t3 = st.columns(3)
     with c_t1:
-        st.markdown(
-            f"<div class='stat-card'><div class='stat-value'>{total_bowlers}</div><div class='stat-label'>Total Roster</div></div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown(f"<div class='stat-card'><div class='stat-value'>{total_bowlers}</div><div class='stat-label'>Total Roster</div></div>", unsafe_allow_html=True)
     with c_t2:
-        st.markdown(
-            f"<div class='stat-card'><div class='stat-value'>{paid_bowlers} / {total_bowlers}</div><div class='stat-label'>Paid Entries</div></div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown(f"<div class='stat-card'><div class='stat-value'>{paid_bowlers} / {total_bowlers}</div><div class='stat-label'>Paid Entries</div></div>", unsafe_allow_html=True)
     with c_t3:
-        st.markdown(
-            f"<div class='stat-card'><div class='stat-value'>{checked_bowlers} / {total_bowlers}</div><div class='stat-label'>Confirmed On-Lane</div></div>",
-            unsafe_allow_html=True,
-        )
-
+        st.markdown(f"<div class='stat-card'><div class='stat-value'>{checked_bowlers} / {total_bowlers}</div><div class='stat-label'>Confirmed On-Lane</div></div>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # MODULES 1 THROUGH 10 EXECUTION
 # ---------------------------------------------------------
 if nav == "1. Event & Roster Intake":
-    st.markdown(
-        f"<h1>{st.session_state.tournament_config['name']}</h1>", unsafe_allow_html=True
-    )
+    st.markdown(f"<h1>{st.session_state.tournament_config['name']}</h1>", unsafe_allow_html=True)
     render_live_checkin_counters_fragment()
 
 elif nav == "2. Scores & Standings":
@@ -1569,21 +1350,13 @@ if st.session_state.authenticated and st.session_state.session_initialized:
         st.session_state.copilot_response = ""
 
     st.markdown('<div class="floating-ai-anchor">', unsafe_allow_html=True)
-    with st.popover(
-        "✨ Ask Gemini", help="Live operations copilot & USBC rules arbiter"
-    ):
-        user_float_q = st.text_input(
-            "Ask a question about rules or desk operations:",
-            value=st.session_state.copilot_query,
-        )
+    with st.popover("✨ Ask Gemini", help="Live operations copilot & USBC rules arbiter"):
+        user_float_q = st.text_input("Ask a question about rules or desk operations:", value=st.session_state.copilot_query)
         st.session_state.copilot_query = user_float_q
         if st.button("Get Help from Coach", type="primary", use_container_width=True):
             if user_float_q.strip() and ai_client:
                 ans = arbitrate_rules_inquiry(user_float_q, f"Module: {nav}")
                 st.session_state.copilot_response = ans
         if st.session_state.copilot_response:
-            st.markdown(
-                f"<div class='match-box'>{st.session_state.copilot_response}</div>",
-                unsafe_allow_html=True,
-            )
-    st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='match-box'>{st.session_state.copilot_response}</div>", unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
