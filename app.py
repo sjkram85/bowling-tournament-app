@@ -87,15 +87,40 @@ def get_db_connection():
 
 def fetch_users_df():
     conn = get_db_connection()
+    required_cols = ["username", "name", "email", "password_hash", "role", "status", "center_id", "preferred_mode", "must_change_password"]
     if conn:
         try:
             df = conn.read(worksheet="Sheet1", ttl=0)
             if df is not None and not df.empty:
                 df.columns = [str(c).strip().lower() for c in df.columns]
+                for col in required_cols:
+                    if col not in df.columns:
+                        if col == "center_id":
+                            df[col] = "association"
+                        elif col == "preferred_mode":
+                            df[col] = "Advanced"
+                        elif col == "status":
+                            df[col] = "active"
+                        elif col == "must_change_password":
+                            df[col] = False
+                        else:
+                            df[col] = ""
                 return df
         except Exception:
             pass
-    return pd.DataFrame([{"username": "skramer", "name": "Scott Kramer", "email": "scottjk85@gmail.com", "password_hash": "7e754bbef03e005db3d5089312104526685ba227e7f8e77a1fc9b6460fae2b1b", "role": "admin", "status": "active", "center_id": "association", "preferred_mode": "Advanced", "must_change_password": False}])
+
+    return pd.DataFrame([{
+        "username": "skramer",
+        "name": "Scott Kramer",
+        "email": "scottjk85@gmail.com",
+        "password_hash": "7e754bbef03e005db3d5089312104526685ba227e7f8e77a1fc9b6460fae2b1b",
+        "role": "admin",
+        "status": "active",
+        "center_id": "association",
+        "preferred_mode": "Advanced",
+        "must_change_password": False,
+        "created_at": "Primary Admin"
+    }])
 
 def write_users_df(df):
     conn = get_db_connection()
@@ -117,7 +142,13 @@ def write_active_tournament_state(config, roster_df, brackets, sync_to_cloud=Fal
                 INSERT INTO live_roster (usbc_id, bowler, average, starting_lane, division, team_name, game_1, game_2, game_3, game_4, paid, checked_in, is_sub, subbing_for, last_updated_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(usbc_id) DO UPDATE SET average=excluded.average, starting_lane=excluded.starting_lane, paid=excluded.paid, checked_in=excluded.checked_in
-            """, (str(row.get("USBC ID", "")), str(row.get("Bowler", "")), int(row.get("Average", 200)), int(row.get("Starting Lane", 1)), str(row.get("Division", "Open")), str(row.get("Team_Name", "Singles")), int(row.get("Game 1", 0)), int(row.get("Game 2", 0)), int(row.get("Game 3", 0)), int(row.get("Game 4", 0)), 1 if bool(row.get("Paid", False)) else 0, 1 if bool(row.get("Checked_In", False)) else 0, 1 if bool(row.get("is_sub", False)) else 0, str(row.get("subbing_for", "")) or None, st.session_state.get("username", "Staff")))
+            """, (
+                str(row.get("USBC ID", "")), str(row.get("Bowler", "")), int(row.get("Average", 200)), int(row.get("Starting Lane", 1)),
+                str(row.get("Division", "Open")), str(row.get("Team_Name", "Singles")), int(row.get("Game 1", 0)), int(row.get("Game 2", 0)),
+                int(row.get("Game 3", 0)), int(row.get("Game 4", 0)), 1 if bool(row.get("Paid", False)) else 0,
+                1 if bool(row.get("Checked_In", False)) else 0, 1 if bool(row.get("is_sub", False)) else 0,
+                str(row.get("subbing_for", "")) or None, st.session_state.get("username", "Staff")
+            ))
         c.commit()
         c.close()
     return True
@@ -132,8 +163,17 @@ def fetch_active_tournament_state():
     finally:
         c.close()
     if not df_local.empty:
-        df_local = df_local.rename(columns={"usbc_id": "USBC ID", "bowler": "Bowler", "average": "Average", "starting_lane": "Starting Lane", "division": "Division", "team_name": "Team_Name", "game_1": "Game 1", "game_2": "Game 2", "game_3": "Game 3", "game_4": "Game 4", "paid": "Paid", "checked_in": "Checked_In"})
-        return {"config": st.session_state.get("tournament_config", {}), "roster": df_local.to_dict(orient="records"), "brackets": st.session_state.get("brackets", []), "td_pins": st.session_state.get("td_pins", {})}
+        df_local = df_local.rename(columns={
+            "usbc_id": "USBC ID", "bowler": "Bowler", "average": "Average", "starting_lane": "Starting Lane",
+            "division": "Division", "team_name": "Team_Name", "game_1": "Game 1", "game_2": "Game 2",
+            "game_3": "Game 3", "game_4": "Game 4", "paid": "Paid", "checked_in": "Checked_In"
+        })
+        return {
+            "config": st.session_state.get("tournament_config", {}),
+            "roster": df_local.to_dict(orient="records"),
+            "brackets": st.session_state.get("brackets", []),
+            "td_pins": st.session_state.get("td_pins", {})
+        }
     return None
 
 def fetch_archives_df():
@@ -399,7 +439,6 @@ with st.sidebar:
                 with resp_c.container():
                     st.session_state["prism_ans"] = st.write_stream(stream_prism_ai(query_to_run, ctx, client=ai_client))
         elif st.session_state.get("prism_ans"):
-            # Safe callback to clear state before next render cycle
             def clear_prism_state():
                 st.session_state["prism_ans"] = ""
                 st.session_state["in_prism_query"] = ""
