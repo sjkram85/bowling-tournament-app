@@ -552,4 +552,4 @@ def render_advanced_view(
 
         st.subheader("Active Staff Registry")
         display_cols = [c for c in req_cols if c in users.columns]
-        st.dataframe(users[display_cols], use_container_width=True)[cite: 6]
+        st.dataframe(users[display_cols], use_container_width=True)
