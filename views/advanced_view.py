@@ -524,6 +524,13 @@ def render_advanced_view(
     elif "TD User Management" in nav:
         st.markdown("<div class='brand-banner'><h1>Staff & Director Account Management (Argon2id)</h1></div>", unsafe_allow_html=True)
         users = fetch_users_df()
+
+        # Defensively ensure required columns exist to prevent KeyError[cite: 6]
+        req_cols = ["username", "name", "email", "role", "center_id", "preferred_mode", "status"]
+        for c in req_cols:
+            if c not in users.columns:
+                users[c] = "active" if c == "status" else "association" if c == "center_id" else "Advanced" if c == "preferred_mode" else ""
+
         pending = users[users["status"] == "pending"]
 
         if not pending.empty:
@@ -534,14 +541,15 @@ def render_advanced_view(
                 if col_a.button(f"Approve {row['username']}", type="primary"):
                     users.loc[users["username"] == row["username"], "status"] = "active"
                     write_users_df(users)
-                    notify_user_account_approved(row["email"], row["name"], row["username"])
-                    st.success("Approved!")
+                    notify_user_account_approved(row.get("email", ""), row["name"], row["username"])
+                    st.success(f"Approved {row['username']}!")
                     st.rerun()
                 if col_d.button(f"Deny {row['username']}"):
                     users = users[users["username"] != row["username"]]
                     write_users_df(users)
-                    st.warning("Denied.")
+                    st.warning(f"Denied {row['username']}.")
                     st.rerun()
 
         st.subheader("Active Staff Registry")
-        st.dataframe(users[["username", "name", "email", "role", "center_id", "preferred_mode", "status"]], use_container_width=True)
+        display_cols = [c for c in req_cols if c in users.columns]
+        st.dataframe(users[display_cols], use_container_width=True)[cite: 6]
