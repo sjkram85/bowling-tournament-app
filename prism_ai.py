@@ -7,7 +7,7 @@ from google.genai import types
 
 # Active Google GenAI Production Flash Endpoints
 PRIMARY_MODEL = "gemini-3.8-flash"
-FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash-lite"]
+FALLBACK_MODELS = ["gemini-3.5-flash-lite"]
 
 
 def get_ai_client(api_key: str = None):
@@ -51,14 +51,15 @@ def classify_intent(query_text: str) -> str:
     return "HYBRID_OR_GENERAL"
 
 
-def ask_prism_ai(query_text: str, runtime_context: dict, client=None, status_container=None) -> str:
+def stream_prism_ai(query_text: str, runtime_context: dict, client=None):
     """
-    Intent-aware tournament desk assistant with dynamic prompt routing,
-    multi-model fallback cascading (503/429 mitigation), and live status feedback.
+    Fast streaming generator yielding response tokens in real-time
+    with model failover cascading for high-availability desk operations.
     """
     ai_client = client or get_ai_client()
     if not ai_client:
-        return "Prism AI is offline. Please configure a valid Gemini API key in secrets or the sidebar."
+        yield "Prism AI is offline. Please configure a valid Gemini API key in secrets or the sidebar."
+        return
 
     intent = classify_intent(query_text)
 
@@ -111,32 +112,35 @@ USER INQUIRY:
     last_err = None
 
     for model_name in models_to_try:
-        if status_container:
-            intent_label = "Workflow" if intent == "WORKFLOW_GUIDE" else "USBC Rules" if intent == "RULE_DISPUTE" else "Consultation"
-            status_container.update(
-                label=f"Prism AI resolving {intent_label} ({model_name})...",
-                state="running"
-            )
-
-        for attempt in range(2):
-            try:
-                response = ai_client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(temperature=0.1)
+        try:
+            stream = ai_client.models.generate_content_stream(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    max_output_tokens=700
                 )
-                if response and response.text:
-                    return response.text
-            except Exception as e:
-                last_err = e
-                err_str = str(e).lower()
-                # Intercept 503 high-demand spikes and 429 rate limit errors
-                if any(k in err_str for k in ["503", "unavailable", "429", "quota", "resource_exhausted"]):
-                    time.sleep(1.0)
-                    continue
-                break
+            )
+            has_yielded = False
+            for chunk in stream:
+                if chunk.text:
+                    has_yielded = True
+                    yield chunk.text
+            if has_yielded:
+                return
+        except Exception as e:
+            last_err = e
+            continue
 
-    return f"Prism AI is temporarily unavailable due to high API network traffic. Details: {last_err}"
+    yield f"Prism AI is temporarily unavailable. Details: {last_err}"
+
+
+def ask_prism_ai(query_text: str, runtime_context: dict, client=None, status_container=None) -> str:
+    """Non-streaming fallback for batch background evaluation."""
+    chunks = []
+    for chunk in stream_prism_ai(query_text, runtime_context, client=client):
+        chunks.append(chunk)
+    return "".join(chunks)
 
 
 def parse_roster_text_with_gemini(raw_text: str, client=None) -> str:
