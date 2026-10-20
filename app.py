@@ -835,21 +835,28 @@ with st.sidebar:
         </div>
         """, unsafe_allow_html=True)
 
+        trigger_ai = False
+
         if st.button("🧭 What should I do next on this screen?", use_container_width=True, key="btn_prism_next_prompt"):
-            st.session_state["prism_q"] = f"What are my next steps on '{nav}' in {desk_mode}?"
+            suggested_query = f"What are my immediate next steps on '{nav}' in {desk_mode}?"
+            st.session_state["in_prism_query"] = suggested_query
+            trigger_ai = True
 
         q_in = st.text_input(
             "Ask Prism AI:",
-            value=st.session_state.get("prism_q", ""),
             placeholder="e.g. Next steps, tardy rule, sub swap...",
             key="in_prism_query"
         )
-        st.session_state["prism_q"] = q_in
 
         if st.button("Consult Prism AI", type="primary", use_container_width=True, key="btn_run_prism"):
-            if not q_in.strip():
-                st.warning("Please enter a question or click the suggestion button.")
+            if q_in.strip():
+                trigger_ai = True
             else:
+                st.warning("Please type a question or tap 'What should I do next'.")
+
+        if trigger_ai:
+            query_to_run = st.session_state.get("in_prism_query", "").strip()
+            if query_to_run:
                 ctx = {
                     "user": st.session_state.get("td_name", "Staff"),
                     "mode": desk_mode,
@@ -865,7 +872,7 @@ with st.sidebar:
                     st.write("🔍 Reading current roster state and pair assignments...")
                     time.sleep(0.3)
                     st.write("📖 Cross-referencing USBC regulations & tournament parameters...")
-                    ans = ask_prism_ai(q_in, ctx, client=ai_client, status_container=status)
+                    ans = ask_prism_ai(query_to_run, ctx, client=ai_client, status_container=status)
                     status.update(label="Consultation complete!", state="complete", expanded=False)
 
                 st.session_state["prism_ans"] = ans
@@ -878,7 +885,7 @@ with st.sidebar:
             """, unsafe_allow_html=True)
             if st.button("Clear Response", key="btn_clr_prism_ans", use_container_width=True):
                 st.session_state["prism_ans"] = ""
-                st.session_state["prism_q"] = ""
+                st.session_state["in_prism_query"] = ""
                 st.rerun()
 
     st.markdown("### ☁️ Cloud Backup & Sync")
