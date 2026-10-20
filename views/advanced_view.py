@@ -525,31 +525,149 @@ def render_advanced_view(
         st.markdown("<div class='brand-banner'><h1>Staff & Director Account Management (Argon2id)</h1></div>", unsafe_allow_html=True)
         users = fetch_users_df()
 
-        # Defensively ensure required columns exist to prevent KeyError[cite: 6]
-        req_cols = ["username", "name", "email", "role", "center_id", "preferred_mode", "status"]
+        # Defensively ensure required columns exist
+        req_cols = ["username", "name", "email", "password_hash", "role", "center_id", "preferred_mode", "status", "must_change_password"]
         for c in req_cols:
             if c not in users.columns:
-                users[c] = "active" if c == "status" else "association" if c == "center_id" else "Advanced" if c == "preferred_mode" else ""
+                if c == "status":
+                    users[c] = "active"
+                elif c == "center_id":
+                    users[c] = "association"
+                elif c == "preferred_mode":
+                    users[c] = "Advanced"
+                elif c == "role":
+                    users[c] = "td"
+                elif c == "must_change_password":
+                    users[c] = False
+                else:
+                    users[c] = ""
 
-        pending = users[users["status"] == "pending"]
+        tab_registry, tab_edit, tab_pending = st.tabs([
+            "👥 Staff Registry",
+            "🛠️ Administer User Account",
+            f"⏳ Pending Approvals ({len(users[users['status'] == 'pending'])})"
+        ])
 
-        if not pending.empty:
-            st.subheader(f"Pending Approvals ({len(pending)})")
-            for _, row in pending.iterrows():
-                st.markdown(f"<div class='match-box'><b>{row['name']}</b> ({row['username']}) - {row.get('email', '')}</div>", unsafe_allow_html=True)
-                col_a, col_d = st.columns(2)
-                if col_a.button(f"Approve {row['username']}", type="primary"):
-                    users.loc[users["username"] == row["username"], "status"] = "active"
-                    write_users_df(users)
-                    notify_user_account_approved(row.get("email", ""), row["name"], row["username"])
-                    st.success(f"Approved {row['username']}!")
-                    st.rerun()
-                if col_d.button(f"Deny {row['username']}"):
-                    users = users[users["username"] != row["username"]]
-                    write_users_df(users)
-                    st.warning(f"Denied {row['username']}.")
-                    st.rerun()
+        # TAB 1: MASTER DIRECTORY
+        with tab_registry:
+            st.subheader("Active Staff Registry")
+            display_cols = [c for c in ["username", "name", "email", "role", "center_id", "preferred_mode", "status"] if c in users.columns]
+            st.dataframe(users[display_cols], use_container_width=True)
 
-        st.subheader("Active Staff Registry")
-        display_cols = [c for c in req_cols if c in users.columns]
-        st.dataframe(users[display_cols], use_container_width=True)
+        # TAB 2: ADMINISTRATIVE ACTIONS (PASSWORD RESET, ROLE, CENTER, STATUS)
+        with tab_edit:
+            st.subheader("Manage Staff Account & Credentials")
+            usernames = users["username"].tolist()
+            target_user = st.selectbox("Select Staff Account to Administer:", usernames)
+
+            if target_user:
+                user_row = users[users["username"] == target_user].iloc[0]
+                user_idx = users.index[users["username"] == target_user].tolist()[0]
+
+                c_info1, c_info2 = st.columns(2)
+                with c_info1:
+                    st.markdown(f"""
+                    <div class='match-box'>
+                        <b>User:</b> {user_row['name']} (<code>{user_row['username']}</code>)<br/>
+                        <b>Email:</b> {user_row.get('email', 'N/A')}<br/>
+                        <b>Current Status:</b> <code>{user_row['status']}</code>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with c_info2:
+                    st.markdown(f"""
+                    <div class='match-box'>
+                        <b>Role:</b> {str(user_row['role']).upper()}<br/>
+                        <b>Assigned Center:</b> {user_row['center_id']}<br/>
+                        <b>Default Mode:</b> {user_row['preferred_mode']}
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                st.divider()
+
+                col_pw, col_role = st.columns(2)
+
+                # Action 1: Password Reset (Argon2id)
+                with col_pw:
+                    st.markdown("#### 🔑 Reset Account Password")
+                    with st.form(f"form_reset_pw_{target_user}"):
+                        new_temp_pw = st.text_input("Enter New Password:", type="password")
+                        force_change = st.checkbox("Require password change on next login", value=True)
+                        if st.form_submit_button("Override Password", type="primary", use_container_width=True):
+                            if len(new_temp_pw) >= 6:
+                                users.loc[user_idx, "password_hash"] = hash_secret(new_temp_pw)
+                                users.loc[user_idx, "must_change_password"] = force_change
+                                if write_users_df(users):
+                                    log_audit_event(f"Admin reset password for user '{target_user}'.")
+                                    st.success(f"Password updated for {target_user}!")
+                                    st.rerun()
+                                else:
+                                    st.error("Failed to sync updated credentials to Google Sheets.")
+                            else:
+                                st.warning("Password must be at least 6 characters.")
+
+                # Action 2: Role, Center & Permissions Configuration
+                with col_role:
+                    st.markdown("#### ⚙️ Edit Roles & Permissions")
+                    with st.form(f"form_perms_{target_user}"):
+                        role_opts = ["admin", "td", "volunteer"]
+                        cur_role = str(user_row["role"]).lower()
+                        new_role = st.selectbox("System Role:", role_opts, index=role_opts.index(cur_role) if cur_role in role_opts else 1)
+
+                        center_opts = ["association", "forest_hill", "harford", "apg"]
+                        cur_center = str(user_row["center_id"]).lower()
+                        new_center = st.selectbox("Assigned Center:", center_opts, index=center_opts.index(cur_center) if cur_center in center_opts else 0)
+
+                        mode_opts = ["Advanced", "Easy"]
+                        cur_mode = str(user_row["preferred_mode"])
+                        new_mode = st.selectbox("Default UI Mode:", mode_opts, index=mode_opts.index(cur_mode) if cur_mode in mode_opts else 0)
+
+                        status_opts = ["active", "suspended"]
+                        cur_status = str(user_row["status"]).lower()
+                        new_status = st.selectbox("Account Status:", status_opts, index=status_opts.index(cur_status) if cur_status in status_opts else 0)
+
+                        if st.form_submit_button("Save Account Changes", type="primary", use_container_width=True):
+                            users.loc[user_idx, "role"] = new_role
+                            users.loc[user_idx, "center_id"] = new_center
+                            users.loc[user_idx, "preferred_mode"] = new_mode
+                            users.loc[user_idx, "status"] = new_status
+                            if write_users_df(users):
+                                log_audit_event(f"Admin updated settings for '{target_user}' (Role: {new_role}, Status: {new_status}).")
+                                st.success(f"Account settings saved for {target_user}!")
+                                st.rerun()
+                            else:
+                                st.error("Failed to sync updated settings to Google Sheets.")
+
+                # Action 3: Account Deletion Safety Zone
+                if target_user != st.session_state.get("username"):
+                    st.divider()
+                    with st.expander(f"⚠️ Danger Zone: Delete '{target_user}'"):
+                        st.caption("Permanently removes this account from Google Sheets authentication.")
+                        if st.button(f"Permanently Delete {target_user}", type="secondary", use_container_width=True):
+                            users = users[users["username"] != target_user]
+                            if write_users_df(users):
+                                log_audit_event(f"Admin permanently deleted account '{target_user}'.")
+                                st.warning(f"Account '{target_user}' has been deleted.")
+                                st.rerun()
+
+        # TAB 3: PENDING APPROVAL QUEUE
+        with tab_pending:
+            pending = users[users["status"] == "pending"]
+            if pending.empty:
+                st.info("No registrations currently awaiting review.")
+            else:
+                for _, row in pending.iterrows():
+                    st.markdown(f"<div class='match-box'><b>{row['name']}</b> (<code>{row['username']}</code>) — {row.get('email', '')}</div>", unsafe_allow_html=True)
+                    col_a, col_d = st.columns(2)
+                    if col_a.button(f"Approve {row['username']}", key=f"app_{row['username']}", type="primary"):
+                        users.loc[users["username"] == row["username"], "status"] = "active"
+                        write_users_df(users)
+                        notify_user_account_approved(row.get("email", ""), row["name"], row["username"])
+                        log_audit_event(f"Admin approved account registration for '{row['username']}'.")
+                        st.success(f"Approved {row['username']}!")
+                        st.rerun()
+                    if col_d.button(f"Deny {row['username']}", key=f"den_{row['username']}"):
+                        users = users[users["username"] != row["username"]]
+                        write_users_df(users)
+                        log_audit_event(f"Admin denied account registration for '{row['username']}'.")
+                        st.warning(f"Denied {row['username']}.")
+                        st.rerun()
