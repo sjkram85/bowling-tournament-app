@@ -568,3 +568,85 @@ Output strictly raw JSON mapping bowler names to scores: {{"Name": 205}}
     except Exception as e:
         print(f"Monitor OCR Error: {e}")
         return {}
+
+# --- ADD TO BOTTOM OF engine_support.py ---
+
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Image as RLImage, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+
+def export_tournament_summary_pdf(standings_df: pd.DataFrame, config: dict, champion_name: str, stepladder_results: dict) -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    story = []
+
+    title_style = ParagraphStyle("SummaryTitle", parent=styles["Heading1"], fontSize=15, leading=18, textColor=colors.HexColor("#0f172a"), spaceAfter=2)
+    h2_style = ParagraphStyle("SummaryH2", parent=styles["Heading2"], fontSize=11, leading=14, textColor=colors.HexColor("#0284c7"), spaceBefore=8, spaceAfter=4)
+
+    header_text = f"""
+    <b>Cecil Harford USBC — Official Tournament Summary & Champion Report</b><br/>
+    <font size="8" color="#475569">
+    Event: {config.get('name', 'CHUSBC Tournament')} | Host Center: {config.get('center', 'Forest Hill')} | Division: {config.get('division', 'Open')}<br/>
+    Official Champion: <b>{champion_name}</b> | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}
+    </font>
+    """
+
+    logo_path = LOGO_FOREST_HILL_PATH if ("forest hill" in str(config.get("center", "")).lower() and HAS_FOREST_HILL_LOGO) else LOGO_CHUSBC_PATH
+    if os.path.exists(logo_path):
+        logo_img = RLImage(logo_path, width=50, height=50)
+        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[60, 480])
+        header_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
+        story.append(header_table)
+    else:
+        story.append(Paragraph(f"Cecil Harford USBC — {config.get('name', 'Tournament')}", title_style))
+
+    champ_data = [[Paragraph(f"<b>🏆 OFFICIAL CHAMPION CROWNED: {champion_name}</b>", styles["Normal"])]]
+    ct = Table(champ_data, colWidths=[540])
+    ct.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#10b98120")),
+        ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#10b981")),
+        ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8), ("LEFTPADDING", (0, 0), (-1, -1), 10),
+    ]))
+    story.append(ct)
+    story.append(Spacer(1, 8))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def compile_all_events_leaderboard(roster_df: pd.DataFrame, config: dict = None) -> pd.DataFrame:
+    if roster_df.empty:
+        return pd.DataFrame()
+    df = roster_df.copy()
+    for col in ["Game 1", "Game 2", "Game 3", "Average"]:
+        df[col] = pd.to_numeric(df.get(col, 0), errors="coerce").fillna(0).astype(int)
+
+    base = int(config.get("hdcp_base", 220)) if config else 220
+    pct = float(config.get("hdcp_pct", 0.90)) if config else 0.90
+
+    df["HDCP_Per_Game"] = df["Average"].apply(lambda a: calculate_handicap(a, base=base, percentage=pct))
+    group_col = "USBC ID" if "USBC ID" in df.columns else "Bowler"
+    grouped = df.groupby(group_col).agg({
+        "Average": "max", "HDCP_Per_Game": "max", "Game 1": "sum", "Game 2": "sum", "Game 3": "sum",
+        "Team_Name": lambda x: ", ".join(set([str(v) for v in x if v and str(v) != "Singles"])) or "Singles",
+        "Division": "first"
+    }).reset_index()
+
+    if group_col == "USBC ID":
+        name_map = df.drop_duplicates(subset=["USBC ID"]).set_index("USBC ID")["Bowler"].to_dict()
+        grouped["Bowler"] = grouped["USBC ID"].map(name_map)
+
+    grouped["Total_Games_Bowled"] = df.groupby(group_col).apply(
+        lambda g: (g["Game 1"] > 0).sum() + (g["Game 2"] > 0).sum() + (g["Game 3"] > 0).sum()
+    ).values
+    grouped["Total_HDCP"] = grouped["HDCP_Per_Game"] * grouped["Total_Games_Bowled"]
+    grouped["Scratch_Series"] = grouped["Game 1"] + grouped["Game 2"] + grouped["Game 3"]
+    grouped["Grand_Total"] = grouped["Scratch_Series"] + grouped["Total_HDCP"]
+
+    grouped = grouped.sort_values(by=["Grand_Total", "Scratch_Series"], ascending=[False, False]).reset_index(drop=True)
+    grouped.index += 1
+    grouped.index.name = "Rank"
+    return grouped
