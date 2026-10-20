@@ -139,15 +139,17 @@ def write_active_tournament_state(config, roster_df, brackets, sync_to_cloud=Fal
         c = get_sqlite_conn()
         for _, row in roster_df.iterrows():
             c.execute("""
-                INSERT INTO live_roster (usbc_id, bowler, average, starting_lane, division, team_name, game_1, game_2, game_3, game_4, paid, checked_in, is_sub, subbing_for, last_updated_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO live_roster (usbc_id, bowler, average, starting_lane, division, team_name, game_1, game_2, game_3, game_4, game_5, game_6, paid, checked_in, is_sub, subbing_for, last_updated_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(usbc_id) DO UPDATE SET average=excluded.average, starting_lane=excluded.starting_lane, paid=excluded.paid, checked_in=excluded.checked_in
             """, (
                 str(row.get("USBC ID", "")), str(row.get("Bowler", "")), int(row.get("Average", 200)), int(row.get("Starting Lane", 1)),
-                str(row.get("Division", "Open")), str(row.get("Team_Name", "Singles")), int(row.get("Game 1", 0)), int(row.get("Game 2", 0)),
-                int(row.get("Game 3", 0)), int(row.get("Game 4", 0)), 1 if bool(row.get("Paid", False)) else 0,
-                1 if bool(row.get("Checked_In", False)) else 0, 1 if bool(row.get("is_sub", False)) else 0,
-                str(row.get("subbing_for", "")) or None, st.session_state.get("username", "Staff")
+                str(row.get("Division", "Open")), str(row.get("Team_Name", "Singles")),
+                int(row.get("Game 1", 0)), int(row.get("Game 2", 0)), int(row.get("Game 3", 0)),
+                int(row.get("Game 4", 0)), int(row.get("Game 5", 0)), int(row.get("Game 6", 0)),
+                1 if bool(row.get("Paid", False)) else 0, 1 if bool(row.get("Checked_In", False)) else 0,
+                1 if bool(row.get("is_sub", False)) else 0, str(row.get("subbing_for", "")) or None,
+                st.session_state.get("username", "Staff")
             ))
         c.commit()
         c.close()
@@ -166,7 +168,8 @@ def fetch_active_tournament_state():
         df_local = df_local.rename(columns={
             "usbc_id": "USBC ID", "bowler": "Bowler", "average": "Average", "starting_lane": "Starting Lane",
             "division": "Division", "team_name": "Team_Name", "game_1": "Game 1", "game_2": "Game 2",
-            "game_3": "Game 3", "game_4": "Game 4", "paid": "Paid", "checked_in": "Checked_In"
+            "game_3": "Game 3", "game_4": "Game 4", "game_5": "Game 5", "game_6": "Game 6",
+            "paid": "Paid", "checked_in": "Checked_In"
         })
         return {
             "config": st.session_state.get("tournament_config", {}),
@@ -237,7 +240,7 @@ def render_live_radar_matrix_fragment(radar_game: int):
         for idx, (l1, l2) in enumerate(pairs):
             with r_cols[idx % 4]:
                 p_b = df_m[df_m["starting_lane"].isin([l1, l2])] if not df_m.empty else pd.DataFrame()
-                has_sc = (p_b[g_target] > 0).any() if not p_b.empty else False
+                has_sc = (p_b[g_target] > 0).any() if (not p_b.empty and g_target in p_b.columns) else False
                 badge = "🟢 VERIFIED" if has_sc else "⚪ EMPTY" if p_b.empty else "🔴 PENDING"
                 color = "#10b981" if has_sc else "#334155" if p_b.empty else "#ef4444"
                 st.markdown(f"<div style='background-color:#0f172a; border:1px solid {color}; border-radius:6px; padding:6px 10px; margin-bottom:8px;'><b style='color:#f8fafc;'>Lanes {l1}-{l2}</b> <span style='float:right; font-size:10px; color:{color}; font-weight:800;'>{badge}</span></div>", unsafe_allow_html=True)
@@ -257,8 +260,21 @@ if "authenticated" not in st.session_state:
 
 if not st.session_state.authenticated:
     with st.columns([1, 2, 1])[1]:
-        if HAS_CHUSBC_LOGO:
+        # Always resolve asset path directly
+        if HAS_CHUSBC_LOGO and os.path.exists(LOGO_CHUSBC_PATH):
             st.image(LOGO_CHUSBC_PATH, width=160)
+        else:
+            with st.expander("🔍 Asset Path Debugger", expanded=False):
+                st.write(f"**Working Dir:** `{os.getcwd()}`")
+                st.write(f"**Target Path:** `{LOGO_CHUSBC_PATH}`")
+                st.write(f"**Logo Detected:** `{HAS_CHUSBC_LOGO}`")
+                tree = []
+                for root, dirs, files in os.walk(os.getcwd()):
+                    for f in files:
+                        if not f.startswith("."):
+                            tree.append(os.path.relpath(os.path.join(root, f), os.getcwd()))
+                st.code("\n".join(tree[:25]))
+
         st.markdown("<div class='brand-banner'><h1>🎳 Prism Lane Control</h1><p>Cecil Harford USBC Central Desk Portal</p></div>", unsafe_allow_html=True)
         tab_log, tab_reg = st.tabs(["🔑 Sign In", "📝 Request TD Access"])
         with tab_log:
@@ -384,8 +400,11 @@ if not st.session_state.get("session_initialized", False):
 # SIDEBAR CONTROLS & STREAMING PRISM AI
 # ---------------------------------------------------------
 with st.sidebar:
-    if active_brand["has_logo"]:
+    if os.path.exists(active_brand["logo_path"]):
         st.image(active_brand["logo_path"], use_container_width=True)
+    elif HAS_CHUSBC_LOGO and os.path.exists(LOGO_CHUSBC_PATH):
+        st.image(LOGO_CHUSBC_PATH, use_container_width=True)
+
     st.markdown(f"<div style='background-color:#1e293b; padding:10px; border-radius:8px;'><b>{st.session_state.td_name}</b><br/><span class='badge-td'>{active_brand['badge']}</span></div>", unsafe_allow_html=True)
     
     desk_mode = st.radio("OPERATING MODE", ["Volunteer Mode (Easy)", "Tournament Director (Advanced)"], index=0 if st.session_state.preferred_mode == "Easy" else 1)
@@ -455,9 +474,9 @@ with st.sidebar:
 # DESK HEADER & VIEW DISPATCHER
 # ---------------------------------------------------------
 col_l1, col_l2, col_title = st.columns([1, 1, 6])
-if HAS_CHUSBC_LOGO:
+if HAS_CHUSBC_LOGO and os.path.exists(LOGO_CHUSBC_PATH):
     col_l1.image(LOGO_CHUSBC_PATH, width=80)
-if active_brand["has_logo"] and active_brand["logo_path"] != LOGO_CHUSBC_PATH:
+if active_brand["has_logo"] and os.path.exists(active_brand["logo_path"]) and active_brand["logo_path"] != LOGO_CHUSBC_PATH:
     col_l2.image(active_brand["logo_path"], width=80)
 col_title.markdown(f"<h2>{st.session_state.tournament_config['name']}</h2><p style='color:{active_brand['accent']}'><b>{active_brand['name']} • {active_brand['tagline']}</b></p>", unsafe_allow_html=True)
 st.divider()
