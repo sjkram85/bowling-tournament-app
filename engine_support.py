@@ -6,6 +6,7 @@ import json
 import base64
 import random
 import sqlite3
+from pathlib import Path
 from datetime import datetime
 import pandas as pd
 import qrcode
@@ -24,12 +25,38 @@ from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-# Static asset paths
-LOGO_CHUSBC_PATH = "assets/logo_chusbc.png"
-HAS_CHUSBC_LOGO = os.path.exists(LOGO_CHUSBC_PATH)
+# ---------------------------------------------------------
+# ASSET RESOLUTION (CASE-INSENSITIVE & RECURSIVE)
+# ---------------------------------------------------------
+BASE_DIR = Path(__file__).resolve().parent
 
-LOGO_FOREST_HILL_PATH = "assets/logo_forest_hill.png"
-HAS_FOREST_HILL_LOGO = os.path.exists(LOGO_FOREST_HILL_PATH)
+def find_logo_path(target_stem: str = "logo_chusbc") -> str | None:
+    search_dirs = [BASE_DIR, BASE_DIR / "assets", Path.cwd(), Path.cwd() / "assets"]
+    extensions = [".png", ".PNG", ".jpg", ".jpeg", ".webp"]
+    
+    # Direct candidate search
+    for d in search_dirs:
+        if d.exists():
+            for ext in extensions:
+                p = d / f"{target_stem}{ext}"
+                if p.is_file():
+                    return str(p)
+                    
+    # Recursive case-insensitive walk
+    for root_dir in [BASE_DIR, Path.cwd()]:
+        if root_dir.exists():
+            for path in root_dir.rglob("*"):
+                if path.is_file() and target_stem.lower() in path.stem.lower() and path.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp"]:
+                    return str(path)
+    return None
+
+_chusbc_found = find_logo_path("logo_chusbc") or find_logo_path("chusbc")
+LOGO_CHUSBC_PATH = _chusbc_found if _chusbc_found else str(BASE_DIR / "assets" / "logo_chusbc.png")
+HAS_CHUSBC_LOGO = _chusbc_found is not None
+
+_fh_found = find_logo_path("logo_forest_hill") or find_logo_path("forest_hill")
+LOGO_FOREST_HILL_PATH = _fh_found if _fh_found else str(BASE_DIR / "assets" / "logo_forest_hill.png")
+HAS_FOREST_HILL_LOGO = _fh_found is not None
 
 KIOSK_FILE_PATH = "kiosk_state.json"
 SQLITE_DB_PATH = "prism_operational.db"
@@ -37,11 +64,9 @@ SQLITE_DB_PATH = "prism_operational.db"
 ph = PasswordHasher()
 
 def hash_secret(secret_text: str) -> str:
-    """Hashes a password or PIN using Argon2id."""
     return ph.hash(secret_text)
 
 def verify_secret(hashed_value: str, plain_text: str) -> tuple[bool, bool]:
-    """Verifies plain text against an Argon2id hash."""
     try:
         ph.verify(hashed_value, plain_text)
         return True, ph.check_needs_rehash(hashed_value)
@@ -49,13 +74,11 @@ def verify_secret(hashed_value: str, plain_text: str) -> tuple[bool, bool]:
         return False, False
 
 def get_sqlite_conn():
-    """Returns a SQLite connection to the operational table."""
     conn = sqlite3.connect(SQLITE_DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_sqlite_tables():
-    """Initializes local tables and guarantees columns exist for 1 through 6 games."""
     conn = get_sqlite_conn()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS live_roster (
@@ -244,7 +267,6 @@ def calculate_handicap(entering_average: int, base: int = 220, percentage: float
     return int(math.floor((base - entering_average) * percentage))
 
 def compile_standings(roster_df: pd.DataFrame, config: dict = None) -> pd.DataFrame:
-    """Calculates scratch, handicap, and grand totals across any configured games_count (1 to 6)."""
     if roster_df.empty:
         return pd.DataFrame()
     df = roster_df.copy()
@@ -464,7 +486,7 @@ def export_tournament_summary_pdf(standings_df: pd.DataFrame, config: dict, cham
     else:
         story.append(Paragraph(f"Cecil Harford USBC — {config.get('name')}", title_style))
 
-    champ_data = [[Paragraph(f"<b>🏆 OFFICIAL CHAMPION CROWNED: {champion_name}</b><br/><font size='8.5' color='#0f172a'>Adjudicated automatically via USBC handicap grand totals and top-5 stepladder finals engine.</font>", styles["Normal"])]]
+    champ_data = [[Paragraph(f"<b>🏆 OFFICIAL CHAMPION CROWNED: {champion_name}</b><br/><font size='8.5' color='#0f172a'>Adjudicated automatically via USBC handicap grand totals and stepladder finals engine.</font>", styles["Normal"])]]
     ct = Table(champ_data, colWidths=[540])
     ct.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#10b98120")),
@@ -541,7 +563,7 @@ def export_tournament_summary_pdf(standings_df: pd.DataFrame, config: dict, cham
 
 def generate_sop_docx(config: dict) -> bytes:
     doc = Document()
-    doc.add_heading(f"Cecil-Harford USBC — Tournament Operations SOP", 0)
+    doc.add_heading("Cecil-Harford USBC — Tournament Operations SOP", 0)
     p = doc.add_paragraph()
     p.add_run(f"Standard Operating Procedures for: {config.get('name')}\n").bold = True
     p.add_run(f"Host Center: {config.get('center')}\nDivision: {config.get('division')}\n")
@@ -560,7 +582,7 @@ def generate_sop_pdf(config: dict) -> bytes:
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
     story = [
-        Paragraph(f"<b>Cecil Harford USBC — Tournament Desk SOP</b>", styles["Heading1"]),
+        Paragraph("<b>Cecil Harford USBC — Tournament Desk SOP</b>", styles["Heading1"]),
         Spacer(1, 10),
         Paragraph(f"Event: {config.get('name')}<br/>Center: {config.get('center')}", styles["Normal"]),
         Spacer(1, 10),
@@ -570,25 +592,3 @@ def generate_sop_pdf(config: dict) -> bytes:
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
-
-def extract_scores_from_overhead_photo(ai_client, photo_bytes: bytes, bowler_names: list, game_num: int) -> dict:
-    if not ai_client:
-        return {}
-    prompt = f"""
-    Read the bowling overhead monitor score sheet in this image.
-    Extract the Game {game_num} score for these bowlers: {', '.join(bowler_names)}.
-    Output strictly a JSON object mapping bowler name to integer score: {{"Name": score}}.
-    """
-    try:
-        from google.genai import types
-        res = ai_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[
-                types.Part.from_bytes(data=photo_bytes, mime_type="image/jpeg"),
-                prompt
-            ]
-        )
-        clean_json = res.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean_json)
-    except Exception:
-        return {}
