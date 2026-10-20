@@ -31,7 +31,7 @@ from engine_support import (
 )
 
 # Import AI module components
-from prism_ai import get_ai_client, ask_prism_ai, parse_roster_text_with_gemini
+from prism_ai import get_ai_client, stream_prism_ai, parse_roster_text_with_gemini
 
 # ---------------------------------------------------------
 # 1. INITIALIZE DATABASE & PAGE CONFIGURATION
@@ -838,8 +838,7 @@ with st.sidebar:
         trigger_ai = False
 
         if st.button("🧭 What should I do next on this screen?", use_container_width=True, key="btn_prism_next_prompt"):
-            suggested_query = f"What are my immediate next steps on '{nav}' in {desk_mode}?"
-            st.session_state["in_prism_query"] = suggested_query
+            st.session_state["in_prism_query"] = f"What are my immediate next steps on '{nav}' in {desk_mode}?"
             trigger_ai = True
 
         q_in = st.text_input(
@@ -853,6 +852,8 @@ with st.sidebar:
                 trigger_ai = True
             else:
                 st.warning("Please type a question or tap 'What should I do next'.")
+
+        response_container = st.empty()
 
         if trigger_ai:
             query_to_run = st.session_state.get("in_prism_query", "").strip()
@@ -868,25 +869,25 @@ with st.sidebar:
                     "checked_bowlers": c_b
                 }
 
-                with st.status("Analyzing tournament context...", expanded=True) as status:
-                    st.write("🔍 Reading current roster state and pair assignments...")
-                    time.sleep(0.3)
-                    st.write("📖 Cross-referencing USBC regulations & tournament parameters...")
-                    ans = ask_prism_ai(query_to_run, ctx, client=ai_client, status_container=status)
-                    status.update(label="Consultation complete!", state="complete", expanded=False)
+                # Direct streaming without artificial status delays
+                full_text = ""
+                with response_container.container():
+                    stream_generator = stream_prism_ai(query_to_run, ctx, client=ai_client)
+                    full_text = st.write_stream(stream_generator)
 
-                st.session_state["prism_ans"] = ans
+                st.session_state["prism_ans"] = full_text
 
-        if st.session_state.get("prism_ans"):
-            st.markdown(f"""
-            <div style="background-color: #1e293b; border: 1px solid #334155; border-left: 3px solid #38bdf8; padding: 12px; border-radius: 6px; font-size: 13px; margin-top: 10px; color: #f8fafc; line-height: 1.5;">
-                {st.session_state['prism_ans']}
-            </div>
-            """, unsafe_allow_html=True)
-            if st.button("Clear Response", key="btn_clr_prism_ans", use_container_width=True):
-                st.session_state["prism_ans"] = ""
-                st.session_state["in_prism_query"] = ""
-                st.rerun()
+        elif st.session_state.get("prism_ans"):
+            with response_container.container():
+                st.markdown(f"""
+                <div style="background-color: #1e293b; border: 1px solid #334155; border-left: 3px solid #38bdf8; padding: 12px; border-radius: 6px; font-size: 13px; margin-top: 10px; color: #f8fafc; line-height: 1.5;">
+                    {st.session_state['prism_ans']}
+                </div>
+                """, unsafe_allow_html=True)
+                if st.button("Clear Response", key="btn_clr_prism_ans", use_container_width=True):
+                    st.session_state["prism_ans"] = ""
+                    st.session_state["in_prism_query"] = ""
+                    st.rerun()
 
     st.markdown("### ☁️ Cloud Backup & Sync")
     if st.button("🚀 Push to Sheets", type="primary", use_container_width=True):
@@ -1456,7 +1457,9 @@ else:
         dispute_text = st.text_area("Describe the dispute:", value=q_preset)
         if st.button("Generate Official Arbiter Ruling", type="primary") and dispute_text.strip():
             ctx = {"user": st.session_state.td_name, "mode": desk_mode, "screen": "Rules Arbiter", "event_name": st.session_state.tournament_config.get("name"), "center": st.session_state.tournament_config.get("center")}
-            st.info(ask_prism_ai(dispute_text, ctx, client=ai_client))
+            arbiter_container = st.empty()
+            with arbiter_container.container():
+                st.write_stream(stream_prism_ai(dispute_text, ctx, client=ai_client))
 
     # MODULE 8: PAST TOURNAMENTS ARCHIVE
     elif nav == "8. Past Tournaments Archive 📂":
