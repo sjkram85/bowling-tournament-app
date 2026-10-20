@@ -5,8 +5,9 @@ import streamlit as st
 from google import genai
 from google.genai import types
 
+# Active Google GenAI Production Flash Endpoints
 PRIMARY_MODEL = "gemini-3.8-flash"
-FALLBACK_MODELS = ["gemini-3.7-flash", "gemini-3.5-flash"]
+FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash-lite"]
 
 
 def get_ai_client(api_key: str = None):
@@ -53,8 +54,7 @@ def classify_intent(query_text: str) -> str:
 def ask_prism_ai(query_text: str, runtime_context: dict, client=None, status_container=None) -> str:
     """
     Intent-aware tournament desk assistant with dynamic prompt routing,
-    automatic retry, multi-model fallback cascading (503/429 mitigation),
-    and live status feedback.
+    multi-model fallback cascading (503/429 mitigation), and live status feedback.
     """
     ai_client = client or get_ai_client()
     if not ai_client:
@@ -132,7 +132,7 @@ USER INQUIRY:
                 err_str = str(e).lower()
                 # Intercept 503 high-demand spikes and 429 rate limit errors
                 if any(k in err_str for k in ["503", "unavailable", "429", "quota", "resource_exhausted"]):
-                    time.sleep(1.2)
+                    time.sleep(1.0)
                     continue
                 break
 
