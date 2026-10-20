@@ -448,20 +448,68 @@ def render_advanced_view(
 
             render_external_broadcast_cards(context_key="finals")
 
-            if st.button("📦 Archive Tournament to Cloud & Reset Active State", use_container_width=True):
-                encoded_pdf = base64.b64encode(summary_pdf_bytes).decode("utf-8")
-                arch_df = fetch_archives_df()
-                new_rec = pd.DataFrame([{
-                    "tournament_name": st.session_state.tournament_config["name"], "center": st.session_state.tournament_config["center"],
-                    "division": st.session_state.tournament_config["division"], "date": datetime.now().strftime("%Y-%m-%d"),
-                    "entries": len(df_sl), "champion": champ_winner, "pdf_data": encoded_pdf, "archived_by": st.session_state.td_name
-                }])
-                write_archives_df(pd.concat([arch_df, new_rec], ignore_index=True))
-                c = get_sqlite_conn()
-                c.execute("DELETE FROM live_roster")
-                c.commit()
-                c.close()
-                st.success("Tournament archived to Google Sheets!")
+            st.divider()
+            st.subheader("🏁 Official Tournament Completion & Desk Closeout")
+
+            is_completed = st.session_state.tournament_config.get("status") == "Completed"
+
+            col_comp, col_arch = st.columns(2)
+
+            with col_comp:
+                if not is_completed:
+                    if st.button("🏆 Mark Tournament Complete & Lock Scores", type="primary", use_container_width=True):
+                        st.session_state.tournament_config["status"] = "Completed"
+                        st.session_state.tournament_config["completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        st.session_state.tournament_config["champion"] = champ_winner
+                        write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
+                        log_audit_event(f"Tournament '{st.session_state.tournament_config['name']}' officially completed. Champion: {champ_winner}.")
+                        st.success(f"Tournament officially marked COMPLETE! Champion: {champ_winner}")
+                        st.rerun()
+                else:
+                    completed_time = st.session_state.tournament_config.get("completed_at", "Verified")
+                    st.markdown(f"""
+                    <div style='background-color: #064e3b; border: 1.5px solid #10b981; border-radius: 8px; padding: 12px; text-align: center;'>
+                        <strong style='color: #a7f3d0; font-size: 15px;'>✅ TOURNAMENT OFFICIALLY COMPLETE</strong><br/>
+                        <span style='color: #f8fafc; font-size: 12.5px;'>Champion: <b>{st.session_state.tournament_config.get("champion", champ_winner)}</b> • Locked: {completed_time}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    if st.button("🔓 Reopen Tournament Scoring (TD Override)", use_container_width=True):
+                        st.session_state.tournament_config["status"] = "Active"
+                        write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
+                        log_audit_event("TD reopened tournament scoring.")
+                        st.warning("Tournament scoring unlocked.")
+                        st.rerun()
+
+            with col_arch:
+                st.caption("Permanent archival transfers all final results and generated PDF reports to Google Sheets and clears the local live roster for the next squad.")
+                if st.button("📦 Archive Tournament to Cloud & Reset Desk", disabled=not is_completed, use_container_width=True):
+                    encoded_pdf = base64.b64encode(summary_pdf_bytes).decode("utf-8")
+                    arch_df = fetch_archives_df()
+                    new_rec = pd.DataFrame([{
+                        "tournament_name": st.session_state.tournament_config["name"],
+                        "center": st.session_state.tournament_config["center"],
+                        "division": st.session_state.tournament_config["division"],
+                        "date": datetime.now().strftime("%Y-%m-%d"),
+                        "entries": len(df_sl),
+                        "champion": champ_winner,
+                        "pdf_data": encoded_pdf,
+                        "archived_by": st.session_state.td_name
+                    }])
+                    write_archives_df(pd.concat([arch_df, new_rec], ignore_index=True))
+
+                    # Clear operational table
+                    c = get_sqlite_conn()
+                    c.execute("DELETE FROM live_roster")
+                    c.commit()
+                    c.close()
+
+                    # Reset memory state
+                    st.session_state.roster = pd.DataFrame()
+                    st.session_state.brackets = []
+                    st.session_state.tournament_config["status"] = "Archived"
+                    log_audit_event(f"Archived tournament '{st.session_state.tournament_config['name']}' to Google Sheets.")
+                    st.success("Tournament successfully archived to Google Sheets and desk reset!")
+                    st.rerun()
 
     # MODULE 5: BRACKETS & POTS
     elif nav == "5. Side Action: Brackets & Pots 💰":
