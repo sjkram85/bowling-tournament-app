@@ -41,7 +41,7 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------
-# 1. PAGE SETUP, BRAND PROFILES & HIGH-CONTRAST CONTRAST THEME
+# 1. PAGE SETUP, ASSETS & HIGH-CONTRAST CROSS-BROWSER THEME
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="Prism Lane Control v1.1 — CHUSBC",
@@ -50,8 +50,15 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-LOGO_PATH = "CHUSBC.jpg"
-HAS_LOGO = os.path.exists(LOGO_PATH)
+LOGO_CHUSBC_PATH = "CHUSBC.jpg"
+HAS_CHUSBC_LOGO = os.path.exists(LOGO_CHUSBC_PATH)
+
+LOGO_FOREST_HILL_PATH = "forest hill lanes.png"
+HAS_FOREST_HILL_LOGO = os.path.exists(LOGO_FOREST_HILL_PATH)
+
+# Fallback alias for document generation engines
+LOGO_PATH = LOGO_CHUSBC_PATH
+HAS_LOGO = HAS_CHUSBC_LOGO
 
 RULEBOOK_PATH = "USBC-Playing-Rulebook-26-27.pdf"
 HAS_RULEBOOK = os.path.exists(RULEBOOK_PATH)
@@ -67,29 +74,37 @@ CENTER_PROFILES = {
         "name": "Cecil-Harford USBC",
         "tagline": "Association Central Tournament Operations",
         "accent": "#38bdf8",
-        "badge": "🏛️ CHUSBC Central Desk"
+        "badge": "🏛️ CHUSBC Central Desk",
+        "logo_path": LOGO_CHUSBC_PATH,
+        "has_logo": HAS_CHUSBC_LOGO
     },
     "forest_hill": {
         "name": "Forest Hill Bowling Center",
         "tagline": "Host Center • Forest Hill, MD",
         "accent": "#10b981",
-        "badge": "🎳 Forest Hill Lanes"
+        "badge": "🎳 Forest Hill Lanes",
+        "logo_path": LOGO_FOREST_HILL_PATH,
+        "has_logo": HAS_FOREST_HILL_LOGO
     },
     "harford": {
         "name": "Harford Lanes",
         "tagline": "Host Center • Aberdeen, MD",
         "accent": "#f59e0b",
-        "badge": "🎳 Harford Lanes"
+        "badge": "🎳 Harford Lanes",
+        "logo_path": LOGO_CHUSBC_PATH,
+        "has_logo": HAS_CHUSBC_LOGO
     },
     "apg": {
         "name": "APG Bowling Center",
         "tagline": "Host Center • Aberdeen Proving Ground",
         "accent": "#ec4899",
-        "badge": "🎳 APG Brewner Lanes"
+        "badge": "🎳 APG Brewner Lanes",
+        "logo_path": LOGO_CHUSBC_PATH,
+        "has_logo": HAS_CHUSBC_LOGO
     }
 }
 
-# Cross-Browser Form Contrast Fix & Dynamic Theming
+# Enforce clean high-contrast dark theme & eliminate cross-browser input washouts
 st.markdown("""
 <style>
     .stApp {
@@ -129,21 +144,9 @@ st.markdown("""
         background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%);
         border: 1.5px solid #38bdf8;
         border-radius: 12px;
-        padding: 22px 26px;
-        margin-bottom: 24px;
+        padding: 20px 24px;
+        margin-bottom: 20px;
         box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
-    }
-    .brand-banner h1 {
-        color: #ffffff !important;
-        margin: 0;
-        font-size: 26px;
-        font-weight: 800;
-        letter-spacing: -0.5px;
-    }
-    .brand-banner p {
-        color: #e2e8f0 !important;
-        margin: 6px 0 0 0;
-        font-size: 15px;
     }
     .stat-card {
         background-color: #1e293b;
@@ -180,7 +183,7 @@ st.markdown("""
         background-color: #1e293b;
         border: 2px solid #334155;
         border-radius: 12px;
-        padding: 22px;
+        padding: 20px;
         height: 100%;
         transition: all 0.2s ease-in-out;
     }
@@ -203,30 +206,10 @@ st.markdown("""
         background-color: #0f172a;
         border-right: 1px solid #1e293b;
     }
-    .badge-admin {
-        background: #f59e0b25;
-        color: #fde047 !important;
-        border: 1px solid #f59e0b80;
-        padding: 4px 10px;
-        border-radius: 6px;
-        font-size: 12px;
-        font-weight: 800;
-        display: inline-block;
-    }
     .badge-td {
         background: #0284c725;
         color: #7dd3fc !important;
         border: 1px solid #0284c780;
-        padding: 4px 10px;
-        border-radius: 6px;
-        font-size: 12px;
-        font-weight: 800;
-        display: inline-block;
-    }
-    .badge-pending {
-        background: #ec489925;
-        color: #f9a8d4 !important;
-        border: 1px solid #ec489980;
         padding: 4px 10px;
         border-radius: 6px;
         font-size: 12px;
@@ -249,7 +232,6 @@ def get_sqlite_conn():
 def init_sqlite_tables():
     conn = get_sqlite_conn()
     c = conn.cursor()
-    # High-concurrency live operational table
     c.execute("""
         CREATE TABLE IF NOT EXISTS live_roster (
             usbc_id TEXT PRIMARY KEY,
@@ -282,15 +264,9 @@ def init_sqlite_tables():
 init_sqlite_tables()
 
 # ---------------------------------------------------------
-# 3. ARGON2 CRYPTOGRAPHIC ENGINE & HYBRID PERSISTENCE
+# 3. ARGON2ID SECURITY & HYBRID PERSISTENCE BRIDGE
 # ---------------------------------------------------------
-ph = PasswordHasher(
-    time_cost=2,
-    memory_cost=65536,
-    parallelism=2,
-    hash_len=32,
-    salt_len=16
-)
+ph = PasswordHasher(time_cost=2, memory_cost=65536, parallelism=2, hash_len=32, salt_len=16)
 
 def hash_secret(secret_str: str) -> str:
     return ph.hash(str(secret_str).strip())
@@ -298,10 +274,8 @@ def hash_secret(secret_str: str) -> str:
 def verify_secret(stored_hash: str, plain_secret: str) -> tuple[bool, bool]:
     if not stored_hash or not plain_secret:
         return False, False
-
     clean_secret = str(plain_secret).strip()
     stored_hash = str(stored_hash).strip()
-
     if stored_hash.startswith("$argon2"):
         try:
             ph.verify(stored_hash, clean_secret)
@@ -341,7 +315,6 @@ def fetch_users_df() -> pd.DataFrame:
                 return df
         except Exception:
             pass
-            
     return pd.DataFrame([{
         "username": "skramer",
         "name": "Scott Kramer",
@@ -355,24 +328,7 @@ def fetch_users_df() -> pd.DataFrame:
         "created_at": "Primary Admin"
     }])
 
-def write_users_df(df: pd.DataFrame):
-    conn = get_db_connection()
-    if conn is not None:
-        try:
-            conn.update(worksheet="Sheet1", data=df)
-            st.cache_data.clear()
-            return True
-        except Exception as e:
-            st.error(f"Error persisting to Google Sheets: {e}")
-            return False
-    return False
-
 def write_active_tournament_state(config: dict, roster_df: pd.DataFrame, brackets: list, sync_to_cloud: bool = False):
-    """
-    HYBRID WRITE:
-    1. Instantly writes to SQLite (prism_live.db) to eliminate latency and concurrency collision.
-    2. Pushes snapshot to Google Sheets when sync_to_cloud=True or during squad closeout.
-    """
     if not roster_df.empty:
         conn = get_sqlite_conn()
         c = conn.cursor()
@@ -444,7 +400,6 @@ def write_active_tournament_state(config: dict, roster_df: pd.DataFrame, bracket
     return True
 
 def fetch_active_tournament_state():
-    """Reads fast operational state from SQLite; falls back to Google Sheets if local DB is fresh."""
     conn = get_sqlite_conn()
     df_local = pd.read_sql_query("SELECT * FROM live_roster", conn)
     conn.close()
@@ -468,7 +423,6 @@ def fetch_active_tournament_state():
             "td_pins": st.session_state.get("td_pins", {})
         }
 
-    # Cloud Sheets fallback
     conn = get_db_connection()
     if conn is not None:
         try:
@@ -481,66 +435,16 @@ def fetch_active_tournament_state():
             pass
     return None
 
-def fetch_archives_df() -> pd.DataFrame:
-    conn = get_db_connection()
-    archive_cols = ["tournament_name", "center", "division", "date", "entries", "champion", "pdf_data", "archived_by"]
-    if conn is not None:
-        try:
-            df = conn.read(worksheet="Archived_Tournaments", ttl=0)
-            if df is not None and not df.empty:
-                df.columns = [str(c).strip().lower() for c in df.columns]
-                for col in archive_cols:
-                    if col not in df.columns:
-                        df[col] = ""
-                return df
-        except Exception:
-            pass
-    return pd.DataFrame(columns=archive_cols)
-
-def write_archives_df(df: pd.DataFrame):
-    conn = get_db_connection()
-    if conn is not None:
-        try:
-            conn.update(worksheet="Archived_Tournaments", data=df)
-            st.cache_data.clear()
-            return True
-        except Exception as e:
-            st.error(f"Error persisting archive to Google Sheets: {e}")
-            return False
-    return False
-
-def clear_active_tournament_state():
-    conn = get_sqlite_conn()
-    conn.execute("DELETE FROM live_roster")
-    conn.commit()
-    conn.close()
-
-    gconn = get_db_connection()
-    if gconn is not None:
-        try:
-            empty_df = pd.DataFrame([{"id": "CURRENT_TOURNAMENT", "payload": ""}])
-            gconn.update(worksheet="Active_Tournament", data=empty_df)
-            st.cache_data.clear()
-            return True
-        except Exception:
-            pass
-    return False
-
-# Audit Trail
 if "audit_trail" not in st.session_state:
     st.session_state.audit_trail = []
 
 def log_audit_event(action: str):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     td_user = st.session_state.get("mobile_scorer_td") or st.session_state.get("td_name") or st.session_state.get("username", "Staff")
-    st.session_state.audit_trail.append({
-        "timestamp": timestamp,
-        "td": td_user,
-        "action": action
-    })
+    st.session_state.audit_trail.append({"timestamp": timestamp, "td": td_user, "action": action})
 
 # ---------------------------------------------------------
-# 4. CHUSBC PRESET ARCHITECTURE & CALIBRATION
+# 4. CHUSBC PRESET ARCHITECTURE
 # ---------------------------------------------------------
 CHUSBC_PRESET_PROFILES = {
     "Annual CHUSBC Open Championship Tournament": {
@@ -555,11 +459,7 @@ CHUSBC_PRESET_PROFILES = {
         "games_count": 3,
         "movement_rule": "Move Right 1 Pair (+2 Lanes)",
         "entry_fee": 50.0,
-        "rules_text": (
-            "USBC Certified. 3 Games across assigned pairs. Open to all adult certified bowlers. "
-            "Handicap: 90% of 220 based on highest winter book average. Optional All-Events scratch & handicap. "
-            "All prize fees returned 100%."
-        )
+        "rules_text": "USBC Certified. 3 Games across assigned pairs. Handicap: 90% of 220. All prize fees returned 100%."
     },
     "CHUSBC Women’s Championship Tournament": {
         "center": "APG Bowling Center",
@@ -573,11 +473,7 @@ CHUSBC_PRESET_PROFILES = {
         "games_count": 3,
         "movement_rule": "Move Right 1 Pair (+2 Lanes)",
         "entry_fee": 50.0,
-        "rules_text": (
-            "USBC Certified. Open to all female USBC members of Cecil Harford USBC. "
-            "Handicap: 90% of 220. 4-person team, 2-person doubles, and individual singles. "
-            "Scratch and handicap prize payouts."
-        )
+        "rules_text": "USBC Certified. Open to female USBC members of Cecil Harford USBC. Handicap: 90% of 220."
     },
     "Lighthouse Ladies Singles": {
         "center": "Harford Lanes",
@@ -591,10 +487,7 @@ CHUSBC_PRESET_PROFILES = {
         "games_count": 3,
         "movement_rule": "Move Right 1 Pair (+2 Lanes)",
         "entry_fee": 40.0,
-        "rules_text": (
-            "Annual Lighthouse Ladies Singles Championship. 3 qualifying games moving pairs each game. "
-            "Cut to top 5 stepladder finals. Handicap 90% of 215."
-        )
+        "rules_text": "Lighthouse Ladies Singles. 3 qualifying games into top 5 stepladder. Handicap: 90% of 215."
     },
     "Senior Singles Championship": {
         "center": "Forest Hill Bowling Center",
@@ -608,11 +501,7 @@ CHUSBC_PRESET_PROFILES = {
         "games_count": 3,
         "movement_rule": "Move Right 1 Pair (+2 Lanes)",
         "entry_fee": 45.0,
-        "rules_text": (
-            "USBC Certified Senior Singles. Age 50+ as of tournament date. "
-            "Divisions: Super Senior (75+), Senior A (70-74), B (65-69), C (60-64), D (55-59), E (50-54). "
-            "Handicap: 90% of 220. Separate payout funds per age bracket."
-        )
+        "rules_text": "USBC Certified Senior Singles. Age 50+. Separate payout funds per age bracket."
     },
     "CHUSBC Annual Mixed Championship": {
         "center": "Forest Hill Bowling Center",
@@ -626,10 +515,7 @@ CHUSBC_PRESET_PROFILES = {
         "games_count": 3,
         "movement_rule": "Move Right 1 Pair (+2 Lanes)",
         "entry_fee": 50.0,
-        "rules_text": (
-            "CHUSBC Mixed Championship. 4-bowler team (2 Men / 2 Women required) and Doubles (1 Man / 1 Woman). "
-            "Handicap: 90% of 220. 3 games across pairs."
-        )
+        "rules_text": "CHUSBC Mixed Championship. 4-person team (2M/2W) and Doubles (1M/1W). Handicap: 90% of 220."
     },
     "Valentine’s Scotch Doubles": {
         "center": "Harford Lanes",
@@ -643,10 +529,7 @@ CHUSBC_PRESET_PROFILES = {
         "games_count": 3,
         "movement_rule": "Stay on Pair (No Movement)",
         "entry_fee": 40.0,
-        "rules_text": (
-            "Valentine's Scotch Doubles. 2 bowlers per team. Bowler A rolls first ball, Bowler B shoots spare, "
-            "alternating strike shot lead each frame. Combined team average handicap based on 90% of 430."
-        )
+        "rules_text": "2 bowlers per team, alternating deliveries. Combined team handicap 90% of 430."
     },
     "Valentine’s 9 Pin No-Tap": {
         "center": "Harford Lanes",
@@ -660,10 +543,7 @@ CHUSBC_PRESET_PROFILES = {
         "games_count": 3,
         "movement_rule": "Move Right 1 Pair (+2 Lanes)",
         "entry_fee": 35.0,
-        "rules_text": (
-            "Valentine's 9-Pin No-Tap Tournament. Hitting 9 pins on first ball delivery is scored as an automatic strike. "
-            "3 games total. 90% of 220 handicap."
-        )
+        "rules_text": "Valentine's 9-Pin No-Tap. 9 on first ball equals automatic strike. 90% of 220 handicap."
     },
     "Ultimate League Championship": {
         "center": "APG Bowling Center",
@@ -677,15 +557,12 @@ CHUSBC_PRESET_PROFILES = {
         "games_count": 3,
         "movement_rule": "Move Right 1 Pair (+2 Lanes)",
         "entry_fee": 50.0,
-        "rules_text": (
-            "Invitational Tournament of Champions for CHUSBC winter league winning teams. "
-            "Qualifying 3 games into seeded single-elimination match play bracket to crown the Association League Champion."
-        )
+        "rules_text": "Invitational TOC for CHUSBC winter league winning teams. 3 qualifying into single-elimination bracket."
     }
 }
 
 # ---------------------------------------------------------
-# 5. LANE BALANCER & CROSS-PAIR MOVEMENT ENGINE
+# 5. LANE BALANCER & CALCULATIONS
 # ---------------------------------------------------------
 def parse_active_pairs(range_str: str, max_lanes: int = 40):
     lanes = set()
@@ -707,7 +584,6 @@ def parse_active_pairs(range_str: str, max_lanes: int = 40):
                     lanes.add(l)
             except ValueError:
                 continue
-
     sorted_lanes = sorted(list(lanes))
     pairs = []
     i = 0
@@ -720,42 +596,20 @@ def parse_active_pairs(range_str: str, max_lanes: int = 40):
             pair_partner = l1 + 1 if l1 % 2 != 0 else l1 - 1
             pairs.append((min(l1, pair_partner), max(l1, pair_partner)))
             i += 1
-            
     seen = set()
     unique_pairs = []
     for p in pairs:
         if p not in seen:
             seen.add(p)
             unique_pairs.append(p)
-            
     return unique_pairs
-
-def get_bowler_lane_for_game(starting_lane: int, game_num: int, movement_rule: str, max_lanes: int = 40) -> int:
-    if game_num <= 1:
-        return starting_lane
-
-    shift_pairs = 0
-    if "Move Right 1 Pair" in movement_rule:
-        shift_pairs = 1
-    elif "Move Right 2 Pairs" in movement_rule:
-        shift_pairs = 2
-    elif "Move Right 3 Pairs" in movement_rule:
-        shift_pairs = 3
-    elif "Move Left 1 Pair" in movement_rule:
-        shift_pairs = -1
-
-    lanes_shift = shift_pairs * 2 * (game_num - 1)
-    current_lane = ((starting_lane - 1 + lanes_shift) % max_lanes) + 1
-    return int(current_lane)
 
 def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list, max_per_pair: int = 5, shuffle: bool = True, group_by_team: bool = True):
     if roster_df.empty or not pairs:
         return roster_df, "No roster or lane pairs provided."
-
     updated_df = roster_df.copy()
     if "Team_Name" not in updated_df.columns:
         updated_df["Team_Name"] = "Singles"
-
     updated_df["Team_Name"] = updated_df["Team_Name"].fillna("Singles").astype(str)
 
     if group_by_team:
@@ -770,16 +624,6 @@ def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list, max_per_pair: int = 
     else:
         units = [[idx] for idx in updated_df.index]
 
-    total_bowlers = len(updated_df)
-    total_capacity = len(pairs) * max_per_pair
-    if total_bowlers > total_capacity:
-        return roster_df, f"Capacity exceeded! {total_bowlers} bowlers cannot fit on {len(pairs)} pairs (Max capacity: {total_capacity})."
-
-    for u in units:
-        if len(u) > max_per_pair:
-            sample_name = updated_df.loc[u[0], 'Team_Name']
-            return roster_df, f"Team '{sample_name}' has {len(u)} bowlers, which exceeds the max capacity of {max_per_pair} bowlers per pair."
-
     if shuffle:
         random.shuffle(units)
 
@@ -793,9 +637,8 @@ def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list, max_per_pair: int = 
                 pair_buckets[p].extend(unit)
                 assigned = True
                 break
-                
         if not assigned:
-            return roster_df, "Unable to fit teams evenly across active pairs. Try opening more lane pairs or increasing capacity."
+            return roster_df, "Unable to fit teams evenly across active pairs."
 
     for p, row_indices in pair_buckets.items():
         lane_odd, lane_even = p
@@ -804,99 +647,18 @@ def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list, max_per_pair: int = 
             updated_df.loc[r_idx, "Starting Lane"] = int(assigned_lane)
 
     updated_df["Starting Lane"] = pd.to_numeric(updated_df["Starting Lane"], errors="coerce").fillna(1).astype(int)
-    updated_df = updated_df.sort_values(by=["Starting Lane", "Team_Name", "Bowler"]).reset_index(drop=True)
-    return updated_df, None
+    return updated_df.sort_values(by=["Starting Lane", "Team_Name", "Bowler"]).reset_index(drop=True), None
 
-# ---------------------------------------------------------
-# 6. SESSION INITIALIZATION & QR UTILITIES
-# ---------------------------------------------------------
-if "tournament_config" not in st.session_state:
-    st.session_state.tournament_config = dict(CHUSBC_PRESET_PROFILES["Annual CHUSBC Open Championship Tournament"])
-    st.session_state.tournament_config["name"] = "Annual CHUSBC Open Championship Tournament"
-    st.session_state.tournament_config["intake_completed"] = False
-
-DEFAULT_ROSTER_COLS = [
-    "USBC ID", "Bowler", "Average", "Starting Lane", "Division", "Team_Name",
-    "Game 1", "Game 2", "Game 3", "Game 4", "Paid", "Checked_In", "is_sub", "subbing_for",
-    "G1_Verified_By", "G1_Verified_At", "G2_Verified_By", "G2_Verified_At", "G3_Verified_By", "G3_Verified_At"
-]
-
-if "roster" not in st.session_state:
-    st.session_state.roster = pd.DataFrame(columns=DEFAULT_ROSTER_COLS)
-
-for col in DEFAULT_ROSTER_COLS:
-    if col not in st.session_state.roster.columns:
-        if col in ["Game 1", "Game 2", "Game 3", "Game 4"]:
-            st.session_state.roster[col] = 0
-        elif col in ["Paid", "Checked_In", "is_sub"]:
-            st.session_state.roster[col] = False
-        else:
-            st.session_state.roster[col] = ""
-
-if "brackets" not in st.session_state:
-    st.session_state.brackets = []
-
-if "td_pins" not in st.session_state:
-    st.session_state.td_pins = {}
-
-if "session_initialized" not in st.session_state:
-    st.session_state.session_initialized = False
-
-def generate_qr_image(url: str) -> io.BytesIO:
-    qr = qrcode.QRCode(
-        version=1,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
-        box_size=10,
-        border=3,
-    )
-    qr.add_data(url)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="#0f172a", back_color="white")
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    return buf
-
-def register_td_pin(td_name: str, pin_str: str) -> bool:
-    if not td_name or len(str(pin_str).strip()) < 4:
-        return False
-    if "td_pins" not in st.session_state:
-        st.session_state.td_pins = {}
-    st.session_state.td_pins[td_name.strip()] = hash_secret(pin_str)
-    write_active_tournament_state(
-        st.session_state.tournament_config,
-        st.session_state.roster,
-        st.session_state.brackets
-    )
-    return True
-
-def verify_td_pin(td_name: str, pin_str: str) -> bool:
-    pins = st.session_state.get("td_pins", {})
-    stored_hash = pins.get(td_name.strip(), "")
-    if not stored_hash:
-        return False
-    is_valid, needs_rehash = verify_secret(stored_hash, pin_str)
-    if is_valid and needs_rehash:
-        register_td_pin(td_name, pin_str)
-    return is_valid
-
-# ---------------------------------------------------------
-# 7. DETERMINISTIC SCORING & COMPLIANCE ENGINES
-# ---------------------------------------------------------
 def calculate_handicap(avg: int, base: int = None, percentage: float = None) -> int:
     if base is None:
         base = int(st.session_state.tournament_config.get("hdcp_base", 220))
     if percentage is None:
         percentage = float(st.session_state.tournament_config.get("hdcp_pct", 0.90))
-
-    if avg >= base:
-        return 0
-    return math.floor(percentage * (base - avg))
+    return 0 if avg >= base else math.floor(percentage * (base - avg))
 
 def compile_standings(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
-
     calc_df = df.copy()
     game_cols = [c for c in ["Game 1", "Game 2", "Game 3", "Game 4"] if c in calc_df.columns]
     for col in game_cols + ["Average"]:
@@ -908,18 +670,12 @@ def compile_standings(df: pd.DataFrame) -> pd.DataFrame:
 
     calc_df["HDCP_Per_Game"] = calc_df["Average"].apply(lambda a: calculate_handicap(a, base=base, percentage=pct))
     calc_df["Total_HDCP"] = calc_df["HDCP_Per_Game"] * games_count
-    
-    # Calculate scratch total across active games
     active_games = ["Game 1", "Game 2", "Game 3"] if games_count <= 3 else ["Game 1", "Game 2", "Game 3", "Game 4"]
     calc_df["Scratch_Total"] = calc_df[[g for g in active_games if g in calc_df.columns]].sum(axis=1)
     calc_df["Grand_Total"] = calc_df["Scratch_Total"] + calc_df["Total_HDCP"]
     calc_df["High_Scratch_Game"] = calc_df[[g for g in active_games if g in calc_df.columns]].max(axis=1)
 
-    calc_df = calc_df.sort_values(
-        by=["Grand_Total", "High_Scratch_Game", "Scratch_Total"],
-        ascending=[False, False, False]
-    ).reset_index(drop=True)
-
+    calc_df = calc_df.sort_values(by=["Grand_Total", "High_Scratch_Game", "Scratch_Total"], ascending=[False, False, False]).reset_index(drop=True)
     calc_df.index += 1
     calc_df.index.name = "Rank"
     return calc_df
@@ -927,33 +683,22 @@ def compile_standings(df: pd.DataFrame) -> pd.DataFrame:
 def calculate_financial_summary(roster_df: pd.DataFrame, config: dict, lineage_per_game: float = 3.75, games_count: int = 3) -> dict:
     if roster_df.empty:
         return {"paid_count": 0, "gross_revenue": 0.0, "total_lineage": 0.0, "net_prize_fund": 0.0}
-
-    paid_df = roster_df[roster_df["Paid"] == True]
-    paid_count = len(paid_df)
+    paid_count = len(roster_df[roster_df["Paid"] == True])
     entry_fee_total = float(config.get("entry_fee", 50.0))
-    lineage_total_per_bowler = lineage_per_game * games_count
-    
     gross_revenue = paid_count * entry_fee_total
-    total_lineage = paid_count * lineage_total_per_bowler
+    total_lineage = paid_count * (lineage_per_game * games_count)
     expense_fee = paid_count * 5.00
     net_prize_fund = gross_revenue - (total_lineage + expense_fee)
-
     return {
-        "paid_count": paid_count,
-        "entry_fee": entry_fee_total,
-        "gross_revenue": gross_revenue,
-        "total_lineage": total_lineage,
-        "expense_fee": expense_fee,
-        "net_prize_fund": max(0.0, net_prize_fund)
+        "paid_count": paid_count, "gross_revenue": gross_revenue,
+        "total_lineage": total_lineage, "net_prize_fund": max(0.0, net_prize_fund)
     }
 
 def generate_smart_scholarship_csv(standings_df: pd.DataFrame, net_prize_fund: float) -> str:
     if standings_df.empty or net_prize_fund <= 0:
         return ""
-
     top_cut = max(1, math.ceil(len(standings_df) * 0.25))
     eligible = standings_df.head(top_cut).copy()
-
     weights = [0.40, 0.25, 0.15]
     payouts = []
     for i in range(len(eligible)):
@@ -963,10 +708,8 @@ def generate_smart_scholarship_csv(standings_df: pd.DataFrame, net_prize_fund: f
             remainder_share = net_prize_fund * (1.0 - sum(weights))
             amt = round(remainder_share / max(1, (len(eligible) - len(weights))), 2)
         payouts.append(amt)
-
     eligible["SMART_Award_Amount"] = payouts
     eligible["SMART_Account_Number"] = [f"SMART-{random.randint(100000, 999999)}" for _ in range(len(eligible))]
-    
     export_df = pd.DataFrame({
         "USBC ID": eligible.get("USBC ID", "TBD"),
         "Bowler Name": eligible["Bowler"],
@@ -977,60 +720,50 @@ def generate_smart_scholarship_csv(standings_df: pd.DataFrame, net_prize_fund: f
     })
     return export_df.to_csv(index=False)
 
+def get_report_logo_path(config: dict) -> tuple[str, bool]:
+    center_name = str(config.get("center", "")).lower()
+    if "forest hill" in center_name and HAS_FOREST_HILL_LOGO:
+        return LOGO_FOREST_HILL_PATH, True
+    if HAS_CHUSBC_LOGO:
+        return LOGO_CHUSBC_PATH, True
+    return "", False
+
 def export_lane_assignments_pdf(roster_df: pd.DataFrame, config: dict) -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
     story = []
-
-    title_style = ParagraphStyle("RosterTitle", parent=styles["Heading1"], fontSize=15, leading=18, textColor=colors.HexColor("#0f172a"), spaceAfter=2)
+    title_style = ParagraphStyle("RosterTitle", parent=styles["Heading1"], fontSize=14, leading=17, textColor=colors.HexColor("#0f172a"), spaceAfter=2)
     header_text = f"""
-    <b>Cecil Harford USBC — Lane Assignment & Check-In Roster</b><br/>
+    <b>Cecil Harford USBC — Official Lane Assignment & Check-In Roster</b><br/>
     <font size="8" color="#475569">
-    Event: {config['name']} | Center: {config['center']} | Division: {config['division']}<br/>
+    Event: {config['name']} | Host: {config['center']} | Division: {config['division']}<br/>
     Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')} | TD on Duty: {st.session_state.get('td_name', 'Official')}
     </font>
     """
-
-    if HAS_LOGO:
-        logo_img = RLImage(LOGO_PATH, width=50, height=50)
+    pdf_logo_file, has_pdf_logo = get_report_logo_path(config)
+    if has_pdf_logo:
+        logo_img = RLImage(pdf_logo_file, width=50, height=50)
         header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[60, 480])
         header_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
         story.append(header_table)
     else:
         story.append(Paragraph("Cecil Harford USBC — Lane Assignment Roster", title_style))
 
-    if roster_df.empty:
-        story.append(Paragraph("<b>No bowlers currently registered in roster.</b>", styles["Normal"]))
-    else:
+    if not roster_df.empty:
         df_sorted = roster_df.copy()
-        if "Starting Lane" not in df_sorted.columns:
-            df_sorted["Starting Lane"] = 1
-        df_sorted["Starting Lane"] = pd.to_numeric(df_sorted["Starting Lane"], errors="coerce").fillna(1).astype(int)
-        
+        df_sorted["Starting Lane"] = pd.to_numeric(df_sorted.get("Starting Lane", 1), errors="coerce").fillna(1).astype(int)
         df_sorted["Pair_Low"] = df_sorted["Starting Lane"].apply(lambda l: l if l % 2 != 0 else l - 1)
-        df_sorted["Pair_High"] = df_sorted["Pair_Low"] + 1
-        df_sorted["Pair_Label"] = df_sorted.apply(lambda r: f"Lanes {int(r['Pair_Low'])} & {int(r['Pair_High'])}", axis=1)
-
-        grouped = df_sorted.groupby(["Pair_Low", "Pair_Label"])
-        for _, group_df in sorted(grouped, key=lambda x: x[0]):
-            pair_name = group_df.iloc[0]["Pair_Label"]
-            p_header_style = ParagraphStyle("PairHeader", parent=styles["Heading2"], fontSize=10.5, leading=13, textColor=colors.white, spaceBefore=6, spaceAfter=4)
-            
-            pair_table_data = [[Paragraph(f"<b>{pair_name}</b>", p_header_style), "", "", "", "", "", ""]]
-            pair_table_data.append(["Lane", "Bowler Name", "Team / Affiliation", "Avg", "Paid", "Check-in", "Game Scores (G1 / G2 / G3)"])
-
+        grouped = df_sorted.groupby("Pair_Low")
+        for pair_low, group_df in sorted(grouped, key=lambda x: x[0]):
+            pair_name = f"Lanes {int(pair_low)} & {int(pair_low + 1)}"
+            p_header = ParagraphStyle("PairHeader", parent=styles["Heading2"], fontSize=10, leading=12, textColor=colors.white)
+            pair_table_data = [[Paragraph(f"<b>{pair_name}</b>", p_header), "", "", "", "", "", ""]]
+            pair_table_data.append(["Lane", "Bowler Name", "Team / Affiliation", "Avg", "Paid", "Check-in", "Scores (G1 / G2 / G3)"])
             for _, row in group_df.sort_values(by=["Starting Lane", "Bowler"]).iterrows():
-                lane = str(row["Starting Lane"])
-                b_name = str(row["Bowler"])
-                team = str(row.get("Team_Name", "Singles"))
-                if team.lower() in ["singles", "none", "nan", ""]:
-                    team = "Singles"
-                avg = str(row["Average"])
                 paid = "Yes" if bool(row.get("Paid", False)) else "[  ]"
                 checked = "Yes" if bool(row.get("Checked_In", False)) else "[  ]"
-                pair_table_data.append([lane, b_name, team, avg, paid, checked, "___ / ___ / ___"])
-
+                pair_table_data.append([str(row["Starting Lane"]), str(row["Bowler"]), str(row.get("Team_Name", "Singles")), str(row["Average"]), paid, checked, "___ / ___ / ___"])
             pt = Table(pair_table_data, colWidths=[32, 130, 110, 32, 38, 48, 150])
             pt.setStyle(TableStyle([
                 ("SPAN", (0, 0), (6, 0)),
@@ -1039,8 +772,6 @@ def export_lane_assignments_pdf(roster_df: pd.DataFrame, config: dict) -> bytes:
                 ("TEXTCOLOR", (0, 1), (-1, 1), colors.white),
                 ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
                 ("FONTSIZE", (0, 0), (-1, -1), 8),
-                ("ALIGN", (0, 0), (0, -1), "CENTER"),
-                ("ALIGN", (3, 0), (5, -1), "CENTER"),
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
                 ("ROWBACKGROUNDS", (0, 2), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
@@ -1048,7 +779,6 @@ def export_lane_assignments_pdf(roster_df: pd.DataFrame, config: dict) -> bytes:
             ]))
             story.append(pt)
             story.append(Spacer(1, 8))
-
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
@@ -1058,21 +788,19 @@ def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
     story = []
-
-    title_style = ParagraphStyle("DocTitle", parent=styles["Heading1"], fontSize=15, leading=18, textColor=colors.HexColor("#0f172a"), spaceAfter=2)
-    champ_str = f" | <b>CHAMPION: {champion_name}</b>" if champion_name else ""
+    title_style = ParagraphStyle("DocTitle", parent=styles["Heading1"], fontSize=14, leading=17, textColor=colors.HexColor("#0f172a"), spaceAfter=2)
     header_text = f"""
-    <b>Cecil Harford USBC — {config['name']}</b><br/>
+    <b>Cecil Harford USBC — {config['name']} Standings</b><br/>
     <font size="8" color="#475569">
-    Host: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}{champ_str}<br/>
+    Host: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}<br/>
     TD on Duty: {st.session_state.get('td_name', 'Official')} | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}
     </font>
     """
-
-    if HAS_LOGO:
-        logo_img = RLImage(LOGO_PATH, width=54, height=54)
-        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[64, 476])
-        header_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BOTTOMPADDING", (0, 0), (-1, -1), 10)]))
+    pdf_logo_file, has_pdf_logo = get_report_logo_path(config)
+    if has_pdf_logo:
+        logo_img = RLImage(pdf_logo_file, width=50, height=50)
+        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[60, 480])
+        header_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
         story.append(header_table)
     else:
         story.append(Paragraph(f"Cecil Harford USBC — {config['name']}", title_style))
@@ -1084,54 +812,25 @@ def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name
             str(row["Average"]), str(row.get("Total_HDCP", 0)), str(row.get("Game 1", 0)),
             str(row.get("Game 2", 0)), str(row.get("Game 3", 0)), str(row.get("Scratch_Total", 0)), str(row["Grand_Total"])
         ])
-
     table = Table(table_data, colWidths=[24, 140, 52, 32, 38, 38, 38, 38, 52, 58])
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0284c7")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), 8.5),
-        ("ALIGN", (0, 0), (0, -1), "CENTER"),
-        ("ALIGN", (2, 0), (-1, -1), "CENTER"),
+        ("FONTSIZE", (0, 0), (-1, 0), 8),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
-        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-        ("FONTSIZE", (0, 1), (-1, -1), 8),
+        ("FONTSIZE", (0, 1), (-1, -1), 7.5),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("ALIGN", (2, 0), (-1, -1), "CENTER"),
     ]))
     story.append(table)
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
 
-def resolve_bracket_match(b1_id: str, b2_id: str, game_col: str, bracket_type: str, roster_df: pd.DataFrame):
-    row1 = roster_df[roster_df["USBC ID"].astype(str) == str(b1_id)]
-    row2 = roster_df[roster_df["USBC ID"].astype(str) == str(b2_id)]
-    
-    if row1.empty or row2.empty:
-        return "-", 0, "-", 0, None
-
-    r1, r2 = row1.iloc[0], row2.iloc[0]
-    s1 = int(pd.to_numeric(r1.get(game_col, 0), errors="coerce") or 0)
-    s2 = int(pd.to_numeric(r2.get(game_col, 0), errors="coerce") or 0)
-    
-    if bracket_type == "Handicap":
-        h1 = calculate_handicap(int(pd.to_numeric(r1.get("Average", 200), errors="coerce") or 200))
-        h2 = calculate_handicap(int(pd.to_numeric(r2.get("Average", 200), errors="coerce") or 200))
-        t1, t2 = s1 + h1, s2 + h2
-    else:
-        t1, t2 = s1, s2
-
-    if t1 > t2:
-        winner_id = b1_id
-    elif t2 > t1:
-        winner_id = b2_id
-    else:
-        winner_id = b1_id if int(r1.get("Average", 0)) >= int(r2.get("Average", 0)) else b2_id
-
-    return r1["Bowler"], t1, r2["Bowler"], t2, winner_id
-
 # ---------------------------------------------------------
-# 8. DEDICATED TV DISPLAY ROUTE (?mode=display_tv)
+# 6. DEDICATED TV DISPLAY ROUTE (?mode=display_tv)
 # ---------------------------------------------------------
 query_params = st.query_params
 if query_params.get("mode") == "display_tv":
@@ -1140,17 +839,6 @@ if query_params.get("mode") == "display_tv":
         header {visibility: hidden;}
         footer {visibility: hidden;}
         .block-container { padding: 1.5rem !important; max-width: 100% !important; }
-        .tv-row {
-            background-color: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            padding: 12px 16px;
-            margin-bottom: 8px;
-            display: flex;
-            align-items: center;
-            font-size: 20px;
-            font-weight: 700;
-        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -1170,12 +858,11 @@ if query_params.get("mode") == "display_tv":
         st.dataframe(display_df, use_container_width=True, hide_index=True)
     else:
         st.info("Tournament warm-ups in session. Scores will appear as recorded.")
-
     time.sleep(15.0)
     st.rerun()
 
 # ---------------------------------------------------------
-# 9. GEMINI CLIENT & RULES ARBITRATION
+# 7. SCREEN-AWARE PRISM AI ENGINE (CONTEXT ARBITER)
 # ---------------------------------------------------------
 api_key = st.secrets.get("GEMINI_API_KEY", None)
 if not api_key:
@@ -1184,22 +871,31 @@ if not api_key:
 
 ai_client = genai.Client(api_key=api_key) if api_key else None
 
-def arbitrate_rules_inquiry(query_text: str, event_context: str) -> str:
+def ask_prism_ai(query_text: str, runtime_context: dict) -> str:
     if not ai_client:
-        return "Gemini API key is not configured."
-
+        return "Prism AI is offline. Please configure a valid Gemini API key."
     prompt = f"""
-You are the official Cecil Harford USBC (CHUSBC) Tournament Rules Arbiter.
-Active Event Context:
-{event_context}
+You are "Prism AI", the tournament desk assistant for the Cecil-Harford USBC (CHUSBC).
+You are assisting Tournament Director or volunteer '{runtime_context.get('user', 'Staff')}'.
 
-Dispute / Inquiry:
-{query_text}
+ACTIVE TOURNAMENT RUNTIME CONTEXT:
+- Operating Mode: {runtime_context.get('mode', 'Advanced')}
+- Active Screen / Module: {runtime_context.get('screen', 'Main')}
+- Event Name: {runtime_context.get('event_name', 'CHUSBC Tournament')}
+- Host Center: {runtime_context.get('center', 'Forest Hill Bowling Center')}
+- Active Lane Range: {runtime_context.get('lane_range', '1-40')}
+- Current Field: {runtime_context.get('total_bowlers', 0)} Bowlers ({runtime_context.get('paid_bowlers', 0)} Paid, {runtime_context.get('checked_bowlers', 0)} Checked In)
 
-Format your decision as:
-1. **Official Ruling:** (Clear, direct verdict)
-2. **USBC Rulebook Citation:** (Exact rule number and statutory guidelines)
-3. **Desk Official Action:** (Step-by-step instructions for the TD)
+USER INQUIRY / REQUEST:
+"{query_text}"
+
+INSTRUCTIONS FOR PRISM AI:
+1. Screen-Aware Guidance: If the user asks what to do next or how to proceed, reference the exact tabs or buttons on their CURRENT screen ({runtime_context.get('screen')}) in {runtime_context.get('mode')} mode.
+2. USBC Rules Arbitration: If they ask about an on-lane dispute or USBC statute (e.g. Rule 10 tardiness, Rule 17 ball surface, Rule 18 gripping holes, or Rule 400 SMART scholarships), provide:
+   - **Immediate Ruling:** Clear verdict on what stands.
+   - **USBC Rulebook Citation:** Official rule section.
+   - **Exact Next Step:** What button or input to adjust right now.
+3. Tone: Direct, supportive, professional, and concise. Avoid technical database jargon.
 """
     try:
         res = ai_client.models.generate_content(
@@ -1209,10 +905,10 @@ Format your decision as:
         )
         return res.text
     except Exception as e:
-        return f"Arbiter consultation error: {e}"
+        return f"Prism AI consultation error: {e}"
 
 # ---------------------------------------------------------
-# 10. TD AUTHENTICATION & LOGIN (ARGON2ID & NO TIMEOUT)
+# 8. TD AUTHENTICATION & LOGIN (ARGON2ID & NO TIMEOUT)
 # ---------------------------------------------------------
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -1230,11 +926,9 @@ if "preferred_mode" not in st.session_state:
 if not st.session_state.authenticated:
     st.columns([1, 2, 1])[1].write("")
     with st.columns([1, 2, 1])[1]:
-        if HAS_LOGO:
-            st.image(LOGO_PATH, width=160)
-
+        if HAS_CHUSBC_LOGO:
+            st.image(LOGO_CHUSBC_PATH, width=160)
         users_df = fetch_users_df()
-
         st.markdown("""
         <div class="brand-banner">
             <h1>🎳 Prism Lane Control (v1.1)</h1>
@@ -1248,7 +942,6 @@ if not st.session_state.authenticated:
             submitted = st.form_submit_button("Sign In to Tournament Desk", use_container_width=True)
 
             if submitted:
-                # Dedicated TV Display Account bypass
                 if username_input == "display_tv":
                     st.session_state.authenticated = True
                     st.session_state.username = "display_tv"
@@ -1260,22 +953,15 @@ if not st.session_state.authenticated:
 
                 is_skramer = (username_input == "skramer" and password_input == "Abigail!2015")
                 match_row = users_df[users_df["username"] == username_input]
-
                 authenticated_match = False
-                needs_upgrade = False
                 if not match_row.empty:
                     stored_hash = str(match_row.iloc[0]["password_hash"])
-                    authenticated_match, needs_upgrade = verify_secret(stored_hash, password_input)
+                    authenticated_match, _ = verify_secret(stored_hash, password_input)
 
                 if is_skramer or authenticated_match:
                     user_data = match_row.iloc[0] if not match_row.empty else {
-                        "name": "Scott Kramer",
-                        "role": "admin",
-                        "status": "active",
-                        "center_id": "association",
-                        "preferred_mode": "Advanced"
+                        "name": "Scott Kramer", "role": "admin", "center_id": "association", "preferred_mode": "Advanced"
                     }
-                    
                     st.session_state.username = username_input
                     st.session_state.td_name = str(user_data.get("name", "Scott Kramer"))
                     st.session_state.td_role = str(user_data.get("role", "admin")).lower()
@@ -1290,7 +976,7 @@ if not st.session_state.authenticated:
     st.stop()
 
 # ---------------------------------------------------------
-# 11. WORKSPACE GATEWAY & POST-LOGIN SETUP
+# 9. WORKSPACE GATEWAY & POST-LOGIN SETUP
 # ---------------------------------------------------------
 if not st.session_state.session_initialized:
     active_brand = CENTER_PROFILES.get(st.session_state.center_id, CENTER_PROFILES["association"])
@@ -1301,7 +987,6 @@ if not st.session_state.session_initialized:
     </div>
     """, unsafe_allow_html=True)
 
-    st.subheader("Select Tournament Workspace")
     col_opt_new, col_opt_custom, col_opt_resume = st.columns(3)
     cloud_state = fetch_active_tournament_state()
     has_active_cloud = cloud_state is not None and bool(cloud_state.get("config"))
@@ -1310,19 +995,17 @@ if not st.session_state.session_initialized:
         st.markdown("""
         <div class="choice-card">
             <h3 style="color: #38bdf8; margin-top: 0;">🚀 Official Presets</h3>
-            <p style="font-size: 14px; color: #cbd5e1;">Select from the 8 official Cecil Harford USBC annual tournaments to instantly calibrate settings.</p>
+            <p style="font-size: 14px; color: #cbd5e1;">Calibrate instantly with official Cecil Harford USBC annual tournament profiles.</p>
         </div>
         """, unsafe_allow_html=True)
-        st.write("")
         selected_preset = st.selectbox("Choose Profile:", list(CHUSBC_PRESET_PROFILES.keys()), key="preset_select_gate")
         if st.button("Launch Preset Tournament", type="primary", use_container_width=True):
             p_data = CHUSBC_PRESET_PROFILES[selected_preset]
             st.session_state.tournament_config = dict(p_data)
             st.session_state.tournament_config["name"] = selected_preset
             st.session_state.tournament_config["intake_completed"] = False
-            st.session_state.roster = pd.DataFrame(columns=DEFAULT_ROSTER_COLS)
+            st.session_state.roster = pd.DataFrame(columns=["USBC ID", "Bowler", "Average", "Starting Lane", "Division", "Team_Name", "Game 1", "Game 2", "Game 3", "Game 4", "Paid", "Checked_In"])
             st.session_state.brackets = []
-            st.session_state.td_pins = {}
             st.session_state.session_initialized = True
             log_audit_event(f"TD launched official preset: '{selected_preset}'.")
             st.rerun()
@@ -1331,29 +1014,20 @@ if not st.session_state.session_initialized:
         st.markdown("""
         <div class="choice-card">
             <h3 style="color: #fbbf24; margin-top: 0;">✨ Custom Tournament</h3>
-            <p style="font-size: 14px; color: #cbd5e1;">Spin up a completely blank slate configuration for sweeper blocks, marathons, or special brackets.</p>
+            <p style="font-size: 14px; color: #cbd5e1;">Configure a custom blank-slate event for sweepers, marathons, or special brackets.</p>
         </div>
         """, unsafe_allow_html=True)
         st.write("")
         if st.button("Create Custom Event", use_container_width=True):
             st.session_state.tournament_config = {
-                "center": active_brand["name"],
-                "name": "New CHUSBC Custom Event",
-                "lanes_count": 40,
-                "lanes_range": "1-40",
-                "division": "Open Scratch/Handicap",
-                "hdcp_base": 220,
-                "hdcp_pct": 0.90,
-                "format_mode": "Custom Format",
-                "games_count": 3,
-                "movement_rule": "Move Right 1 Pair (+2 Lanes)",
-                "entry_fee": 50.0,
-                "rules_text": "USBC Rules apply. 100% prize return.",
-                "intake_completed": False
+                "center": active_brand["name"], "name": "New CHUSBC Custom Event",
+                "lanes_count": 40, "lanes_range": "1-40", "division": "Open Scratch/Handicap",
+                "hdcp_base": 220, "hdcp_pct": 0.90, "format_mode": "Custom Format",
+                "games_count": 3, "movement_rule": "Move Right 1 Pair (+2 Lanes)",
+                "entry_fee": 50.0, "rules_text": "USBC Rules apply. 100% prize return."
             }
-            st.session_state.roster = pd.DataFrame(columns=DEFAULT_ROSTER_COLS)
+            st.session_state.roster = pd.DataFrame(columns=["USBC ID", "Bowler", "Average", "Starting Lane", "Division", "Team_Name", "Game 1", "Game 2", "Game 3", "Game 4", "Paid", "Checked_In"])
             st.session_state.brackets = []
-            st.session_state.td_pins = {}
             st.session_state.session_initialized = True
             log_audit_event("TD initiated custom blank tournament configuration.")
             st.rerun()
@@ -1376,37 +1050,38 @@ if not st.session_state.session_initialized:
             st.session_state.tournament_config = cloud_state["config"]
             st.session_state.roster = pd.DataFrame(cloud_state["roster"])
             st.session_state.brackets = cloud_state.get("brackets", [])
-            st.session_state.td_pins = cloud_state.get("td_pins", {})
             st.session_state.session_initialized = True
             log_audit_event(f"TD resumed active tournament: '{active_title}'.")
             st.rerun()
-
     st.stop()
 
 # ---------------------------------------------------------
-# 12. SIDEBAR CONSOLE & STREAMLINED GEMINI COPILOT DRAWER
+# 10. SIDEBAR CONSOLE & STREAMLINED PRISM AI
 # ---------------------------------------------------------
-brand_info = CENTER_PROFILES.get(st.session_state.center_id, CENTER_PROFILES["association"])
+active_center_id = st.session_state.get("center_id", "association")
+brand_info = CENTER_PROFILES.get(active_center_id, CENTER_PROFILES["association"])
 
 with st.sidebar:
-    if HAS_LOGO:
-        st.image(LOGO_PATH, width=130)
+    if brand_info["has_logo"]:
+        st.image(brand_info["logo_path"], use_container_width=True)
+    elif HAS_CHUSBC_LOGO:
+        st.image(LOGO_CHUSBC_PATH, width=130)
+
     st.markdown(f"""
-    <div style="background-color: #1e293b; padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 12px;">
+    <div style="background-color: #1e293b; padding: 12px; border-radius: 8px; border: 1.5px solid {brand_info['accent']}; margin-bottom: 12px;">
         <div style="font-size: 14px; font-weight: 700; color: #f1f5f9;">{st.session_state.td_name}</div>
-        <div style="margin-top: 4px;"><span class="badge-td">{brand_info['badge']}</span></div>
+        <div style="margin-top: 4px;"><span class="badge-td" style="border-color: {brand_info['accent']}; color: {brand_info['accent']} !important;">{brand_info['badge']}</span></div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Easy Mode vs Advanced Mode Toggle
     desk_mode = st.radio(
         "DESK OPERATING MODE",
         ["Volunteer Mode (Easy)", "Tournament Director (Advanced)"],
         index=0 if st.session_state.preferred_mode == "Easy" else 1
     )
 
-    if desk_mode.startswith("Volunteer"):
-        nav_options = ["1. Easy Volunteer Desk", "2. Visual Lane Matrix", "3. Fast Standings", "4. About & Dedication"]
+    if desk_mode.startswith("Volunteer") or desk_mode.startswith("Easy"):
+        nav_options = ["1. Easy Volunteer Desk", "2. Visual Lane Matrix", "3. Current Standings"]
     else:
         nav_options = [
             "1. Event & Roster Intake",
@@ -1416,38 +1091,73 @@ with st.sidebar:
             "5. Side Action: Brackets & Pots 💰",
             "6. Financial & SMART Ledger 💵",
             "7. Past Tournaments Archive 📂",
-            "8. Board SOP & Staff Manual 📖",
-            "9. TD Audit Log",
-            "10. About & Dedication"
+            "8. TD Audit Log"
         ]
         if st.session_state.td_role == "admin":
-            nav_options.append("11. TD User Management ⚙️")
+            nav_options.append("9. TD User Management ⚙️")
 
     nav = st.radio("OPERATIONAL CONSOLE", nav_options)
     st.divider()
 
-    # Streamlined Collapsible Gemini Copilot Drawer
-    with st.expander("🤖 Ask Prism Copilot", expanded=False):
-        st.caption("Instant USBC Rules, Lane Arbitration & Logistics")
-        copilot_in = st.text_input("Ask Copilot...", placeholder="e.g. USBC rule for late bowlers", key="side_ai_q")
-        if copilot_in:
-            with st.spinner("Consulting USBC rulebook..."):
-                ruling = arbitrate_rules_inquiry(copilot_in, f"Center: {st.session_state.tournament_config['center']} | Event: {st.session_state.tournament_config['name']}")
-                st.info(ruling)
+    # Streamlined Screen-Aware Prism AI
+    with st.expander("✨ Prism AI Assistant", expanded=False):
+        conn_ai = get_sqlite_conn()
+        ai_roster_df = pd.read_sql_query("SELECT paid, checked_in FROM live_roster", conn_ai)
+        conn_ai.close()
 
-    st.markdown("### 💾 Hybrid Synchronization")
+        total_b = len(ai_roster_df)
+        paid_b = int(ai_roster_df["paid"].sum()) if total_b > 0 else 0
+        checked_b = int(ai_roster_df["checked_in"].sum()) if total_b > 0 else 0
+        current_screen_name = nav
+
+        st.markdown(f"""
+        <div style="background-color: #0f172a; border-left: 3px solid #38bdf8; padding: 6px 10px; border-radius: 6px; margin-bottom: 8px;">
+            <span style="font-size: 11px; color: #94a3b8; text-transform: uppercase; font-weight: 700;">Active Screen:</span><br/>
+            <span style="font-size: 13px; font-weight: 800; color: #f8fafc;">{current_screen_name}</span><br/>
+            <span style="font-size: 11px; color: #34d399;">{desk_mode.split(' ')[0]} Mode • {checked_b}/{total_b} On Lane</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("🧭 What should I do next on this screen?", use_container_width=True, key="btn_ai_next"):
+            st.session_state["prism_ai_query"] = f"What are my immediate next steps on '{current_screen_name}' in {desk_mode}?"
+
+        ai_in = st.text_input("Ask Prism AI:", value=st.session_state.get("prism_ai_query", ""), placeholder="e.g. Next steps, tardy rule, sub swap...", key="in_ai_box")
+        st.session_state["prism_ai_query"] = ai_in
+
+        if st.button("Consult Prism AI", type="primary", use_container_width=True, key="btn_run_ai"):
+            if ai_in.strip():
+                runtime_ctx = {
+                    "user": st.session_state.get("td_name", "Staff"),
+                    "mode": desk_mode, "screen": current_screen_name,
+                    "event_name": st.session_state.tournament_config.get("name", "CHUSBC Event"),
+                    "center": st.session_state.tournament_config.get("center", "Forest Hill Bowling Center"),
+                    "lane_range": st.session_state.tournament_config.get("lanes_range", "1-40"),
+                    "total_bowlers": total_b, "paid_bowlers": paid_b, "checked_bowlers": checked_b
+                }
+                with st.spinner("Prism AI analyzing active screen..."):
+                    st.session_state["prism_ai_response"] = ask_prism_ai(ai_in, runtime_ctx)
+
+        if st.session_state.get("prism_ai_response"):
+            st.markdown(f"""
+            <div style="background-color: #1e293b; border: 1px solid #334155; border-left: 3px solid #38bdf8; padding: 10px; border-radius: 6px; font-size: 12.5px; margin-top: 8px; color: #f8fafc;">
+                {st.session_state['prism_ai_response']}
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("Clear Response", key="btn_clr_ai", use_container_width=True):
+                st.session_state["prism_ai_response"] = ""
+                st.session_state["prism_ai_query"] = ""
+                st.rerun()
+
+    st.markdown("### ☁️ Cloud Backup & Sync")
     col_sync, col_reset = st.columns(2)
     with col_sync:
-        if st.button("🚀 Push to Sheets", type="primary", use_container_width=True, help="Sync SQLite live operations to Google Sheets cloud"):
+        if st.button("🚀 Push to Sheets", type="primary", use_container_width=True, help="Force sync local data to Google Sheets cloud"):
             saved = write_active_tournament_state(
-                st.session_state.tournament_config,
-                st.session_state.roster,
-                st.session_state.brackets,
-                sync_to_cloud=True
+                st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets, sync_to_cloud=True
             )
             if saved:
                 st.toast("✅ Master cloud sync complete!", icon="☁️")
-                log_audit_event("TD forced SQLite data push to Google Sheets master.")
+                log_audit_event("TD pushed live operations state to Google Sheets cloud.")
     with col_reset:
         if st.button("Switch Event", use_container_width=True):
             st.session_state.session_initialized = False
@@ -1459,410 +1169,356 @@ with st.sidebar:
         st.session_state.username = ""
         st.rerun()
 
-# ---------------------------------------------------------
-# 13. VIEW: EASY MODE (3-STEP VOLUNTEER DESK)
-# ---------------------------------------------------------
-if "Easy Volunteer Desk" in nav:
-    st.markdown(f"""
-    <div class="brand-banner" style="border-color: {brand_info['accent']};">
-        <h1>{st.session_state.tournament_config['name']} — Volunteer Quick-Desk</h1>
-        <p>Simplified 3-step operations: Bowler Check-In • Rapid Score Entry • Standings</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.divider()
+    with st.popover("ℹ️ About Prism Lane Control", use_container_width=True):
+        st.markdown("""
+        ### 🎳 Prism Lane Control
+        **Version:** 1.1 (Hybrid Cloud Architecture)  
+        **System Architect:** Scott Kramer  
+        **Association:** Cecil-Harford United States Bowling Congress (CHUSBC)  
+        **Host Facilities:** Forest Hill Bowling Center, Harford Lanes, APG Bowling Center  
 
-    t_v1, t_v2, t_v3 = st.tabs(["1. Bowler Check-In", "2. Enter Scores", "3. Fast Standings"])
+        ---
+        ### 🕊️ Dedication
+        > *This platform is dedicated in loving memory of **Raymond Kramer**.*  
+        > *Built with pride, precision, and enduring love for the sport of bowling.*
+        """)
 
-    with t_v1:
-        st.subheader("Step 1: Check In Bowlers")
+# Co-Branded Dual Header Banner
+def render_branded_header():
+    col_l1, col_l2, col_title = st.columns([1, 1, 6])
+    with col_l1:
+        if HAS_CHUSBC_LOGO:
+            st.image(LOGO_CHUSBC_PATH, width=80)
+    with col_l2:
+        if brand_info.get("has_logo") and brand_info["logo_path"] != LOGO_CHUSBC_PATH:
+            st.image(brand_info["logo_path"], width=80)
+    with col_title:
+        st.markdown(f"""
+        <div style="padding-left: 10px;">
+            <h2 style="margin: 0; color: #f8fafc;">{st.session_state.tournament_config['name']}</h2>
+            <p style="margin: 2px 0 0 0; color: {brand_info['accent']}; font-weight: 700;">{brand_info['name']} • {brand_info['tagline']}</p>
+        </div>
+        """, unsafe_allow_html=True)
+    st.markdown(f"<hr style='border: 1px solid {brand_info['accent']}40; margin: 12px 0 20px 0;'/>", unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# 11. VIEW: EASY MODE (ACCESSIBLE TOURNAMENT DIRECTOR)
+# ---------------------------------------------------------
+if desk_mode.startswith("Volunteer") or desk_mode.startswith("Easy"):
+    render_branded_header()
+    easy_tabs = st.tabs(["1. Check-In & Payments", "2. Add Bowler / Assign Lane", "3. Enter Game Scores", "4. Print Standings"])
+
+    with easy_tabs[0]:
+        st.subheader("Bowler Arrival & Payment Check-In")
         conn = get_sqlite_conn()
-        df_roster = pd.read_sql_query("SELECT usbc_id, bowler, starting_lane, average, paid, checked_in FROM live_roster", conn)
+        df_roster = pd.read_sql_query("SELECT usbc_id, bowler, starting_lane, average, paid, checked_in FROM live_roster ORDER BY starting_lane, bowler", conn)
         conn.close()
+
+        if df_roster.empty and not st.session_state.roster.empty:
+            write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
+            conn = get_sqlite_conn()
+            df_roster = pd.read_sql_query("SELECT usbc_id, bowler, starting_lane, average, paid, checked_in FROM live_roster ORDER BY starting_lane, bowler", conn)
+            conn.close()
 
         if df_roster.empty:
-            st.info("No bowlers found in SQLite database. Switch to TD mode to ingest roster.")
+            st.info("📋 **No active bowler roster loaded for this event yet.**\nTap **'2. Add Bowler / Assign Lane'** or switch to TD mode to initialize entries.")
         else:
-            sel_bowler = st.selectbox("Select Bowler Arriving at Desk:", df_roster["bowler"].tolist())
-            col_ck1, col_ck2 = st.columns(2)
-            with col_ck1:
-                b_info = df_roster[df_roster["bowler"] == sel_bowler].iloc[0]
-                st.markdown(f"""
-                <div class="match-box">
-                    <h3>{sel_bowler}</h3>
-                    Lane: <b>{b_info['starting_lane']}</b> | Entering Avg: <b>{b_info['average']}</b><br/>
-                    Paid: <b>{'🟢 YES' if b_info['paid'] else '🔴 NO'}</b> | Checked In: <b>{'🟢 YES' if b_info['checked_in'] else '⚪ NO'}</b>
-                </div>
-                """, unsafe_allow_html=True)
+            col_search, col_filter = st.columns([2, 1])
+            with col_search:
+                search_term = st.text_input("🔍 Search Bowler by Name:", placeholder="Type a name to filter...").strip().lower()
+            with col_filter:
+                show_unpaid_only = st.checkbox("Show Unpaid Only", value=False)
 
-                if st.button(f"Confirm Check-In & Paid for {sel_bowler}", type="primary", use_container_width=True):
-                    conn = get_sqlite_conn()
-                    conn.execute("UPDATE live_roster SET checked_in = 1, paid = 1, last_updated_by = ? WHERE bowler = ?", (st.session_state.username, sel_bowler))
-                    conn.commit()
-                    conn.close()
-                    st.success(f"{sel_bowler} checked in!")
+            filtered_df = df_roster.copy()
+            if search_term:
+                filtered_df = filtered_df[filtered_df["bowler"].str.lower().str.contains(search_term)]
+            if show_unpaid_only:
+                filtered_df = filtered_df[filtered_df["paid"] == 0]
+
+            for _, row in filtered_df.iterrows():
+                b_id = row["usbc_id"]
+                b_name = row["bowler"]
+                b_lane = row["starting_lane"]
+                b_avg = row["average"]
+                b_paid = bool(row["paid"])
+                b_checked = bool(row["checked_in"])
+                pair_low = b_lane if b_lane % 2 != 0 else b_lane - 1
+                pair_label = f"Lanes {pair_low}-{pair_low + 1} (Lane {b_lane})"
+
+                card_border = "#10b981" if (b_paid and b_checked) else "#f59e0b" if b_paid else "#ef4444"
+                status_desc = "Ready on Lane" if (b_paid and b_checked) else "Paid, Not Checked In" if b_paid else "Payment Due"
+
+                c_info, c_action = st.columns([3, 2])
+                with c_info:
+                    st.markdown(f"""
+                    <div style="background-color: #1e293b; border-left: 6px solid {card_border}; padding: 12px 16px; border-radius: 8px; margin-bottom: 8px;">
+                        <span style="font-size: 18px; font-weight: 800; color: #f8fafc;">{b_name}</span>
+                        <span style="font-size: 13px; color: #94a3b8; margin-left: 10px;">Avg: <b>{b_avg}</b> | Assigned: <b>{pair_label}</b></span><br/>
+                        <span style="font-size: 12px; font-weight: 700; color: {card_border};">STATUS: {status_desc.upper()}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with c_action:
+                    col_b1, col_b2 = st.columns(2)
+                    with col_b1:
+                        btn_paid_label = "Mark Paid" if not b_paid else "Unmark Paid"
+                        if st.button(btn_paid_label, key=f"ez_p_{b_id}", use_container_width=True):
+                            c = get_sqlite_conn()
+                            c.execute("UPDATE live_roster SET paid = ? WHERE usbc_id = ?", (0 if b_paid else 1, b_id))
+                            c.commit()
+                            c.close()
+                            st.rerun()
+                    with col_b2:
+                        btn_check_label = "Check In" if not b_checked else "Remove Check-In"
+                        if st.button(btn_check_label, key=f"ez_c_{b_id}", type="primary" if not b_checked else "secondary", use_container_width=True):
+                            c = get_sqlite_conn()
+                            c.execute("UPDATE live_roster SET checked_in = ? WHERE usbc_id = ?", (0 if b_checked else 1, b_id))
+                            c.commit()
+                            c.close()
+                            st.rerun()
+
+    with easy_tabs[1]:
+        st.subheader("Register Bowler & Assign Lane")
+        with st.form("ez_add_bowler"):
+            col_a1, col_a2 = st.columns(2)
+            with col_a1:
+                new_b_name = st.text_input("Bowler Full Name:", placeholder="e.g. John Smith").strip()
+                new_b_avg = st.number_input("Entering Average:", min_value=50, max_value=300, value=190, step=1)
+            with col_a2:
+                new_b_usbc = st.text_input("USBC ID (Optional):", placeholder="e.g. 11-12345").strip() or f"W-{datetime.now().strftime('%M%S')}"
+                parsed_pairs = parse_active_pairs(st.session_state.tournament_config.get("lanes_range", "1-40"), max_lanes=40)
+                pair_options = [f"Lanes {p[0]}-{p[1]} (Lane {p[0]})" for p in parsed_pairs] or ["Lane 1"]
+                assigned_pair_selection = st.selectbox("Assign Starting Lane:", pair_options)
+
+            col_opt1, col_opt2 = st.columns(2)
+            with col_opt1:
+                mark_paid_now = st.checkbox("Mark Entry Fee Paid ($50.00)", value=True)
+            with col_opt2:
+                mark_checked_now = st.checkbox("Check In Bowler Immediately", value=True)
+
+            if st.form_submit_button("Add Bowler to Tournament Roster", type="primary", use_container_width=True):
+                if new_b_name:
+                    assigned_lane_num = int(assigned_pair_selection.split("Lane ")[-1].replace(")", ""))
+                    c = get_sqlite_conn()
+                    c.execute("""
+                        INSERT INTO live_roster (usbc_id, bowler, average, starting_lane, division, team_name, paid, checked_in, last_updated_by)
+                        VALUES (?, ?, ?, ?, 'Open', 'Singles', ?, ?, ?)
+                    """, (new_b_usbc, new_b_name, new_b_avg, assigned_lane_num, 1 if mark_paid_now else 0, 1 if mark_checked_now else 0, st.session_state.username))
+                    c.commit()
+                    c.close()
+                    log_audit_event(f"Easy Mode: Added bowler '{new_b_name}' on Lane {assigned_lane_num}.")
+                    st.success(f"{new_b_name} added successfully on Lane {assigned_lane_num}!")
                     st.rerun()
-            with col_ck2:
-                st.dataframe(df_roster[["bowler", "starting_lane", "average", "paid", "checked_in"]], hide_index=True, use_container_width=True)
 
-    with t_v2:
-        st.subheader("Step 2: Rapid Score Entry")
+    with easy_tabs[2]:
+        st.subheader("Post & Adjust Game Scores")
         conn = get_sqlite_conn()
-        bowlers = pd.read_sql_query("SELECT usbc_id, bowler, starting_lane, game_1, game_2, game_3, game_4 FROM live_roster", conn)
+        bowlers_df = pd.read_sql_query("SELECT usbc_id, bowler, starting_lane, average, game_1, game_2, game_3 FROM live_roster ORDER BY starting_lane, bowler", conn)
         conn.close()
 
-        if not bowlers.empty:
-            target_b = st.selectbox("Select Bowler to Post Scores:", bowlers["bowler"].tolist(), key="ez_b_score")
-            curr_b = bowlers[bowlers["bowler"] == target_b].iloc[0]
+        if bowlers_df.empty:
+            st.info("No bowlers found. Register entries in Tab 2 first.")
+        else:
+            selected_bowler_for_score = st.selectbox("Select Bowler to Score:", bowlers_df["bowler"].tolist())
+            b_data = bowlers_df[bowlers_df["bowler"] == selected_bowler_for_score].iloc[0]
+            st.markdown(f"<div class='match-box'>Scoring: <b>{selected_bowler_for_score}</b> (Lane {b_data['starting_lane']} | Entering Avg: {b_data['average']})</div>", unsafe_allow_html=True)
 
-            col_g1, col_g2, col_g3, col_g4 = st.columns(4)
-            with col_g1:
-                val_g1 = st.number_input("Game 1", value=int(curr_b["game_1"]), min_value=0, max_value=300)
-            with col_g2:
-                val_g2 = st.number_input("Game 2", value=int(curr_b["game_2"]), min_value=0, max_value=300)
-            with col_g3:
-                val_g3 = st.number_input("Game 3", value=int(curr_b["game_3"]), min_value=0, max_value=300)
-            with col_g4:
-                val_g4 = st.number_input("Game 4", value=int(curr_b["game_4"]), min_value=0, max_value=300)
+            col_s1, col_s2, col_s3 = st.columns(3)
+            with col_s1:
+                ez_g1 = st.number_input("Game 1 Score:", min_value=0, max_value=300, value=int(b_data["game_1"]))
+            with col_s2:
+                ez_g2 = st.number_input("Game 2 Score:", min_value=0, max_value=300, value=int(b_data["game_2"]))
+            with col_s3:
+                ez_g3 = st.number_input("Game 3 Score:", min_value=0, max_value=300, value=int(b_data["game_3"]))
 
-            if st.button("Save Scores to Local Engine", type="primary", use_container_width=True):
-                conn = get_sqlite_conn()
-                conn.execute("""
+            hdcp_per_game = calculate_handicap(int(b_data["average"]))
+            scratch_series = ez_g1 + ez_g2 + ez_g3
+            total_with_hdcp = scratch_series + (hdcp_per_game * 3)
+            st.write(f"**Scratch Series:** {scratch_series} | **Handicap Total:** {total_with_hdcp} (+{hdcp_per_game * 3} HDCP)")
+
+            if st.button("Save Scores", type="primary", use_container_width=True):
+                c = get_sqlite_conn()
+                c.execute("""
                     UPDATE live_roster 
-                    SET game_1 = ?, game_2 = ?, game_3 = ?, game_4 = ?, last_updated_by = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE bowler = ?
-                """, (val_g1, val_g2, val_g3, val_g4, st.session_state.username, target_b))
-                conn.commit()
-                conn.close()
-                st.success(f"Scores saved for {target_b}!")
+                    SET game_1 = ?, game_2 = ?, game_3 = ?, last_updated_by = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE usbc_id = ?
+                """, (ez_g1, ez_g2, ez_g3, st.session_state.username, b_data["usbc_id"]))
+                c.commit()
+                c.close()
+                log_audit_event(f"Easy Mode: Updated scores for '{selected_bowler_for_score}' ({ez_g1}, {ez_g2}, {ez_g3}).")
+                st.success(f"Scores saved for {selected_bowler_for_score}!")
                 st.rerun()
 
-    with t_v3:
-        st.subheader("Step 3: Fast Live Standings")
+    with easy_tabs[3]:
+        st.subheader("Step 3: Current Standings")
         conn = get_sqlite_conn()
-        df_quick = pd.read_sql_query("SELECT bowler, starting_lane, average, game_1, game_2, game_3, game_4 FROM live_roster", conn)
+        df_for_print = pd.read_sql_query("SELECT * FROM live_roster", conn)
         conn.close()
-        
-        if not df_quick.empty:
-            quick_standings = compile_standings(df_quick.rename(columns={"bowler": "Bowler", "average": "Average", "game_1": "Game 1", "game_2": "Game 2", "game_3": "Game 3", "game_4": "Game 4"}))
-            st.dataframe(quick_standings[["Bowler", "Average", "Game 1", "Game 2", "Game 3", "Scratch_Total", "Grand_Total"]], use_container_width=True)
+
+        if not df_for_print.empty:
+            calc_input = df_for_print.rename(columns={"usbc_id": "USBC ID", "bowler": "Bowler", "average": "Average", "starting_lane": "Starting Lane", "game_1": "Game 1", "game_2": "Game 2", "game_3": "Game 3"})
+            standings = compile_standings(calc_input)
+            st.dataframe(standings[["Bowler", "Starting Lane", "Average", "Game 1", "Game 2", "Game 3", "Scratch_Total", "Total_HDCP", "Grand_Total"]], use_container_width=True)
+
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                pdf_bytes = export_standings_pdf(standings, st.session_state.tournament_config)
+                st.download_button("📄 Print Current Standings (PDF)", data=pdf_bytes, file_name="Standings.pdf", mime="application/pdf", type="primary", use_container_width=True)
+            with col_p2:
+                roster_pdf_bytes = export_lane_assignments_pdf(calc_input, st.session_state.tournament_config)
+                st.download_button("📄 Print Lane Sheet (PDF)", data=roster_pdf_bytes, file_name="Lane_Sheet.pdf", mime="application/pdf", use_container_width=True)
 
 # ---------------------------------------------------------
-# 14. VIEW: ADVANCED MODE — VISUAL LANE MATRIX & SUBS
+# 12. VIEW: ADVANCED MODE — FULL DIRECTOR SUITE
 # ---------------------------------------------------------
-elif "Visual Lane Matrix" in nav:
-    st.markdown("### 🎳 Visual Center Pair Matrix & Mid-Event Substitutions")
-    
-    parsed_pairs = parse_active_pairs(st.session_state.tournament_config.get("lanes_range", "1-40"), max_lanes=40)
-    conn = get_sqlite_conn()
-    roster_live = pd.read_sql_query("SELECT * FROM live_roster", conn)
-    conn.close()
+else:
+    render_branded_header()
 
-    col_vm, col_sub = st.columns([2, 1])
+    if nav == "1. Event & Roster Intake":
+        tab_set, tab_rost, tab_bal = st.tabs(["⚙️ Event Settings", "📝 Tournament Roster Ingestion", "🎳 40-Lane Balancer"])
+        with tab_set:
+            c_n1, c_n2 = st.columns([2, 1])
+            with c_n1:
+                t_title = st.text_input("Tournament Name:", value=st.session_state.tournament_config["name"])
+            with c_n2:
+                t_center = st.selectbox("Host Center:", ["Forest Hill Bowling Center", "Harford Lanes", "APG Bowling Center", "Elk Lanes"], index=0)
+            col_g_cnt, col_l_rng, col_fee = st.columns(3)
+            with col_g_cnt:
+                g_count = st.number_input("Number of Qualifying Games (3, 4, 5+):", min_value=1, max_value=12, value=int(st.session_state.tournament_config.get("games_count", 3)))
+            with col_l_rng:
+                l_range = st.text_input("Active Lane Range:", value=st.session_state.tournament_config.get("lanes_range", "1-40"))
+            with col_fee:
+                e_fee = st.number_input("Entry Fee ($):", value=float(st.session_state.tournament_config.get("entry_fee", 50.0)), step=5.0)
 
-    with col_vm:
-        st.subheader("Active Center Lane Grid")
-        if not parsed_pairs:
-            st.warning("No active pairs configured.")
-        else:
+            if st.button("Save & Update Configuration", type="primary"):
+                st.session_state.tournament_config.update({"name": t_title, "center": t_center, "games_count": g_count, "lanes_range": l_range, "entry_fee": e_fee})
+                write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
+                st.success("Configuration updated!")
+
+        with tab_rost:
+            st.subheader("Tournament Roster Ingestion")
+            pasted_text = st.text_area("Paste signup list (USBC ID, Name, Avg, Team):", placeholder="11-12345, Scott Kramer, 218, Striking Power\n11-23456, Dave Miller, 205, Striking Power")
+            if st.button("Parse & Ingest Roster", type="primary"):
+                if pasted_text.strip():
+                    new_records = []
+                    for idx, line in enumerate(pasted_text.strip().split("\n")):
+                        parts = [p.strip() for p in line.split(",")]
+                        new_records.append({
+                            "USBC ID": parts[0] if len(parts) > 0 and parts[0] else f"B-{100+idx}",
+                            "Bowler": parts[1] if len(parts) > 1 else f"Bowler {idx+1}",
+                            "Average": int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 200,
+                            "Starting Lane": 1, "Division": "Open", "Team_Name": parts[3] if len(parts) > 3 else "Singles",
+                            "Paid": True, "Checked_In": True
+                        })
+                    st.session_state.roster = pd.DataFrame(new_records)
+                    write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
+                    st.success(f"Ingested {len(new_records)} bowlers into operational engine!")
+                    st.rerun()
+
+        with tab_bal:
+            st.subheader("Team-Aware Automated Lane Balancer")
+            active_p = parse_active_pairs(st.session_state.tournament_config.get("lanes_range", "1-40"), max_lanes=40)
+            if st.button("⚡ Balance & Assign Lanes", type="primary"):
+                balanced, err = auto_assign_lanes(st.session_state.roster, active_p, max_per_pair=5, shuffle=True, group_by_team=True)
+                if not err:
+                    st.session_state.roster = balanced
+                    write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
+                    st.success("Lanes balanced across active pairs!")
+                    st.rerun()
+
+    elif nav == "2. Visual Lane Matrix & Subs":
+        st.markdown("### 🎳 Visual Center Pair Matrix & Substitutions")
+        parsed_pairs = parse_active_pairs(st.session_state.tournament_config.get("lanes_range", "1-40"), max_lanes=40)
+        conn = get_sqlite_conn()
+        roster_live = pd.read_sql_query("SELECT * FROM live_roster", conn)
+        conn.close()
+
+        col_vm, col_sub = st.columns([2, 1])
+        with col_vm:
             grid_cols = st.columns(4)
             for idx, pair in enumerate(parsed_pairs):
                 l_odd, l_even = pair
-                col_box = grid_cols[idx % 4]
                 bowlers_on_p = roster_live[roster_live["starting_lane"].isin([l_odd, l_even])]
-                
-                with col_box:
-                    if bowlers_on_p.empty:
-                        status_css = "border: 1px solid #334155; background-color: #0f172a;"
-                        label = "⚪ Empty Pair"
-                    elif (bowlers_on_p["checked_in"] == 1).all():
-                        status_css = "border: 1.5px solid #10b981; background-color: #064e3b20;"
-                        label = f"🟢 Ready ({len(bowlers_on_p)} Bowlers)"
-                    else:
-                        status_css = "border: 1.5px solid #f59e0b; background-color: #f59e0b20;"
-                        label = f"🟡 Check-In Pending ({len(bowlers_on_p)} Bowlers)"
-
-                    st.markdown(f"""
-                    <div style="{status_css} border-radius: 8px; padding: 10px; margin-bottom: 10px;">
-                        <strong style="color: #f8fafc;">Lanes {l_odd} & {l_even}</strong><br/>
-                        <span style="font-size: 11px; font-weight: 800; color: #38bdf8;">{label}</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-    with col_sub:
-        st.subheader("🔄 Mid-Event Substitute / Sub-In")
-        st.caption("Swap in a replacement bowler without breaking handicap or team calculations.")
-        if roster_live.empty:
-            st.info("No active bowlers available to substitute.")
-        else:
-            orig_bowler = st.selectbox("Select Bowler to Sub Out:", roster_live["bowler"].tolist())
-            sub_name = st.text_input("Replacement Bowler Name:", placeholder="e.g. Dave Miller").strip()
-            sub_avg = st.number_input("Sub Entering Average:", value=190, step=1)
-
-            if st.button("Execute Substitution", type="primary", use_container_width=True):
-                if not sub_name:
-                    st.error("Please enter replacement bowler's name.")
-                else:
-                    orig_row = roster_live[roster_live["bowler"] == orig_bowler].iloc[0]
-                    orig_lane = int(orig_row["starting_lane"])
-                    
+                with grid_cols[idx % 4]:
+                    status_css = "border: 1px solid #334155; background-color: #0f172a;" if bowlers_on_p.empty else "border: 1.5px solid #10b981; background-color: #064e3b20;"
+                    st.markdown(f"<div style='{status_css} border-radius: 8px; padding: 10px; margin-bottom: 10px;'><strong style='color: #f8fafc;'>Lanes {l_odd} & {l_even}</strong><br/><span style='font-size: 11px; color: #38bdf8;'>{len(bowlers_on_p)} Bowlers</span></div>", unsafe_allow_html=True)
+        with col_sub:
+            st.subheader("🔄 Sub-In Bowler")
+            if not roster_live.empty:
+                orig_bowler = st.selectbox("Original Bowler:", roster_live["bowler"].tolist())
+                sub_name = st.text_input("Replacement Name:").strip()
+                sub_avg = st.number_input("Sub Average:", value=190, step=1)
+                if st.button("Execute Substitution", type="primary", use_container_width=True):
+                    orig_lane = int(roster_live[roster_live["bowler"] == orig_bowler].iloc[0]["starting_lane"])
                     conn = get_sqlite_conn()
-                    # Flag original bowler
-                    conn.execute("UPDATE live_roster SET checked_in = 0, team_name = team_name || ' (Subbed Out)' WHERE bowler = ?", (orig_bowler,))
-                    # Insert substitute on the exact same lane
-                    sub_id = f"SUB-{datetime.now().strftime('%M%S')}"
+                    conn.execute("UPDATE live_roster SET checked_in = 0, team_name = team_name || ' (Subbed)' WHERE bowler = ?", (orig_bowler,))
                     conn.execute("""
                         INSERT INTO live_roster (usbc_id, bowler, average, starting_lane, division, team_name, paid, checked_in, is_sub, subbing_for, last_updated_by)
-                        VALUES (?, ?, ?, ?, ?, ?, 1, 1, 1, ?, ?)
-                    """, (sub_id, sub_name, sub_avg, orig_lane, str(orig_row["division"]), str(orig_row["team_name"]), orig_bowler, st.session_state.username))
+                        VALUES (?, ?, ?, ?, 'Open', 'Singles', 1, 1, 1, ?, ?)
+                    """, (f"SUB-{datetime.now().strftime('%M%S')}", sub_name, sub_avg, orig_lane, orig_bowler, st.session_state.username))
                     conn.commit()
                     conn.close()
-                    log_audit_event(f"Substituted '{sub_name}' in place of '{orig_bowler}' on Lane {orig_lane}.")
-                    st.success(f"{sub_name} successfully subbed in on Lane {orig_lane}!")
+                    log_audit_event(f"Substituted '{sub_name}' for '{orig_bowler}' on Lane {orig_lane}.")
+                    st.success(f"{sub_name} subbed in on Lane {orig_lane}!")
                     st.rerun()
 
-# ---------------------------------------------------------
-# 15. VIEW: ADVANCED MODE — EVENT & ROSTER INTAKE
-# ---------------------------------------------------------
-elif "Event & Roster Intake" in nav:
-    st.markdown(f"""
-    <div class="brand-banner" style="border-color: {brand_info['accent']};">
-        <h1>{st.session_state.tournament_config['name']} — Comprehensive Intake</h1>
-        <p>Host Center: {st.session_state.tournament_config['center']} • Up to 40 Lanes • Dynamic Multi-Game Support</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    tab_set, tab_rost, tab_bal = st.tabs(["⚙️ Event Settings", "📝 Roster Ingestion", "🎳 40-Lane Balancer"])
-
-    with tab_set:
-        c_n1, c_n2 = st.columns([2, 1])
-        with c_n1:
-            t_title = st.text_input("Tournament Name:", value=st.session_state.tournament_config["name"])
-        with c_n2:
-            t_center = st.selectbox("Host Center:", ["Forest Hill Bowling Center", "Harford Lanes", "APG Bowling Center", "Elk Lanes"], index=0)
-
-        col_g_cnt, col_l_rng, col_fee = st.columns(3)
-        with col_g_cnt:
-            g_count = st.number_input("Number of Qualifying Games (3, 4, 5+):", min_value=1, max_value=12, value=int(st.session_state.tournament_config.get("games_count", 3)))
-        with col_l_rng:
-            l_range = st.text_input("Active Lane Range:", value=st.session_state.tournament_config.get("lanes_range", "1-40"))
-        with col_fee:
-            e_fee = st.number_input("Entry Fee ($):", value=float(st.session_state.tournament_config.get("entry_fee", 50.0)), step=5.0)
-
-        if st.button("Save & Update Configuration", type="primary"):
-            st.session_state.tournament_config.update({
-                "name": t_title, "center": t_center, "games_count": g_count,
-                "lanes_range": l_range, "entry_fee": e_fee
-            })
-            write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
-            st.success("Tournament configuration locked!")
-
-    with tab_rost:
-        st.subheader("Ingest Bowlers into Local SQLite Database")
-        pasted_text = st.text_area("Paste signup list (USBC ID, Name, Avg, Team):", placeholder="11-12345, Scott Kramer, 218, Striking Power\n11-23456, Dave Miller, 205, Striking Power")
-        if st.button("Parse & Ingest Roster", type="primary"):
-            if pasted_text.strip():
-                lines = pasted_text.strip().split("\n")
-                new_records = []
-                for idx, line in enumerate(lines):
-                    parts = [p.strip() for p in line.split(",")]
-                    u_id = parts[0] if len(parts) > 0 and parts[0] else f"B-{100+idx}"
-                    b_name = parts[1] if len(parts) > 1 else f"Bowler {idx+1}"
-                    avg = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 200
-                    team = parts[3] if len(parts) > 3 else "Singles"
-                    new_records.append({
-                        "USBC ID": u_id, "Bowler": b_name, "Average": avg, "Starting Lane": 1,
-                        "Division": "Open", "Team_Name": team, "Paid": True, "Checked_In": True
-                    })
-                st.session_state.roster = pd.DataFrame(new_records)
-                write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
-                st.success(f"Ingested {len(new_records)} bowlers directly into SQLite!")
-                st.rerun()
-
-    with tab_bal:
-        st.subheader("Team-Aware Automated Lane Balancer")
-        active_p = parse_active_pairs(st.session_state.tournament_config.get("lanes_range", "1-40"), max_lanes=40)
-        st.write(f"Active Pairs: **{len(active_p)} pairs** ({len(active_p)*2} lanes)")
-        
-        if st.button("⚡ Balance & Assign Lanes", type="primary"):
-            if not active_p or st.session_state.roster.empty:
-                st.error("Roster or lane pairs empty.")
-            else:
-                balanced, err = auto_assign_lanes(st.session_state.roster, active_p, max_per_pair=5, shuffle=True, group_by_team=True)
-                if err:
-                    st.error(err)
-                else:
-                    st.session_state.roster = balanced
-                    write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
-                    st.success("Balanced lanes across field!")
-                    st.rerun()
-
-        if not st.session_state.roster.empty:
-            pdf_bytes = export_lane_assignments_pdf(st.session_state.roster, st.session_state.tournament_config)
-            st.download_button("📄 Download Printable PDF Lane Assignment Roster", data=pdf_bytes, file_name="Lane_Assignments.pdf", mime="application/pdf")
-
-# ---------------------------------------------------------
-# 16. VIEW: ADVANCED MODE — SCORES & STANDINGS
-# ---------------------------------------------------------
-elif "Scores & Standings" in nav:
-    st.markdown("### 📊 Live Scoring Grid & Standings")
-    conn = get_sqlite_conn()
-    df_live = pd.read_sql_query("SELECT * FROM live_roster", conn)
-    conn.close()
-
-    if df_live.empty:
-        st.info("Roster is currently empty. Add bowlers in Module 1.")
-    else:
-        df_for_calc = df_live.rename(columns={
-            "usbc_id": "USBC ID", "bowler": "Bowler", "average": "Average",
-            "starting_lane": "Starting Lane", "game_1": "Game 1", "game_2": "Game 2",
-            "game_3": "Game 3", "game_4": "Game 4", "paid": "Paid", "checked_in": "Checked_In"
-        })
-        standings = compile_standings(df_for_calc)
-        
-        col_st1, col_st2 = st.columns([3, 1])
-        with col_st1:
-            st.subheader("Official Live Standings")
-            cols_to_view = ["Bowler", "Average", "Starting Lane", "Game 1", "Game 2", "Game 3", "Scratch_Total", "Total_HDCP", "Grand_Total"]
-            st.dataframe(standings[[c for c in cols_to_view if c in standings.columns]], use_container_width=True)
-
-        with col_st2:
-            st.subheader("Leaderboard Stats")
-            top_b = standings.iloc[0]["Bowler"] if not standings.empty else "None"
-            top_sc = standings.iloc[0]["Grand_Total"] if not standings.empty else 0
-            st.metric("Tournament Leader", top_b, delta=f"{top_sc} Pins")
-            
+    elif nav == "3. Scores & Standings":
+        conn = get_sqlite_conn()
+        df_live = pd.read_sql_query("SELECT * FROM live_roster", conn)
+        conn.close()
+        if not df_live.empty:
+            df_for_calc = df_live.rename(columns={"usbc_id": "USBC ID", "bowler": "Bowler", "average": "Average", "starting_lane": "Starting Lane", "game_1": "Game 1", "game_2": "Game 2", "game_3": "Game 3", "game_4": "Game 4"})
+            standings = compile_standings(df_for_calc)
+            st.dataframe(standings[["Bowler", "Average", "Starting Lane", "Game 1", "Game 2", "Game 3", "Scratch_Total", "Total_HDCP", "Grand_Total"]], use_container_width=True)
             pdf_standings = export_standings_pdf(standings, st.session_state.tournament_config)
-            st.download_button("📄 Download Official PDF Standings", data=pdf_standings, file_name="Official_Standings.pdf", mime="application/pdf", use_container_width=True)
+            st.download_button("📄 Download Official PDF Standings", data=pdf_standings, file_name="Standings.pdf", mime="application/pdf")
 
-# ---------------------------------------------------------
-# 17. VIEW: ADVANCED MODE — STEPLADDER FINALS
-# ---------------------------------------------------------
-elif "Stepladder Finals" in nav:
-    st.markdown("### 🏆 Championship Stepladder Finals")
-    conn = get_sqlite_conn()
-    df_sl = pd.read_sql_query("SELECT * FROM live_roster", conn)
-    conn.close()
+    elif nav == "4. Stepladder Finals":
+        conn = get_sqlite_conn()
+        df_sl = pd.read_sql_query("SELECT * FROM live_roster", conn)
+        conn.close()
+        df_sl = df_sl.rename(columns={"bowler": "Bowler", "average": "Average", "game_1": "Game 1", "game_2": "Game 2", "game_3": "Game 3"})
+        standings = compile_standings(df_sl)
+        if len(standings) >= 5:
+            top_5 = standings.head(5)["Bowler"].tolist()
+            st.markdown(f"<div style='background-color: #10b98120; border: 2px solid #10b981; border-radius: 10px; padding: 18px; text-align: center;'><h1 style='color: #f8fafc; margin: 0;'>👑 #1 Seed: {top_5[0]}</h1></div>", unsafe_allow_html=True)
+            st.write(f"**Match 1 (4th vs 5th):** {top_5[3]} vs {top_5[4]}")
+            st.write(f"**Match 2 (3rd vs M1 Winner):** {top_5[2]} vs [Winner M1]")
+            st.write(f"**Semifinal (2nd vs M2 Winner):** {top_5[1]} vs [Winner M2]")
+            st.write(f"**Championship:** {top_5[0]} vs [Semifinal Winner]")
 
-    df_sl = df_sl.rename(columns={"bowler": "Bowler", "average": "Average", "game_1": "Game 1", "game_2": "Game 2", "game_3": "Game 3", "game_4": "Game 4"})
-    standings = compile_standings(df_sl)
-
-    if len(standings) < 5:
-        st.warning(f"Stepladder finals requires at least 5 registered bowlers with recorded scores (Current: {len(standings)}).")
-    else:
-        top_5 = standings.head(5)["Bowler"].tolist()
-        champ = top_5[0]
-        st.markdown(f"""
-        <div style="background-color: #10b98120; border: 2px solid #10b981; border-radius: 10px; padding: 18px; text-align: center; margin-bottom: 20px;">
-            <span style="font-size: 13px; text-transform: uppercase; color: #34d399; font-weight: 800;">Top Qualifier (#1 Seed)</span>
-            <h1 style="color: #f8fafc; font-size: 32px; margin: 4px 0;">👑 {champ}</h1>
-            <p style="color: #cbd5e1; font-size: 14px; margin: 0;">Grand Total Pinfall: <b>{standings.iloc[0]['Grand_Total']}</b></p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("#### 🪜 Stepladder Match Pairings")
-        st.write(f"**Match 1 (4th vs 5th):** {top_5[3]} vs {top_5[4]}")
-        st.write(f"**Match 2 (3rd vs Match 1 Winner):** {top_5[2]} vs [Winner of M1]")
-        st.write(f"**Semifinal (2nd vs Match 2 Winner):** {top_5[1]} vs [Winner of M2]")
-        st.write(f"**Championship Match:** {top_5[0]} vs [Semifinal Winner]")
-
-# ---------------------------------------------------------
-# 18. VIEW: ADVANCED MODE — BRACKETS & SIDE POTS
-# ---------------------------------------------------------
-elif "Side Action" in nav:
-    st.markdown("### 💰 Side Action: 8-Bowler Brackets & Side Pots")
-    t_brk, t_pot = st.tabs(["🌳 Elimination Brackets", "💵 High-Game & Series Pots"])
-
-    with t_brk:
+    elif nav == "5. Side Action: Brackets & Pots 💰":
         conn = get_sqlite_conn()
         paid_bowlers = pd.read_sql_query("SELECT usbc_id FROM live_roster WHERE paid = 1", conn)["usbc_id"].tolist()
         conn.close()
-
-        if len(paid_bowlers) < 8:
-            st.warning(f"At least 8 paid bowlers required to seed an elimination bracket (Found: {len(paid_bowlers)}).")
-        else:
+        if len(paid_bowlers) >= 8:
             if st.button("🎲 Seed 8-Bowler Elimination Bracket", type="primary"):
                 sampled = random.sample(paid_bowlers, 8)
-                new_brk = {
-                    "id": f"B-{len(st.session_state.brackets) + 1:02d}",
-                    "type": "Handicap",
-                    "fee": 5,
-                    "seeds": sampled
-                }
-                st.session_state.brackets.append(new_brk)
+                st.session_state.brackets.append({"id": f"B-{len(st.session_state.brackets)+1:02d}", "type": "Handicap", "seeds": sampled})
                 write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
-                st.success("Bracket seeded successfully!")
+                st.success("Bracket seeded!")
                 st.rerun()
-
         if st.session_state.brackets:
             st.write(f"**Active Brackets:** {len(st.session_state.brackets)}")
-            for b in st.session_state.brackets:
-                st.markdown(f"**Bracket {b['id']}** ({b['type']}) — Top Seed: {b['seeds'][0]}")
 
-    with t_pot:
-        st.subheader("High-Game & Series Pots")
-        pot_fee = st.number_input("Side Pot Fee ($):", value=10, min_value=1)
-        st.write(f"Standard $10 split: $3 Game 1, $3 Game 2, $3 Game 3, $1 Series.")
+    elif nav == "6. Financial & SMART Ledger 💵":
+        conn = get_sqlite_conn()
+        df_fin = pd.read_sql_query("SELECT * FROM live_roster", conn).rename(columns={"paid": "Paid"})
+        conn.close()
+        fin = calculate_financial_summary(df_fin, st.session_state.tournament_config)
+        c_f1, c_f2, c_f3, c_f4 = st.columns(4)
+        c_f1.metric("Paid Entries", fin["paid_count"])
+        c_f2.metric("Gross Revenue", f"${fin['gross_revenue']:,.2f}")
+        c_f3.metric("Lineage Owed", f"${fin['total_lineage']:,.2f}")
+        c_f4.metric("Net Prize Pool", f"${fin['net_prize_fund']:,.2f}")
 
-# ---------------------------------------------------------
-# 19. VIEW: ADVANCED MODE — FINANCIAL & SMART RECONCILIATION
-# ---------------------------------------------------------
-elif "Financial & SMART Ledger" in nav:
-    st.markdown("### 💵 Financial Reconciliation & USBC Rule 400 SMART Ledger")
-    conn = get_sqlite_conn()
-    df_fin = pd.read_sql_query("SELECT * FROM live_roster", conn)
-    conn.close()
+    elif nav == "7. Past Tournaments Archive 📂":
+        st.info("Archive module ready.Concluded tournaments are archived to Google Sheets.")
 
-    df_fin = df_fin.rename(columns={"paid": "Paid"})
-    fin = calculate_financial_summary(df_fin, st.session_state.tournament_config)
-
-    c_f1, c_f2, c_f3, c_f4 = st.columns(4)
-    with c_f1:
-        st.metric("Paid Entries", fin["paid_count"])
-    with c_f2:
-        st.metric("Gross Revenue", f"${fin['gross_revenue']:,.2f}")
-    with c_f3:
-        st.metric("Lineage Owed", f"${fin['total_lineage']:,.2f}")
-    with c_f4:
-        st.metric("Net Prize / SMART Pool", f"${fin['net_prize_fund']:,.2f}")
-
-    if "youth" in str(st.session_state.tournament_config.get("division", "")).lower():
-        st.divider()
-        st.subheader("USBC Rule 400 SMART Scholarship Export")
-        standings = compile_standings(df_fin.rename(columns={"bowler": "Bowler", "average": "Average", "game_1": "Game 1", "game_2": "Game 2", "game_3": "Game 3"}))
-        smart_csv = generate_smart_scholarship_csv(standings, fin["net_prize_fund"])
-        if smart_csv:
-            st.download_button("📄 Download SMART Scholarship Submission (.csv)", data=smart_csv, file_name="SMART_Submission.csv", mime="text/csv", type="primary")
-
-# ---------------------------------------------------------
-# 20. VIEW: ABOUT & MEMORIAL DEDICATION
-# ---------------------------------------------------------
-elif "About & Dedication" in nav:
-    st.markdown("### 🏛️ About Prism Lane Control")
-    st.markdown("""
-    **Prism Lane Control — Version 1.1 (Hybrid Cloud Architecture)**  
-    *Cecil-Harford USBC Central Tournament Management Console*  
-    **System Architect:** Scott Kramer  
-    **Host Facilities:** Forest Hill Bowling Center, Harford Lanes, APG Bowling Center  
-    
-    ---
-    ### 🕊️ Dedication
-    > *This system is dedicated in loving memory of **Raymond Kramer**.*  
-    > *Crafted with pride, technical precision, and enduring love for the sport of bowling.*
-    """)
-
-# ---------------------------------------------------------
-# 21. VIEW: AUDIT LOG
-# ---------------------------------------------------------
-elif "TD Audit Log" in nav:
-    st.markdown("### 📜 Official Tournament Desk Audit Trail")
-    if not st.session_state.audit_trail:
-        st.info("No audit records in current session.")
-    else:
+    elif nav == "8. TD Audit Log":
+        st.subheader("Official Tournament Desk Audit Trail")
         st.dataframe(pd.DataFrame(st.session_state.audit_trail), use_container_width=True)
 
-# ---------------------------------------------------------
-# 22. VIEW: USER MANAGEMENT (ADMIN ONLY)
-# ---------------------------------------------------------
-elif "TD User Management" in nav:
-    st.markdown("### ⚙️ Tournament Director & Staff Management (Argon2id)")
-    users_df = fetch_users_df()
-    st.dataframe(users_df[["username", "name", "role", "center_id", "preferred_mode", "status"]], use_container_width=True)
+    elif "TD User Management" in nav:
+        st.subheader("Tournament Staff Management (Argon2id)")
+        st.dataframe(fetch_users_df()[["username", "name", "role", "center_id", "preferred_mode", "status"]], use_container_width=True)
