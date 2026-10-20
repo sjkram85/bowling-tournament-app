@@ -26,6 +26,9 @@ from engine_support import (
     extract_scores_from_overhead_photo
 )
 
+# Initialize local SQLite operational tables immediately on boot
+init_sqlite_tables()
+
 # ---------------------------------------------------------
 # 1. PAGE SETUP & CONTRAST THEME
 # ---------------------------------------------------------
@@ -132,6 +135,7 @@ def write_users_df(df):
     return False
 
 def write_active_tournament_state(config, roster_df, brackets, sync_to_cloud=False):
+    init_sqlite_tables()
     if not roster_df.empty:
         c = get_sqlite_conn()
         for _, row in roster_df.iterrows():
@@ -177,14 +181,29 @@ def write_active_tournament_state(config, roster_df, brackets, sync_to_cloud=Fal
     return True
 
 def fetch_active_tournament_state():
+    init_sqlite_tables()
     c = get_sqlite_conn()
-    df_local = pd.read_sql_query("SELECT * FROM live_roster", c)
-    c.close()
+    try:
+        df_local = pd.read_sql_query("SELECT * FROM live_roster", c)
+    except Exception:
+        df_local = pd.DataFrame()
+    finally:
+        c.close()
+
     if not df_local.empty:
-        df_local = df_local.rename(columns={"usbc_id": "USBC ID", "bowler": "Bowler", "average": "Average", "starting_lane": "Starting Lane", "division": "Division", "team_name": "Team_Name", "game_1": "Game 1", "game_2": "Game 2", "game_3": "Game 3", "game_4": "Game 4", "paid": "Paid", "checked_in": "Checked_In", "g1_verified_by": "G1_Verified_By", "g1_verified_at": "G1_Verified_At", "g2_verified_by": "G2_Verified_By", "g2_verified_at": "G2_Verified_At", "g3_verified_by": "G3_Verified_By", "g3_verified_at": "G3_Verified_At"})
+        df_local = df_local.rename(columns={
+            "usbc_id": "USBC ID", "bowler": "Bowler", "average": "Average",
+            "starting_lane": "Starting Lane", "division": "Division", "team_name": "Team_Name",
+            "game_1": "Game 1", "game_2": "Game 2", "game_3": "Game 3", "game_4": "Game 4",
+            "paid": "Paid", "checked_in": "Checked_In",
+            "g1_verified_by": "G1_Verified_By", "g1_verified_at": "G1_Verified_At",
+            "g2_verified_by": "G2_Verified_By", "g2_verified_at": "G2_Verified_At",
+            "g3_verified_by": "G3_Verified_By", "g3_verified_at": "G3_Verified_At"
+        })
         df_local["Paid"] = df_local["Paid"].astype(bool)
         df_local["Checked_In"] = df_local["Checked_In"].astype(bool)
         return {"config": st.session_state.get("tournament_config", {}), "roster": df_local.to_dict(orient="records"), "brackets": st.session_state.get("brackets", []), "td_pins": st.session_state.get("td_pins", {})}
+
     conn = get_db_connection()
     if conn:
         try:
