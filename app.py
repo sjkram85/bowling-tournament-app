@@ -17,14 +17,10 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, 
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-from google import genai
-from google.genai import types
-
 # Import core engines, security, and document builders from engine_support.py
 from engine_support import (
     LOGO_CHUSBC_PATH, HAS_CHUSBC_LOGO, LOGO_FOREST_HILL_PATH, HAS_FOREST_HILL_LOGO,
-    PRIMARY_MODEL, FALLBACK_MODELS, KIOSK_FILE_PATH,
-    hash_secret, verify_secret, get_sqlite_conn, init_sqlite_tables,
+    KIOSK_FILE_PATH, hash_secret, verify_secret, get_sqlite_conn, init_sqlite_tables,
     read_kiosk_state, write_kiosk_state, clear_kiosk_state, generate_qr_image,
     notify_admin_new_registration, notify_user_account_approved,
     parse_active_pairs, get_bowler_lane_for_game, auto_assign_lanes,
@@ -33,6 +29,9 @@ from engine_support import (
     export_lane_assignments_pdf, export_standings_pdf, generate_sop_docx, generate_sop_pdf,
     extract_scores_from_overhead_photo
 )
+
+# Import AI module components
+from prism_ai import get_ai_client, ask_prism_ai, parse_roster_text_with_gemini
 
 # ---------------------------------------------------------
 # 1. INITIALIZE DATABASE & PAGE CONFIGURATION
@@ -446,7 +445,7 @@ def compile_all_events_leaderboard(roster_df: pd.DataFrame, config: dict = None)
     return grouped
 
 # ---------------------------------------------------------
-# 6. SESSION RUNTIME & PRISM AI
+# 6. SESSION RUNTIME & CLIENT SETUP
 # ---------------------------------------------------------
 DEFAULT_ROSTER_COLS = [
     "USBC ID", "Bowler", "Average", "Starting Lane", "Division", "Team_Name",
@@ -471,23 +470,7 @@ def log_audit_event(action: str):
     st.session_state.audit_trail.append({"timestamp": ts, "td": td, "action": action})
 
 api_key = st.secrets.get("GEMINI_API_KEY", None)
-ai_client = genai.Client(api_key=api_key) if api_key else None
-
-def ask_prism_ai(query_text: str, runtime_context: dict) -> str:
-    if not ai_client:
-        return "Prism AI is offline. Please enter a valid Gemini API key in secrets."
-    prompt = f"""
-You are "Prism AI", the tournament desk assistant for Cecil-Harford USBC (CHUSBC).
-Assisting TD/volunteer '{runtime_context.get('user', 'Staff')}'.
-CONTEXT: Mode: {runtime_context.get('mode')} | Screen: {runtime_context.get('screen')} | Event: {runtime_context.get('event_name')} | Center: {runtime_context.get('center')}
-Field: {runtime_context.get('total_bowlers', 0)} bowlers ({runtime_context.get('paid_bowlers', 0)} paid, {runtime_context.get('checked_bowlers', 0)} checked in)
-USER ASKS: "{query_text}"
-Provide screen-aware directions for their active screen, USBC rules citations if requested, and step-by-step next actions without technical database jargon.
-"""
-    try:
-        return ai_client.models.generate_content(model=PRIMARY_MODEL, contents=prompt, config=types.GenerateContentConfig(temperature=0.1)).text
-    except Exception as e:
-        return f"Prism AI Error: {e}"
+ai_client = get_ai_client(api_key)
 
 # ---------------------------------------------------------
 # 7. NATIVE FRAGMENT AUTO-POLLERS (ZERO-DIMMING)
@@ -833,18 +816,70 @@ with st.sidebar:
     # Streamlined Screen-Aware Prism AI
     with st.expander("✨ Prism AI Assistant", expanded=False):
         c_ai = get_sqlite_conn()
-        ai_df = pd.read_sql_query("SELECT paid, checked_in FROM live_roster", c_ai)
-        c_ai.close()
-        t_b, p_b, c_b = len(ai_df), int(ai_df["paid"].sum()) if not ai_df.empty else 0, int(ai_df["checked_in"].sum()) if not ai_df.empty else 0
-        st.caption(f"Active Screen: **{nav}** ({c_b}/{t_b} on Lane)")
-        if st.button("🧭 What should I do next on this screen?", use_container_width=True):
+        try:
+            ai_df = pd.read_sql_query("SELECT paid, checked_in FROM live_roster", c_ai)
+        except Exception:
+            ai_df = pd.DataFrame()
+        finally:
+            c_ai.close()
+
+        t_b = len(ai_df)
+        p_b = int(ai_df["paid"].sum()) if not ai_df.empty else 0
+        c_b = int(ai_df["checked_in"].sum()) if not ai_df.empty else 0
+
+        st.markdown(f"""
+        <div style="background-color: #0f172a; border-left: 3px solid #38bdf8; padding: 6px 10px; border-radius: 6px; margin-bottom: 8px;">
+            <span style="font-size: 11px; color: #94a3b8; text-transform: uppercase; font-weight: 700;">Active Screen:</span><br/>
+            <span style="font-size: 13px; font-weight: 800; color: #f8fafc;">{nav}</span><br/>
+            <span style="font-size: 11px; color: #34d399;">{desk_mode.split(' ')[0]} Mode • {c_b}/{t_b} on Lane</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("🧭 What should I do next on this screen?", use_container_width=True, key="btn_prism_next_prompt"):
             st.session_state["prism_q"] = f"What are my next steps on '{nav}' in {desk_mode}?"
-        q_in = st.text_input("Ask Prism AI:", value=st.session_state.get("prism_q", ""), placeholder="e.g. Next steps, tardy rule...")
-        if st.button("Consult Prism AI", type="primary", use_container_width=True) and q_in.strip():
-            ctx = {"user": st.session_state.td_name, "mode": desk_mode, "screen": nav, "event_name": st.session_state.tournament_config.get("name"), "center": st.session_state.tournament_config.get("center"), "total_bowlers": t_b, "paid_bowlers": p_b, "checked_bowlers": c_b}
-            st.session_state["prism_ans"] = ask_prism_ai(q_in, ctx)
+
+        q_in = st.text_input(
+            "Ask Prism AI:",
+            value=st.session_state.get("prism_q", ""),
+            placeholder="e.g. Next steps, tardy rule, sub swap...",
+            key="in_prism_query"
+        )
+        st.session_state["prism_q"] = q_in
+
+        if st.button("Consult Prism AI", type="primary", use_container_width=True, key="btn_run_prism"):
+            if not q_in.strip():
+                st.warning("Please enter a question or click the suggestion button.")
+            else:
+                ctx = {
+                    "user": st.session_state.get("td_name", "Staff"),
+                    "mode": desk_mode,
+                    "screen": nav,
+                    "event_name": st.session_state.tournament_config.get("name", "CHUSBC Event"),
+                    "center": st.session_state.tournament_config.get("center", "Forest Hill Bowling Center"),
+                    "total_bowlers": t_b,
+                    "paid_bowlers": p_b,
+                    "checked_bowlers": c_b
+                }
+
+                with st.status("Analyzing tournament context...", expanded=True) as status:
+                    st.write("🔍 Reading current roster state and pair assignments...")
+                    time.sleep(0.3)
+                    st.write("📖 Cross-referencing USBC regulations & tournament parameters...")
+                    ans = ask_prism_ai(q_in, ctx, client=ai_client, status_container=status)
+                    status.update(label="Consultation complete!", state="complete", expanded=False)
+
+                st.session_state["prism_ans"] = ans
+
         if st.session_state.get("prism_ans"):
-            st.info(st.session_state["prism_ans"])
+            st.markdown(f"""
+            <div style="background-color: #1e293b; border: 1px solid #334155; border-left: 3px solid #38bdf8; padding: 12px; border-radius: 6px; font-size: 13px; margin-top: 10px; color: #f8fafc; line-height: 1.5;">
+                {st.session_state['prism_ans']}
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("Clear Response", key="btn_clr_prism_ans", use_container_width=True):
+                st.session_state["prism_ans"] = ""
+                st.session_state["prism_q"] = ""
+                st.rerun()
 
     st.markdown("### ☁️ Cloud Backup & Sync")
     if st.button("🚀 Push to Sheets", type="primary", use_container_width=True):
@@ -1028,10 +1063,8 @@ else:
             with tab_ai:
                 raw_text = st.text_area("Paste bowler signups (USBC ID, Name, Avg, Team):", placeholder="11-12345 Scott Kramer 218 Striking Power\n11-23456 Dave Miller 205 Striking Power")
                 if st.button("Extract Roster with Gemini", type="primary") and raw_text.strip():
-                    if ai_client:
-                        prompt = f"Extract USBC ID (default 'TBD'), Bowler name, Average (default 200), Starting Lane (1), Division ('Open'), Team_Name ('Singles'). Output CSV:\n{raw_text}"
-                        res = ai_client.models.generate_content(model=PRIMARY_MODEL, contents=prompt).text
-                        cleaned_csv = res.replace("```csv", "").replace("```", "").strip()
+                    cleaned_csv = parse_roster_text_with_gemini(raw_text, client=ai_client)
+                    if cleaned_csv:
                         new_df = pd.read_csv(io.StringIO(cleaned_csv))
                         new_df["Paid"] = True
                         new_df["Checked_In"] = True
@@ -1039,6 +1072,8 @@ else:
                         write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
                         st.success(f"Parsed {len(new_df)} bowlers!")
                         st.rerun()
+                    else:
+                        st.error("Failed to parse roster. Check Gemini API key and try again.")
 
             with tab_csv:
                 csv_file = st.file_uploader("Upload Roster CSV:", type=["csv"])
@@ -1414,7 +1449,7 @@ else:
         dispute_text = st.text_area("Describe the dispute:", value=q_preset)
         if st.button("Generate Official Arbiter Ruling", type="primary") and dispute_text.strip():
             ctx = {"user": st.session_state.td_name, "mode": desk_mode, "screen": "Rules Arbiter", "event_name": st.session_state.tournament_config.get("name"), "center": st.session_state.tournament_config.get("center")}
-            st.info(ask_prism_ai(dispute_text, ctx))
+            st.info(ask_prism_ai(dispute_text, ctx, client=ai_client))
 
     # MODULE 8: PAST TOURNAMENTS ARCHIVE
     elif nav == "8. Past Tournaments Archive 📂":
