@@ -14,6 +14,42 @@ from engine_support import (
 )
 from prism_ai import stream_prism_ai, parse_roster_text_with_gemini
 
+def render_external_broadcast_cards(context_key: str):
+    """Renders the standard placeholder cards for chusbc.org sync and Facebook posting."""
+    st.divider()
+    st.markdown("### 📡 External Broadcast & Social Publishing")
+
+    col_web, col_fb = st.columns(2)
+
+    with col_web:
+        st.markdown("""
+        <div class='match-box' style='border-left-color: #38bdf8;'>
+            <div style='display: flex; justify-content: space-between; align-items: center;'>
+                <strong style='font-size: 15px; color: #f8fafc;'>🌐 chusbc.org Website Sync</strong>
+                <span style='background: #0284c725; color: #7dd3fc; border: 1px solid #0284c780; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 800;'>UNDER CONSTRUCTION</span>
+            </div>
+            <p style='color: #94a3b8; font-size: 12px; margin-top: 6px; line-height: 1.4;'>
+                Direct sync of verified standings and cut-lines to the Cecil-Harford USBC Google Workspace site.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        st.button("🌐 Sync to chusbc.org (Under Construction)", disabled=True, use_container_width=True, key=f"btn_sync_web_{context_key}")
+
+    with col_fb:
+        st.markdown("""
+        <div class='match-box' style='border-left-color: #1877f2;'>
+            <div style='display: flex; justify-content: space-between; align-items: center;'>
+                <strong style='font-size: 15px; color: #f8fafc;'>📘 Facebook Page Broadcast</strong>
+                <span style='background: #1877f225; color: #60a5fa; border: 1px solid #1877f280; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 800;'>UNDER CONSTRUCTION</span>
+            </div>
+            <p style='color: #94a3b8; font-size: 12px; margin-top: 6px; line-height: 1.4;'>
+                Automated post publishing tournament winners, top scores, and leaderboards to the official CHUSBC Page.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        st.button("📘 Post to Facebook Page (Under Construction)", disabled=True, use_container_width=True, key=f"btn_post_fb_{context_key}")
+
+
 def render_advanced_view(
     nav: str,
     desk_mode: str,
@@ -30,6 +66,8 @@ def render_advanced_view(
     write_users_df,
     ai_client
 ):
+    num_games = int(st.session_state.tournament_config.get("games_count", 3))
+
     # MODULE 1: COMPREHENSIVE INTAKE
     if nav == "1. Event & Roster Intake":
         intake_tab_settings, intake_tab_entry, intake_tab_terminal, intake_tab_pins = st.tabs([
@@ -58,11 +96,13 @@ def render_advanced_view(
                 cur_center = st.session_state.tournament_config.get("center", "Forest Hill Bowling Center")
                 center_val = st.selectbox("Host Bowling Center:", center_options, index=center_options.index(cur_center) if cur_center in center_options else 0)
 
-            col_lanes1, col_lanes2, col_div = st.columns(3)
+            col_lanes1, col_lanes2, col_games, col_div = st.columns(4)
             with col_lanes1:
                 lane_count_val = st.number_input("Total Lanes in Center:", 2, 60, int(st.session_state.tournament_config.get("lanes_count", 40)), 2)
             with col_lanes2:
-                lane_range_val = st.text_input("Active Pair Range (e.g. 1-40 or 1-16, 21-36):", value=st.session_state.tournament_config.get("lanes_range", "1-40"))
+                lane_range_val = st.text_input("Active Pair Range (e.g. 1-40):", value=st.session_state.tournament_config.get("lanes_range", "1-40"))
+            with col_games:
+                games_count_val = st.number_input("Number of Games (Qualifying Block):", min_value=1, max_value=6, value=int(st.session_state.tournament_config.get("games_count", 3)), step=1)
             with col_div:
                 division_val = st.text_input("Division / Category:", value=st.session_state.tournament_config.get("division", "Adult Open"))
 
@@ -93,17 +133,18 @@ def render_advanced_view(
 
                 st.session_state.tournament_config.update({
                     "center": center_val, "name": t_name_val, "lanes_count": lane_count_val,
-                    "lanes_range": lane_range_val, "division": division_val, "hdcp_base": h_base_val,
-                    "hdcp_pct": h_pct_val, "movement_rule": rule_val, "rules_text": t_rules_val + uploaded_content,
-                    "intake_completed": True
+                    "lanes_range": lane_range_val, "games_count": games_count_val, "division": division_val,
+                    "hdcp_base": h_base_val, "hdcp_pct": h_pct_val, "movement_rule": rule_val,
+                    "rules_text": t_rules_val + uploaded_content, "intake_completed": True
                 })
                 write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
-                log_audit_event(f"Configuration locked: {t_name_val} at {center_val}.")
+                log_audit_event(f"Configuration locked: {t_name_val} at {center_val} ({games_count_val} Games).")
                 st.success("Tournament settings locked & backed up.")
+                st.rerun()
 
         with intake_tab_entry:
-            st.subheader("Bowler Roster & Team-Aware 40-Lane Balancer")
-            tab_ai, tab_csv, tab_grid, tab_bal = st.tabs(["🤖 Parse Signup Notes", "📁 Upload CSV", "📋 Master Grid", "🎳 40-Lane Balancer"])
+            st.subheader("Bowler Roster & Team-Aware Lane Balancer")
+            tab_ai, tab_csv, tab_grid, tab_bal = st.tabs(["🤖 Parse Signup Notes", "📁 Upload CSV", "📋 Master Grid", "🎳 Lane Balancer"])
 
             with tab_ai:
                 raw_text = st.text_area("Paste bowler signups (USBC ID, Name, Avg, Team):", placeholder="11-12345 Scott Kramer 218 Striking Power\n11-23456 Dave Miller 205 Striking Power")
@@ -274,7 +315,7 @@ def render_advanced_view(
     # MODULE 3: SCORES, STANDINGS & RADAR MATRIX
     elif nav == "3. Scores & Standings":
         st.subheader("🛰️ Central Desk Lane Radar Matrix")
-        radar_game = st.radio("Display Radar for Game:", [1, 2, 3], horizontal=True)
+        radar_game = st.radio("Display Radar for Game:", list(range(1, num_games + 1)), horizontal=True)
         render_live_radar_matrix_fragment(radar_game)
         st.divider()
 
@@ -283,10 +324,14 @@ def render_advanced_view(
         conn.close()
 
         if not df_live.empty:
-            df_for_calc = df_live.rename(columns={
+            rename_dict = {
                 "usbc_id": "USBC ID", "bowler": "Bowler", "average": "Average", "starting_lane": "Starting Lane",
-                "game_1": "Game 1", "game_2": "Game 2", "game_3": "Game 3", "game_4": "Game 4", "paid": "Paid", "checked_in": "Checked_In"
-            })
+                "paid": "Paid", "checked_in": "Checked_In"
+            }
+            for i in range(1, 7):
+                rename_dict[f"game_{i}"] = f"Game {i}"
+            df_for_calc = df_live.rename(columns=rename_dict)
+
             standings = compile_standings(df_for_calc, st.session_state.tournament_config)
 
             c1, c2, c3, c4 = st.columns(4)
@@ -296,25 +341,34 @@ def render_advanced_view(
             c4.markdown(f"<div class='stat-card'><div class='stat-value'>{standings['High_Scratch_Game'].max() if not standings.empty else 0}</div><div class='stat-label'>High Scratch</div></div>", unsafe_allow_html=True)
 
             st.write("")
-            st.subheader("Official Scoring Grid")
-            edited_scores = st.data_editor(df_for_calc[["USBC ID", "Bowler", "Starting Lane", "Average", "Game 1", "Game 2", "Game 3", "Game 4"]], use_container_width=True)
+            st.subheader(f"Official Scoring Grid ({num_games} Games)")
+            active_game_cols = [f"Game {i}" for i in range(1, num_games + 1)]
+            editor_cols = ["USBC ID", "Bowler", "Starting Lane", "Average"] + active_game_cols
+            edited_scores = st.data_editor(df_for_calc[editor_cols], use_container_width=True)
+
             if st.button("Save Scores & Recalculate Standings", type="primary"):
                 c = get_sqlite_conn()
                 for _, r in edited_scores.iterrows():
-                    c.execute("UPDATE live_roster SET game_1=?, game_2=?, game_3=?, game_4=? WHERE usbc_id=?", (r["Game 1"], r["Game 2"], r["Game 3"], r["Game 4"], r["USBC ID"]))
+                    update_sql = "UPDATE live_roster SET " + ", ".join([f"game_{i}=?" for i in range(1, num_games + 1)]) + " WHERE usbc_id=?"
+                    params = [int(r[f"Game {i}"]) for i in range(1, num_games + 1)] + [r["USBC ID"]]
+                    c.execute(update_sql, tuple(params))
                 c.commit()
                 c.close()
                 st.success("Scores saved & standings recalculated!")
                 st.rerun()
 
             st.subheader("Official Standings")
-            st.dataframe(standings[["Bowler", "Starting Lane", "Average", "Game 1", "Game 2", "Game 3", "Scratch_Total", "Total_HDCP", "Grand_Total"]], use_container_width=True)
+            standings_cols = ["Bowler", "Starting Lane", "Average"] + active_game_cols + ["Scratch_Total", "Total_HDCP", "Grand_Total"]
+            st.dataframe(standings[standings_cols], use_container_width=True)
             st.download_button("📄 Download Official PDF Standings", export_standings_pdf(standings, st.session_state.tournament_config, td_name=st.session_state.td_name), "Official_Standings.pdf", "application/pdf", use_container_width=True)
+
+            render_external_broadcast_cards(context_key="standings")
 
             st.divider()
             st.subheader("🏆 Multi-Squad All-Events Aggregate Leaderboard")
             all_events = compile_all_events_leaderboard(df_for_calc, st.session_state.tournament_config)
-            st.dataframe(all_events[["Bowler", "Average", "Total_Games_Bowled", "Scratch_Series", "Total_HDCP", "Grand_Total"]], use_container_width=True)
+            if not all_events.empty:
+                st.dataframe(all_events[["Bowler", "Average", "Total_Games_Bowled", "Scratch_Series", "Total_HDCP", "Grand_Total"]], use_container_width=True)
 
     # MODULE 4: STEPLADDER FINALS & TOURNAMENT COMPLETION
     elif nav == "4. Stepladder Finals":
@@ -329,7 +383,10 @@ def render_advanced_view(
         df_sl = pd.read_sql_query("SELECT * FROM live_roster", conn)
         conn.close()
 
-        df_sl = df_sl.rename(columns={"bowler": "Bowler", "average": "Average", "game_1": "Game 1", "game_2": "Game 2", "game_3": "Game 3", "game_4": "Game 4"})
+        rename_dict = {"bowler": "Bowler", "average": "Average"}
+        for i in range(1, 7):
+            rename_dict[f"game_{i}"] = f"Game {i}"
+        df_sl = df_sl.rename(columns=rename_dict)
         standings = compile_standings(df_sl, st.session_state.tournament_config)
 
         if len(standings) < 5:
@@ -388,6 +445,8 @@ def render_advanced_view(
 
             summary_pdf_bytes = export_tournament_summary_pdf(standings, st.session_state.tournament_config, champ_winner, stepladder_summary_dict)
             st.download_button("🖨️ Download Official Summary Report (PDF)", summary_pdf_bytes, "Tournament_Summary.pdf", "application/pdf", use_container_width=True)
+
+            render_external_broadcast_cards(context_key="finals")
 
             if st.button("📦 Archive Tournament to Cloud & Reset Active State", use_container_width=True):
                 encoded_pdf = base64.b64encode(summary_pdf_bytes).decode("utf-8")
@@ -525,7 +584,6 @@ def render_advanced_view(
         st.markdown("<div class='brand-banner'><h1>Staff & Director Account Management (Argon2id)</h1></div>", unsafe_allow_html=True)
         users = fetch_users_df()
 
-        # Defensively ensure required columns exist
         req_cols = ["username", "name", "email", "password_hash", "role", "center_id", "preferred_mode", "status", "must_change_password"]
         for c in req_cols:
             if c not in users.columns:
@@ -554,7 +612,7 @@ def render_advanced_view(
             display_cols = [c for c in ["username", "name", "email", "role", "center_id", "preferred_mode", "status"] if c in users.columns]
             st.dataframe(users[display_cols], use_container_width=True)
 
-        # TAB 2: ADMINISTRATIVE ACTIONS (PASSWORD RESET, ROLE, CENTER, STATUS)
+        # TAB 2: ADMINISTRATIVE ACTIONS
         with tab_edit:
             st.subheader("Manage Staff Account & Credentials")
             usernames = users["username"].tolist()
@@ -586,7 +644,7 @@ def render_advanced_view(
 
                 col_pw, col_role = st.columns(2)
 
-                # Action 1: Password Reset (Argon2id)
+                # Password Reset (Argon2id)
                 with col_pw:
                     st.markdown("#### 🔑 Reset Account Password")
                     with st.form(f"form_reset_pw_{target_user}"):
@@ -605,7 +663,7 @@ def render_advanced_view(
                             else:
                                 st.warning("Password must be at least 6 characters.")
 
-                # Action 2: Role, Center & Permissions Configuration
+                # Role, Center & Permissions Configuration
                 with col_role:
                     st.markdown("#### ⚙️ Edit Roles & Permissions")
                     with st.form(f"form_perms_{target_user}"):
@@ -637,7 +695,7 @@ def render_advanced_view(
                             else:
                                 st.error("Failed to sync updated settings to Google Sheets.")
 
-                # Action 3: Account Deletion Safety Zone
+                # Account Deletion Safety Zone
                 if target_user != st.session_state.get("username"):
                     st.divider()
                     with st.expander(f"⚠️ Danger Zone: Delete '{target_user}'"):
