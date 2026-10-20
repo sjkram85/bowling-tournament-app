@@ -669,19 +669,45 @@ def render_advanced_view(
                     with st.form(f"form_perms_{target_user}"):
                         role_opts = ["admin", "td", "volunteer"]
                         cur_role = str(user_row["role"]).lower()
-                        new_role = st.selectbox("System Role:", role_opts, index=role_opts.index(cur_role) if cur_role in role_opts else 1)
+                        new_role = st.selectbox(
+                            "System Role:",
+                            role_opts,
+                            index=role_opts.index(cur_role) if cur_role in role_opts else 1
+                        )
 
-                        center_opts = ["association", "forest_hill", "harford", "apg"]
-                        cur_center = str(user_row["center_id"]).lower()
-                        new_center = st.selectbox("Assigned Center:", center_opts, index=center_opts.index(cur_center) if cur_center in center_opts else 0)
+                        # Explicitly label CHUSBC alongside the centers
+                        center_display_map = {
+                            "association": "CHUSBC (Association Central Desk)",
+                            "forest_hill": "Forest Hill Bowling Center",
+                            "harford": "Harford Lanes",
+                            "apg": "APG Bowling Center"
+                        }
+                        center_keys = list(center_display_map.keys())
+                        cur_center = str(user_row.get("center_id", "association")).lower()
+                        cur_idx = center_keys.index(cur_center) if cur_center in center_keys else 0
+
+                        selected_center_display = st.selectbox(
+                            "Assigned Center / Association:",
+                            options=[center_display_map[k] for k in center_keys],
+                            index=cur_idx
+                        )
+                        new_center = [k for k, v in center_display_map.items() if v == selected_center_display][0]
 
                         mode_opts = ["Advanced", "Easy"]
                         cur_mode = str(user_row["preferred_mode"])
-                        new_mode = st.selectbox("Default UI Mode:", mode_opts, index=mode_opts.index(cur_mode) if cur_mode in mode_opts else 0)
+                        new_mode = st.selectbox(
+                            "Default UI Mode:",
+                            mode_opts,
+                            index=mode_opts.index(cur_mode) if cur_mode in mode_opts else 0
+                        )
 
                         status_opts = ["active", "suspended"]
                         cur_status = str(user_row["status"]).lower()
-                        new_status = st.selectbox("Account Status:", status_opts, index=status_opts.index(cur_status) if cur_status in status_opts else 0)
+                        new_status = st.selectbox(
+                            "Account Status:",
+                            status_opts,
+                            index=status_opts.index(cur_status) if cur_status in status_opts else 0
+                        )
 
                         if st.form_submit_button("Save Account Changes", type="primary", use_container_width=True):
                             users.loc[user_idx, "role"] = new_role
@@ -689,7 +715,7 @@ def render_advanced_view(
                             users.loc[user_idx, "preferred_mode"] = new_mode
                             users.loc[user_idx, "status"] = new_status
                             if write_users_df(users):
-                                log_audit_event(f"Admin updated settings for '{target_user}' (Role: {new_role}, Status: {new_status}).")
+                                log_audit_event(f"Admin updated settings for '{target_user}' (Center: {selected_center_display}, Role: {new_role}).")
                                 st.success(f"Account settings saved for {target_user}!")
                                 st.rerun()
                             else:
