@@ -2,6 +2,7 @@ import os
 import io
 import time
 import json
+import base64
 import random
 from datetime import datetime
 import pandas as pd
