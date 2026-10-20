@@ -592,3 +592,30 @@ def generate_sop_pdf(config: dict) -> bytes:
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
+
+def extract_scores_from_overhead_photo(ai_client, photo_bytes: bytes, bowler_names: list, game_num: int) -> dict:
+    """
+    Parses an uploaded lane monitor or paper recap photo using Gemini 2.5 Flash
+    and returns a mapping of bowler names to integer game scores.
+    """
+    if not ai_client:
+        return {}
+    prompt = f"""
+    Read the bowling overhead score monitor or scoresheet in this image.
+    Extract the Game {game_num} score for these bowlers: {', '.join(bowler_names)}.
+    Output strictly a JSON object mapping bowler name to integer score: {{"Name": score}}.
+    Do not wrap with markdown backticks or commentary.
+    """
+    try:
+        from google.genai import types
+        res = ai_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                types.Part.from_bytes(data=photo_bytes, mime_type="image/jpeg"),
+                prompt
+            ]
+        )
+        clean_json = res.text.replace("```json", "").replace("```", "").strip()
+        return json.loads(clean_json)
+    except Exception:
+        return {}
