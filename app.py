@@ -10,8 +10,8 @@ from engine_support import (
     LOGO_CHUSBC_PATH, HAS_CHUSBC_LOGO, LOGO_FOREST_HILL_PATH, HAS_FOREST_HILL_LOGO,
     hash_secret, verify_secret, get_sqlite_conn, init_sqlite_tables,
     notify_admin_new_registration, calculate_handicap,
-    export_tournament_summary_pdf, compile_all_events_leaderboard,
-    parse_active_pairs, get_bowler_lane_for_game
+    parse_active_pairs, get_bowler_lane_for_game,
+    export_tournament_summary_pdf, compile_all_events_leaderboard
 )
 from prism_ai import get_ai_client, stream_prism_ai
 from routes.public_modes import handle_public_modes
@@ -254,26 +254,90 @@ if not st.session_state.authenticated:
 # ---------------------------------------------------------
 active_brand = CENTER_PROFILES.get(st.session_state.center_id, CENTER_PROFILES["association"])
 if not st.session_state.get("session_initialized", False):
-    st.markdown(f"<div class='brand-banner'><h1>Welcome, {st.session_state.td_name}</h1><p>{active_brand['name']}</p></div>", unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class='brand-banner' style='border-color: {active_brand["accent"]}; box-shadow: 0 8px 32px rgba(56, 189, 248, 0.15);'>
+        <div style='display: flex; align-items: center; justify-content: space-between;'>
+            <div>
+                <h1 style='margin: 0; font-size: 32px; font-weight: 800; color: #f8fafc;'>Welcome, {st.session_state.td_name}</h1>
+                <p style='margin: 4px 0 0 0; font-size: 14px; color: {active_brand["accent"]}; font-weight: 700;'>{active_brand["name"]} • {active_brand["tagline"]}</p>
+            </div>
+            <span class='badge-td' style='font-size: 13px; padding: 6px 14px;'>{active_brand["badge"]}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    cloud = fetch_active_tournament_state()
+    has_cloud = cloud is not None and bool(cloud.get("config"))
+
     c1, c2, c3 = st.columns(3)
+
     with c1:
-        sel = st.selectbox("Preset:", list(CHUSBC_PRESET_PROFILES.keys()))
-        if st.button("Launch Preset", type="primary", use_container_width=True):
+        st.markdown("""
+        <div class='choice-card'>
+            <div style='font-size: 30px; margin-bottom: 8px;'>🚀</div>
+            <h3 style='margin: 0; color: #38bdf8; font-weight: 800;'>CHUSBC Presets</h3>
+            <p style='color: #cbd5e1; font-size: 12.5px; margin-top: 6px; line-height: 1.4;'>
+                Launch association championship formats with certified 90% of 220 rules, lane movement rules, and fees preloaded.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        st.write("")
+        sel = st.selectbox("Select Preset Profile:", list(CHUSBC_PRESET_PROFILES.keys()), label_visibility="collapsed")
+        if st.button("⚡ Launch Selected Preset", type="primary", use_container_width=True):
             st.session_state.tournament_config = dict(CHUSBC_PRESET_PROFILES[sel])
             st.session_state.tournament_config["name"] = sel
             st.session_state.session_initialized = True
             st.rerun()
+
     with c2:
-        if st.button("New Custom Tournament", use_container_width=True):
-            st.session_state.tournament_config = {"name": "New Custom Event", "center": active_brand["name"], "lanes_range": "1-40", "games_count": 3, "hdcp_base": 220, "hdcp_pct": 0.90, "entry_fee": 50.0}
+        st.markdown("""
+        <div class='choice-card'>
+            <div style='font-size: 30px; margin-bottom: 8px;'>✨</div>
+            <h3 style='margin: 0; color: #10b981; font-weight: 800;'>Custom Event</h3>
+            <p style='color: #cbd5e1; font-size: 12.5px; margin-top: 6px; line-height: 1.4;'>
+                Configure an invitational, no-tap, or special format from scratch with custom pair allocations and handicap calculations.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        st.write("")
+        if st.button("🛠️ Create New Custom Event", use_container_width=True):
+            st.session_state.tournament_config = {
+                "name": "New Custom Event",
+                "center": active_brand["name"],
+                "lanes_range": "1-40",
+                "lanes_count": 40,
+                "games_count": 3,
+                "hdcp_base": 220,
+                "hdcp_pct": 0.90,
+                "entry_fee": 50.0
+            }
             st.session_state.session_initialized = True
             st.rerun()
+
     with c3:
-        cloud = fetch_active_tournament_state()
-        if st.button("Resume Live State", disabled=not cloud, type="primary" if cloud else "secondary", use_container_width=True):
-            st.session_state.tournament_config, st.session_state.roster = cloud["config"], pd.DataFrame(cloud["roster"])
+        cloud_name = cloud["config"].get("name", "Active Tournament") if has_cloud else "No Active Cloud Event"
+        cloud_center = cloud["config"].get("center", "") if has_cloud else "No remote session found"
+        st.markdown(f"""
+        <div class='choice-card' style='border-color: {"#34d399" if has_cloud else "#334155"};'>
+            <div style='font-size: 30px; margin-bottom: 8px;'>{"☁️" if has_cloud else "📂"}</div>
+            <h3 style='margin: 0; color: {"#34d399" if has_cloud else "#94a3b8"}; font-weight: 800;'>Resume Live Event</h3>
+            <p style='color: #cbd5e1; font-size: 12.5px; margin-top: 6px; line-height: 1.4;'>
+                <b>{cloud_name}</b><br/>{cloud_center}
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        st.write("")
+        if st.button(
+            "🔄 Reconnect to Active Cloud State" if has_cloud else "No Active Cloud Session",
+            disabled=not has_cloud,
+            type="primary" if has_cloud else "secondary",
+            use_container_width=True
+        ):
+            st.session_state.tournament_config = cloud["config"]
+            st.session_state.roster = pd.DataFrame(cloud["roster"])
             st.session_state.session_initialized = True
             st.rerun()
+
     st.stop()
 
 # ---------------------------------------------------------
