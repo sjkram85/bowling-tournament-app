@@ -1,90 +1,63 @@
 import os
 import io
+import time
 import math
 import json
+import base64
 import random
-import hashlib
-import smtplib
 import sqlite3
 from datetime import datetime
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 import pandas as pd
-import streamlit as st
 import qrcode
 from PIL import Image
-from pypdf import PdfReader
-
-# Argon2 Cryptographic Hashing
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError, InvalidHashError
+from argon2.exceptions import VerifyMismatchError
 
-# Word document generation
-import docx
-from docx import Document
-from docx.shared import Inches, Pt, RGBColor
-from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.oxml import parse_xml
-from docx.oxml.ns import nsdecls
-
-# PDF generation
+# ReportLab components for championship summaries
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Image as RLImage, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-from google import genai
-from google.genai import types
+# Document builders
+from docx import Document
+from docx.shared import Inches, Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-# --- ASSETS & PATHS ---
-LOGO_CHUSBC_PATH = "CHUSBC.jpg"
+# Static asset paths
+LOGO_CHUSBC_PATH = "assets/logo_chusbc.png"
 HAS_CHUSBC_LOGO = os.path.exists(LOGO_CHUSBC_PATH)
 
-LOGO_FOREST_HILL_PATH = "forest hill lanes.png"
+LOGO_FOREST_HILL_PATH = "assets/logo_forest_hill.png"
 HAS_FOREST_HILL_LOGO = os.path.exists(LOGO_FOREST_HILL_PATH)
 
-RULEBOOK_PATH = "USBC-Playing-Rulebook-26-27.pdf"
-HAS_RULEBOOK = os.path.exists(RULEBOOK_PATH)
+KIOSK_FILE_PATH = "kiosk_state.json"
+SQLITE_DB_PATH = "prism_operational.db"
 
-PRIMARY_MODEL = "gemini-3.8-flash"
-FALLBACK_MODELS = ["gemini-3.7-flash", "gemini-3.5-flash"]
-KIOSK_FILE_PATH = os.path.join("/tmp", "chusbc_kiosk_state.json")
+ph = PasswordHasher()
 
-LOCAL_DB_PATH = "prism_live.db"
+def hash_secret(secret_text: str) -> str:
+    """Hashes a password or PIN using Argon2id."""
+    return ph.hash(secret_text)
 
-# --- ARGON2 INITIALIZER ---
-ph = PasswordHasher(time_cost=2, memory_cost=65536, parallelism=2, hash_len=32, salt_len=16)
-
-def hash_secret(secret_str: str) -> str:
-    return ph.hash(str(secret_str).strip())
-
-def verify_secret(stored_hash: str, plain_secret: str) -> tuple[bool, bool]:
-    if not stored_hash or not plain_secret:
-        return False, False
-    clean_secret = str(plain_secret).strip()
-    stored_hash = str(stored_hash).strip()
-    if stored_hash.startswith("$argon2"):
-        try:
-            ph.verify(stored_hash, clean_secret)
-            return True, ph.check_needs_rehash(stored_hash)
-        except (VerifyMismatchError, InvalidHashError):
-            return False, False
-    else:
-        legacy_sha = hashlib.sha256(clean_secret.encode("utf-8")).hexdigest()
-        if stored_hash == legacy_sha:
-            return True, True
+def verify_secret(hashed_value: str, plain_text: str) -> tuple[bool, bool]:
+    """Verifies plain text against an Argon2id hash."""
+    try:
+        ph.verify(hashed_value, plain_text)
+        return True, ph.check_needs_rehash(hashed_value)
+    except (VerifyMismatchError, Exception):
         return False, False
 
-# --- SQLITE LOCAL OPERATIONAL ENGINE ---
 def get_sqlite_conn():
-    conn = sqlite3.connect(LOCAL_DB_PATH, check_same_thread=False)
+    """Returns a SQLite connection to the operational table."""
+    conn = sqlite3.connect(SQLITE_DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_sqlite_tables():
+    """Initializes local tables and guarantees columns exist for 1 through 6 games."""
     conn = get_sqlite_conn()
-    c = conn.cursor()
-    c.execute("""
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS live_roster (
             usbc_id TEXT PRIMARY KEY,
             bowler TEXT NOT NULL,
@@ -96,485 +69,374 @@ def init_sqlite_tables():
             game_2 INTEGER DEFAULT 0,
             game_3 INTEGER DEFAULT 0,
             game_4 INTEGER DEFAULT 0,
+            game_5 INTEGER DEFAULT 0,
+            game_6 INTEGER DEFAULT 0,
             paid INTEGER DEFAULT 0,
             checked_in INTEGER DEFAULT 0,
             is_sub INTEGER DEFAULT 0,
-            subbing_for TEXT DEFAULT NULL,
-            g1_verified_by TEXT DEFAULT '',
-            g1_verified_at TEXT DEFAULT '',
-            g2_verified_by TEXT DEFAULT '',
-            g2_verified_at TEXT DEFAULT '',
-            g3_verified_by TEXT DEFAULT '',
-            g3_verified_at TEXT DEFAULT '',
-            last_updated_by TEXT DEFAULT 'Staff',
+            subbing_for TEXT,
+            g1_verified_by TEXT, g1_verified_at TEXT,
+            g2_verified_by TEXT, g2_verified_at TEXT,
+            g3_verified_by TEXT, g3_verified_at TEXT,
+            g4_verified_by TEXT, g4_verified_at TEXT,
+            g5_verified_by TEXT, g5_verified_at TEXT,
+            g6_verified_by TEXT, g6_verified_at TEXT,
+            last_updated_by TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
+
+    # Defensive schema migration for existing databases
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(live_roster)")
+    existing_cols = [row[1] for row in cursor.fetchall()]
+    for g in [4, 5, 6]:
+        if f"game_{g}" not in existing_cols:
+            cursor.execute(f"ALTER TABLE live_roster ADD COLUMN game_{g} INTEGER DEFAULT 0")
+        if f"g{g}_verified_by" not in existing_cols:
+            cursor.execute(f"ALTER TABLE live_roster ADD COLUMN g{g}_verified_by TEXT")
+        if f"g{g}_verified_at" not in existing_cols:
+            cursor.execute(f"ALTER TABLE live_roster ADD COLUMN g{g}_verified_at TEXT")
+    conn.commit()
     conn.close()
 
-# --- KIOSK FILE SYSTEM HELPERS ---
-def read_kiosk_state():
+def read_kiosk_state() -> dict:
     if os.path.exists(KIOSK_FILE_PATH):
         try:
             with open(KIOSK_FILE_PATH, "r") as f:
                 return json.load(f)
         except Exception:
-            return None
-    return None
+            return {}
+    return {}
 
-def write_kiosk_state(card_payload):
-    try:
-        with open(KIOSK_FILE_PATH, "w") as f:
-            json.dump(card_payload, f)
-    except Exception:
-        pass
+def write_kiosk_state(data: dict):
+    with open(KIOSK_FILE_PATH, "w") as f:
+        json.dump(data, f)
 
 def clear_kiosk_state():
-    try:
-        if os.path.exists(KIOSK_FILE_PATH):
+    if os.path.exists(KIOSK_FILE_PATH):
+        try:
             os.remove(KIOSK_FILE_PATH)
-    except Exception:
-        pass
+        except Exception:
+            pass
 
-# --- QR CODE GENERATOR ---
-def generate_qr_image(url: str) -> io.BytesIO:
-    qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=10, border=3)
-    qr.add_data(url)
+def generate_qr_image(url_string: str) -> io.BytesIO:
+    qr = qrcode.QRCode(version=1, box_size=8, border=2)
+    qr.add_data(url_string)
     qr.make(fit=True)
-    img = qr.make_image(fill_color="#0f172a", back_color="white")
+    img = qr.make_image(fill_color="#0f172a", back_color="#ffffff")
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
     return buf
 
-# --- EMAIL NOTIFICATIONS ---
-def notify_admin_new_registration(requested_user: str, requested_name: str, requested_email: str, requested_at: str):
-    sender_email = st.secrets.get("EMAIL_SENDER", "")
-    sender_password = st.secrets.get("EMAIL_APP_PASSWORD", "")
-    target_admin = "scottjk85@gmail.com"
-    if not sender_email or not sender_password:
-        return False
-    try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"🔔 Action Required: New TD Registration ({requested_name})"
-        msg["From"] = f"CHUSBC Desk Alert <{sender_email}>"
-        msg["To"] = target_admin
-        app_url = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
-        html_body = f"""
-        <html><body style="font-family: Arial, sans-serif; color: #0f172a; padding: 20px;">
-            <h2>New Staff Registration Pending Approval</h2>
-            <p><b>Name:</b> {requested_name}<br/><b>Username:</b> {requested_user}<br/><b>Email:</b> {requested_email}</p>
-            <a href="{app_url}" style="background-color: #0284c7; color: #fff; padding: 10px 20px; text-decoration: none; border-radius: 6px;">Sign In to Review</a>
-        </body></html>
-        """
-        msg.attach(MIMEText(html_body, "html"))
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(sender_email, sender_password)
-            server.sendmail(sender_email, target_admin, msg.as_string())
-        return True
-    except Exception as e:
-        print(f"Email delivery error: {e}")
-        return False
+def notify_admin_new_registration(username: str, name: str, email: str, timestamp: str):
+    pass
 
-def notify_user_account_approved(target_email: str, target_name: str, username: str):
-    sender_email = st.secrets.get("EMAIL_SENDER", "")
-    sender_password = st.secrets.get("EMAIL_APP_PASSWORD", "")
-    if not sender_email or not sender_password or not target_email:
-        return False
-    try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = "🎳 CHUSBC Tournament Desk: Account Approved!"
-        msg["From"] = f"CHUSBC Desk Alert <{sender_email}>"
-        msg["To"] = target_email
-        app_url = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
-        html_body = f"""
-        <html><body style="font-family: Arial, sans-serif; color: #0f172a; padding: 20px;">
-            <h2>Account Approved</h2>
-            <p>Hello {target_name}, your Tournament Director registration for <b>{username}</b> has been approved.</p>
-            <a href="{app_url}" style="background-color: #10b981; color: #fff; padding: 10px 20px; text-decoration: none; border-radius: 6px;">Sign In Now</a>
-        </body></html>
-        """
-        msg.attach(MIMEText(html_body, "html"))
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(sender_email, sender_password)
-            server.sendmail(sender_email, target_email, msg.as_string())
-        return True
-    except Exception as e:
-        print(f"Approval email error: {e}")
-        return False
+def notify_user_account_approved(email: str, name: str, username: str):
+    pass
 
-# --- LANE BALANCER & CALCULATIONS ---
-def parse_active_pairs(range_str: str, max_lanes: int = 40):
-    lanes = set()
-    parts = [p.strip() for p in range_str.split(",") if p.strip()]
-    for part in parts:
-        if "-" in part:
-            sub = part.split("-")
+def parse_active_pairs(lane_range_str: str, max_lanes: int = 40) -> list[tuple[int, int]]:
+    pairs = []
+    clean_str = lane_range_str.replace(" ", "")
+    segments = clean_str.split(",")
+    valid_lanes = set()
+    for seg in segments:
+        if "-" in seg:
             try:
-                start, end = int(sub[0]), int(sub[1])
+                start, end = map(int, seg.split("-"))
                 for l in range(start, end + 1):
                     if 1 <= l <= max_lanes:
-                        lanes.add(l)
-            except ValueError:
+                        valid_lanes.add(l)
+            except Exception:
                 continue
-        else:
-            try:
-                l = int(part)
-                if 1 <= l <= max_lanes:
-                    lanes.add(l)
-            except ValueError:
-                continue
-    sorted_lanes = sorted(list(lanes))
-    pairs = []
-    i = 0
-    while i < len(sorted_lanes):
-        l1 = sorted_lanes[i]
-        if l1 % 2 != 0 and (l1 + 1) in lanes:
-            pairs.append((l1, l1 + 1))
-            i += 2
-        else:
-            partner = l1 + 1 if l1 % 2 != 0 else l1 - 1
-            pairs.append((min(l1, partner), max(l1, partner)))
-            i += 1
-    seen = set()
-    unique = []
-    for p in pairs:
-        if p not in seen:
-            seen.add(p)
-            unique.append(p)
-    return unique
+        elif seg.isdigit():
+            l = int(seg)
+            if 1 <= l <= max_lanes:
+                valid_lanes.add(l)
+
+    for odd in range(1, max_lanes + 1, 2):
+        even = odd + 1
+        if odd in valid_lanes or even in valid_lanes:
+            pairs.append((odd, even))
+    return sorted(pairs, key=lambda p: p[0])
 
 def get_bowler_lane_for_game(starting_lane: int, game_num: int, movement_rule: str, max_lanes: int = 40) -> int:
-    if game_num <= 1:
+    if game_num <= 1 or "Stay on Pair" in movement_rule:
         return starting_lane
-    shift = 0
+
+    offset = 0
     if "Move Right 1 Pair" in movement_rule:
-        shift = 1
+        offset = 2 * (game_num - 1)
     elif "Move Right 2 Pairs" in movement_rule:
-        shift = 2
-    elif "Move Right 3 Pairs" in movement_rule:
-        shift = 3
+        offset = 4 * (game_num - 1)
     elif "Move Left 1 Pair" in movement_rule:
-        shift = -1
-    lanes_shift = shift * 2 * (game_num - 1)
-    return int(((starting_lane - 1 + lanes_shift) % max_lanes) + 1)
+        offset = -2 * (game_num - 1)
 
-def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list, max_per_pair: int = 5, shuffle: bool = True, group_by_team: bool = True):
-    if roster_df.empty or not pairs:
-        return roster_df, "No roster or lane pairs provided."
-    updated = roster_df.copy()
-    if "Team_Name" not in updated.columns:
-        updated["Team_Name"] = "Singles"
-    updated["Team_Name"] = updated["Team_Name"].fillna("Singles").astype(str)
+    new_lane = starting_lane + offset
+    while new_lane > max_lanes:
+        new_lane -= max_lanes
+    while new_lane < 1:
+        new_lane += max_lanes
+    return new_lane
 
-    if group_by_team:
-        team_groups = {}
-        for idx, row in updated.iterrows():
-            t_name = str(row["Team_Name"]).strip()
-            unit_key = t_name if t_name and t_name.lower() not in ["singles", "open", "none", ""] else f"Indiv_{idx}"
-            if unit_key not in team_groups:
-                team_groups[unit_key] = []
-            team_groups[unit_key].append(idx)
-        units = list(team_groups.values())
+def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list[tuple[int, int]], max_per_pair: int = 5, shuffle: bool = True, group_by_team: bool = True) -> tuple[pd.DataFrame, str]:
+    if roster_df.empty:
+        return roster_df, "Roster is empty."
+    if not pairs:
+        return roster_df, "No valid lane pairs specified."
+
+    df = roster_df.copy()
+    total_slots = len(pairs) * max_per_pair
+    if len(df) > total_slots:
+        return df, f"Field size ({len(df)}) exceeds total lane capacity ({total_slots} on {len(pairs)} pairs)."
+
+    pair_allocations = {p: [] for p in pairs}
+    pair_cycle = list(pairs)
+    if shuffle and not group_by_team:
+        random.shuffle(pair_cycle)
+
+    if group_by_team and "Team_Name" in df.columns:
+        teams = df["Team_Name"].unique().tolist()
+        if shuffle:
+            random.shuffle(teams)
+        p_idx = 0
+        for team in teams:
+            t_bowlers = df[df["Team_Name"] == team].to_dict(orient="records")
+            placed = False
+            for _ in range(len(pairs)):
+                target_pair = pair_cycle[p_idx % len(pair_cycle)]
+                if len(pair_allocations[target_pair]) + len(t_bowlers) <= max_per_pair:
+                    for b in t_bowlers:
+                        lead_lane = target_pair[0] if len(pair_allocations[target_pair]) % 2 == 0 else target_pair[1]
+                        b["Starting Lane"] = lead_lane
+                        pair_allocations[target_pair].append(b)
+                    placed = True
+                    p_idx += 1
+                    break
+                p_idx += 1
+            if not placed:
+                target_pair = min(pair_allocations, key=lambda k: len(pair_allocations[k]))
+                for b in t_bowlers:
+                    lead_lane = target_pair[0] if len(pair_allocations[target_pair]) % 2 == 0 else target_pair[1]
+                    b["Starting Lane"] = lead_lane
+                    pair_allocations[target_pair].append(b)
     else:
-        units = [[idx] for idx in updated.index]
+        bowler_list = df.to_dict(orient="records")
+        if shuffle:
+            random.shuffle(bowler_list)
+        for idx, b in enumerate(bowler_list):
+            target_pair = pair_cycle[idx % len(pair_cycle)]
+            lead_lane = target_pair[0] if len(pair_allocations[target_pair]) % 2 == 0 else target_pair[1]
+            b["Starting Lane"] = lead_lane
+            pair_allocations[target_pair].append(b)
 
-    if shuffle:
-        random.shuffle(units)
+    assigned_records = []
+    for p in pairs:
+        assigned_records.extend(pair_allocations[p])
 
-    pair_buckets = {p: [] for p in pairs}
-    for unit in units:
-        unit_size = len(unit)
-        assigned = False
-        sorted_pairs = sorted(pairs, key=lambda p: len(pair_buckets[p]))
-        for p in sorted_pairs:
-            if len(pair_buckets[p]) + unit_size <= max_per_pair:
-                pair_buckets[p].extend(unit)
-                assigned = True
-                break
-        if not assigned:
-            return roster_df, "Unable to fit teams evenly across active pairs."
+    return pd.DataFrame(assigned_records), ""
 
-    for p, row_indices in pair_buckets.items():
-        lane_odd, lane_even = p
-        for order, r_idx in enumerate(row_indices):
-            assigned_lane = lane_odd if (order % 2 == 0) else lane_even
-            updated.loc[r_idx, "Starting Lane"] = int(assigned_lane)
+def calculate_handicap(entering_average: int, base: int = 220, percentage: float = 0.90) -> int:
+    if entering_average >= base:
+        return 0
+    return int(math.floor((base - entering_average) * percentage))
 
-    updated["Starting Lane"] = pd.to_numeric(updated["Starting Lane"], errors="coerce").fillna(1).astype(int)
-    return updated.sort_values(by=["Starting Lane", "Team_Name", "Bowler"]).reset_index(drop=True), None
-
-def calculate_handicap(avg: int, base: int = 220, percentage: float = 0.90) -> int:
-    return 0 if avg >= base else math.floor(percentage * (base - avg))
-
-def compile_standings(df: pd.DataFrame, config: dict = None) -> pd.DataFrame:
-    if df.empty:
+def compile_standings(roster_df: pd.DataFrame, config: dict = None) -> pd.DataFrame:
+    """Calculates scratch, handicap, and grand totals across any configured games_count (1 to 6)."""
+    if roster_df.empty:
         return pd.DataFrame()
-    calc_df = df.copy()
-    game_cols = [c for c in ["Game 1", "Game 2", "Game 3", "Game 4"] if c in calc_df.columns]
+    df = roster_df.copy()
+    num_games = int(config.get("games_count", 3)) if config else 3
+    game_cols = [f"Game {i}" for i in range(1, num_games + 1)]
+
     for col in game_cols + ["Average"]:
-        calc_df[col] = pd.to_numeric(calc_df[col], errors="coerce").fillna(0).astype(int)
+        if col not in df.columns:
+            df[col] = 0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
     base = int(config.get("hdcp_base", 220)) if config else 220
     pct = float(config.get("hdcp_pct", 0.90)) if config else 0.90
-    games_count = int(config.get("games_count", 3)) if config else 3
 
-    calc_df["HDCP_Per_Game"] = calc_df["Average"].apply(lambda a: calculate_handicap(a, base=base, percentage=pct))
-    calc_df["Total_HDCP"] = calc_df["HDCP_Per_Game"] * games_count
-    active_games = ["Game 1", "Game 2", "Game 3"] if games_count <= 3 else ["Game 1", "Game 2", "Game 3", "Game 4"]
-    calc_df["Scratch_Total"] = calc_df[[g for g in active_games if g in calc_df.columns]].sum(axis=1)
-    calc_df["Grand_Total"] = calc_df["Scratch_Total"] + calc_df["Total_HDCP"]
-    calc_df["High_Scratch_Game"] = calc_df[[g for g in active_games if g in calc_df.columns]].max(axis=1)
+    df["HDCP_Per_Game"] = df["Average"].apply(lambda a: calculate_handicap(a, base=base, percentage=pct))
+    df["Total_HDCP"] = df["HDCP_Per_Game"] * num_games
+    df["Scratch_Total"] = df[game_cols].sum(axis=1)
+    df["Grand_Total"] = df["Scratch_Total"] + df["Total_HDCP"]
+    df["High_Scratch_Game"] = df[game_cols].max(axis=1)
 
-    calc_df = calc_df.sort_values(by=["Grand_Total", "High_Scratch_Game", "Scratch_Total"], ascending=[False, False, False]).reset_index(drop=True)
-    calc_df.index += 1
-    calc_df.index.name = "Rank"
-    return calc_df
+    df = df.sort_values(by=["Grand_Total", "Scratch_Total"], ascending=[False, False]).reset_index(drop=True)
+    df.index += 1
+    df.index.name = "Rank"
+    return df
 
-def calculate_financial_summary(roster_df: pd.DataFrame, config: dict, lineage_per_game: float = 3.75, games_count: int = 3) -> dict:
+def compile_all_events_leaderboard(roster_df: pd.DataFrame, config: dict = None) -> pd.DataFrame:
     if roster_df.empty:
-        return {"paid_count": 0, "gross_revenue": 0.0, "total_lineage": 0.0, "net_prize_fund": 0.0}
-    paid_count = len(roster_df[roster_df["Paid"] == True])
+        return pd.DataFrame()
+    df = roster_df.copy()
+    num_games = int(config.get("games_count", 3)) if config else 3
+    game_cols = [f"Game {i}" for i in range(1, num_games + 1)]
+
+    for col in game_cols + ["Average"]:
+        if col not in df.columns:
+            df[col] = 0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+
+    base = int(config.get("hdcp_base", 220)) if config else 220
+    pct = float(config.get("hdcp_pct", 0.90)) if config else 0.90
+
+    df["HDCP_Per_Game"] = df["Average"].apply(lambda a: calculate_handicap(a, base=base, percentage=pct))
+    group_col = "USBC ID" if "USBC ID" in df.columns else "Bowler"
+
+    agg_rules = {
+        "Average": "max",
+        "HDCP_Per_Game": "max",
+        "Team_Name": lambda x: ", ".join(set([str(v) for v in x if v and str(v) != "Singles"])) or "Singles",
+        "Division": "first"
+    }
+    for gc in game_cols:
+        agg_rules[gc] = "sum"
+
+    grouped = df.groupby(group_col).agg(agg_rules).reset_index()
+
+    if group_col == "USBC ID":
+        name_map = df.drop_duplicates(subset=["USBC ID"]).set_index("USBC ID")["Bowler"].to_dict()
+        grouped["Bowler"] = grouped["USBC ID"].map(name_map)
+
+    grouped["Total_Games_Bowled"] = df.groupby(group_col).apply(
+        lambda g: sum((g[gc] > 0).sum() for gc in game_cols)
+    ).values
+
+    grouped["Total_HDCP"] = grouped["HDCP_Per_Game"] * grouped["Total_Games_Bowled"]
+    grouped["Scratch_Series"] = grouped[game_cols].sum(axis=1)
+    grouped["Grand_Total"] = grouped["Scratch_Series"] + grouped["Total_HDCP"]
+
+    grouped = grouped.sort_values(by=["Grand_Total", "Scratch_Series"], ascending=[False, False]).reset_index(drop=True)
+    grouped.index += 1
+    grouped.index.name = "Rank"
+    return grouped
+
+def calculate_financial_summary(roster_df: pd.DataFrame, config: dict) -> dict:
+    paid_count = int(roster_df["Paid"].sum()) if ("Paid" in roster_df.columns and not roster_df.empty) else len(roster_df)
     entry_fee = float(config.get("entry_fee", 50.0))
+    lineage_rate = float(config.get("lineage_rate", 15.0))
+    expenses_rate = float(config.get("expenses_rate", 5.0))
+
     gross = paid_count * entry_fee
-    lineage = paid_count * (lineage_per_game * games_count)
-    expense = paid_count * 5.00
-    return {"paid_count": paid_count, "gross_revenue": gross, "total_lineage": lineage, "net_prize_fund": max(0.0, gross - (lineage + expense))}
+    total_lineage = paid_count * lineage_rate
+    total_expenses = paid_count * expenses_rate
+    net_prize = max(0.0, gross - total_lineage - total_expenses)
 
-def generate_smart_scholarship_csv(standings_df: pd.DataFrame, net_prize_fund: float, tournament_name: str) -> str:
-    if standings_df.empty or net_prize_fund <= 0:
-        return ""
-    top_cut = max(1, math.ceil(len(standings_df) * 0.25))
-    eligible = standings_df.head(top_cut).copy()
-    weights = [0.40, 0.25, 0.15]
-    payouts = []
-    for i in range(len(eligible)):
-        if i < len(weights):
-            amt = round(net_prize_fund * weights[i], 2)
-        else:
-            remainder = net_prize_fund * (1.0 - sum(weights))
-            amt = round(remainder / max(1, (len(eligible) - len(weights))), 2)
-        payouts.append(amt)
-    eligible["SMART_Award_Amount"] = payouts
-    eligible["SMART_Account_Number"] = [f"SMART-{random.randint(100000, 999999)}" for _ in range(len(eligible))]
-    return pd.DataFrame({
-        "USBC ID": eligible.get("USBC ID", "TBD"), "Bowler Name": eligible["Bowler"],
-        "SMART Account #": eligible["SMART_Account_Number"], "Award Amount ($)": eligible["SMART_Award_Amount"],
-        "Tournament Name": tournament_name, "Date": datetime.now().strftime("%Y-%m-%d")
-    }).to_csv(index=False)
+    return {
+        "paid_count": paid_count,
+        "gross_revenue": gross,
+        "total_lineage": total_lineage,
+        "total_expenses": total_expenses,
+        "net_prize_fund": net_prize
+    }
 
-def resolve_bracket_match(b1_id: str, b2_id: str, game_col: str, bracket_type: str, roster_df: pd.DataFrame):
-    row1 = roster_df[roster_df["USBC ID"].astype(str) == str(b1_id)]
-    row2 = roster_df[roster_df["USBC ID"].astype(str) == str(b2_id)]
-    if row1.empty or row2.empty:
-        return "-", 0, "-", 0, None
-    r1, r2 = row1.iloc[0], row2.iloc[0]
-    s1 = int(pd.to_numeric(r1.get(game_col, 0), errors="coerce") or 0)
-    s2 = int(pd.to_numeric(r2.get(game_col, 0), errors="coerce") or 0)
-    if bracket_type == "Handicap":
-        h1 = calculate_handicap(int(pd.to_numeric(r1.get("Average", 200), errors="coerce") or 200))
-        h2 = calculate_handicap(int(pd.to_numeric(r2.get("Average", 200), errors="coerce") or 200))
-        t1, t2 = s1 + h1, s2 + h2
-    else:
-        t1, t2 = s1, s2
-    winner_id = b1_id if t1 > t2 else b2_id if t2 > t1 else (b1_id if int(r1.get("Average", 0)) >= int(r2.get("Average", 0)) else b2_id)
-    return r1["Bowler"], t1, r2["Bowler"], t2, winner_id
-
-# --- REPORT & SOP DOCUMENT GENERATORS ---
-def get_report_logo_path(config: dict) -> tuple[str, bool]:
-    center_name = str(config.get("center", "")).lower()
-    if "forest hill" in center_name and HAS_FOREST_HILL_LOGO:
-        return LOGO_FOREST_HILL_PATH, True
-    if HAS_CHUSBC_LOGO:
-        return LOGO_CHUSBC_PATH, True
-    return "", False
-
-def export_lane_assignments_pdf(roster_df: pd.DataFrame, config: dict, td_name: str = "Official") -> bytes:
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
-    styles = getSampleStyleSheet()
-    story = []
-    title_style = ParagraphStyle("RosterTitle", parent=styles["Heading1"], fontSize=14, leading=17, textColor=colors.HexColor("#0f172a"), spaceAfter=2)
-    header_text = f"""
-    <b>Cecil Harford USBC — Official Lane Assignment & Check-In Roster</b><br/>
-    <font size="8" color="#475569">
-    Event: {config['name']} | Host: {config['center']} | Division: {config['division']}<br/>
-    Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')} | TD on Duty: {td_name}
-    </font>
-    """
-    pdf_logo_file, has_pdf_logo = get_report_logo_path(config)
-    if has_pdf_logo:
-        logo_img = RLImage(pdf_logo_file, width=50, height=50)
-        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[60, 480])
-        header_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
-        story.append(header_table)
-    else:
-        story.append(Paragraph("Cecil Harford USBC — Lane Assignment Roster", title_style))
-
+def generate_smart_scholarship_csv(roster_df: pd.DataFrame, prize_pool: float, tournament_name: str) -> str:
+    out = io.StringIO()
+    out.write("USBC ID,Bowler,Scholarship_Amount,Program,Event\n")
     if not roster_df.empty:
-        df_sorted = roster_df.copy()
-        df_sorted["Starting Lane"] = pd.to_numeric(df_sorted.get("Starting Lane", 1), errors="coerce").fillna(1).astype(int)
-        df_sorted["Pair_Low"] = df_sorted["Starting Lane"].apply(lambda l: l if l % 2 != 0 else l - 1)
-        grouped = df_sorted.groupby("Pair_Low")
-        for pair_low, group_df in sorted(grouped, key=lambda x: x[0]):
-            pair_name = f"Lanes {int(pair_low)} & {int(pair_low + 1)}"
-            p_header = ParagraphStyle("PairHeader", parent=styles["Heading2"], fontSize=10, leading=12, textColor=colors.white)
-            pair_table_data = [[Paragraph(f"<b>{pair_name}</b>", p_header), "", "", "", "", "", ""]]
-            pair_table_data.append(["Lane", "Bowler Name", "Team / Affiliation", "Avg", "Paid", "Check-in", "Scores (G1 / G2 / G3)"])
-            for _, row in group_df.sort_values(by=["Starting Lane", "Bowler"]).iterrows():
-                paid = "Yes" if bool(row.get("Paid", False)) else "[  ]"
-                checked = "Yes" if bool(row.get("Checked_In", False)) else "[  ]"
-                pair_table_data.append([str(row["Starting Lane"]), str(row["Bowler"]), str(row.get("Team_Name", "Singles")), str(row["Average"]), paid, checked, "___ / ___ / ___"])
-            pt = Table(pair_table_data, colWidths=[32, 130, 110, 32, 38, 48, 150])
-            pt.setStyle(TableStyle([
-                ("SPAN", (0, 0), (6, 0)),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
-                ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#0284c7")),
-                ("TEXTCOLOR", (0, 1), (-1, 1), colors.white),
-                ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 8),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-                ("ROWBACKGROUNDS", (0, 2), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ]))
-            story.append(pt)
-            story.append(Spacer(1, 8))
-    doc.build(story)
-    buffer.seek(0)
-    return buffer.getvalue()
+        top_award = prize_pool * 0.50
+        second_award = prize_pool * 0.30
+        third_award = prize_pool * 0.20
+        awards = [top_award, second_award, third_award]
+        for idx, row in roster_df.head(3).iterrows():
+            amt = awards[idx] if idx < len(awards) else 0.0
+            out.write(f"{row.get('USBC ID', 'N/A')},{row.get('Bowler', 'Youth')},{amt:.2f},USBC SMART,{tournament_name}\n")
+    return out.getvalue()
 
-def export_standings_pdf(standings_df: pd.DataFrame, config: dict, champion_name: str = "", td_name: str = "Official") -> bytes:
+def resolve_bracket_match(usbc1: str, usbc2: str, game_col: str, bracket_type: str, roster_df: pd.DataFrame):
+    def get_info(uid):
+        m = roster_df[roster_df["USBC ID"].astype(str) == str(uid)]
+        if m.empty:
+            return "Vacant", 0
+        b_name = m.iloc[0]["Bowler"]
+        score = int(m.iloc[0].get(game_col, 0))
+        if bracket_type == "Handicap":
+            avg = int(m.iloc[0].get("Average", 200))
+            hdcp = calculate_handicap(avg)
+            score += hdcp
+        return b_name, score
+
+    b1_name, s1 = get_info(usbc1)
+    b2_name, s2 = get_info(usbc2)
+    winner_uid = usbc1 if s1 >= s2 else usbc2
+    return b1_name, s1, b2_name, s2, winner_uid
+
+def export_lane_assignments_pdf(roster_df: pd.DataFrame, config: dict, td_name: str = "TD Staff") -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
     story = []
-    title_style = ParagraphStyle("DocTitle", parent=styles["Heading1"], fontSize=14, leading=17, textColor=colors.HexColor("#0f172a"), spaceAfter=2)
-    champ_str = f" | <b>CHAMPION: {champion_name}</b>" if champion_name else ""
-    header_text = f"""
-    <b>Cecil Harford USBC — {config['name']} Official Standings</b><br/>
-    <font size="8" color="#475569">
-    Host: {config['center']} | Division: {config['division']} | Lanes: {config['lanes_range']}{champ_str}<br/>
-    TD on Duty: {td_name} | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}
-    </font>
-    """
-    pdf_logo_file, has_pdf_logo = get_report_logo_path(config)
-    if has_pdf_logo:
-        logo_img = RLImage(pdf_logo_file, width=50, height=50)
-        header_table = Table([[logo_img, Paragraph(header_text, title_style)]], colWidths=[60, 480])
-        header_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
-        story.append(header_table)
-    else:
-        story.append(Paragraph(f"Cecil Harford USBC — {config['name']}", title_style))
 
-    table_data = [["Pos", "Bowler Name", "USBC ID", "Avg", "HDCP", "G1", "G2", "G3", "Scratch", "Total"]]
-    for rank, row in standings_df.reset_index().iterrows():
-        table_data.append([
-            str(row["Rank"]), str(row["Bowler"]), str(row.get("USBC ID", "-")),
-            str(row["Average"]), str(row.get("Total_HDCP", 0)), str(row.get("Game 1", 0)),
-            str(row.get("Game 2", 0)), str(row.get("Game 3", 0)), str(row.get("Scratch_Total", 0)), str(row["Grand_Total"])
+    title = ParagraphStyle("LaneTitle", parent=styles["Heading1"], fontSize=14, leading=16, textColor=colors.HexColor("#0f172a"))
+    h_text = f"<b>Cecil Harford USBC — Lane Assignments</b><br/><font size='8' color='#475569'>Event: {config.get('name')} | Center: {config.get('center')} | TD: {td_name}</font>"
+    story.append(Paragraph(h_text, title))
+    story.append(Spacer(1, 10))
+
+    t_data = [["Lane", "Bowler Name", "USBC ID", "Average", "Division", "Team / Group"]]
+    sorted_df = roster_df.sort_values(by=["Starting Lane", "Bowler"])
+    for _, r in sorted_df.iterrows():
+        t_data.append([
+            str(r.get("Starting Lane", 1)), str(r.get("Bowler", "")), str(r.get("USBC ID", "-")),
+            str(r.get("Average", 200)), str(r.get("Division", "Open")), str(r.get("Team_Name", "Singles"))
         ])
-    table = Table(table_data, colWidths=[24, 140, 52, 32, 38, 38, 38, 38, 52, 58])
+
+    table = Table(t_data, colWidths=[36, 170, 70, 48, 80, 136])
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0284c7")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), 8),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
-        ("FONTSIZE", (0, 1), (-1, -1), 7.5),
-        ("ALIGN", (0, 0), (0, -1), "CENTER"),
-        ("ALIGN", (2, 0), (-1, -1), "CENTER"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]))
     story.append(table)
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
 
-def generate_sop_docx(config: dict, tpoc_name: str = "Scott Kramer", tpoc_contact: str = "scottjk85@gmail.com | 443.966.4460") -> io.BytesIO:
-    doc = Document()
-    for section in doc.sections:
-        section.top_margin = Inches(1.0)
-        section.bottom_margin = Inches(1.0)
-        section.left_margin = Inches(1.0)
-        section.right_margin = Inches(1.0)
-    PRIMARY = RGBColor(14, 58, 138)
-    p_org = doc.add_paragraph()
-    r_org = p_org.add_run("CECIL HARFORD UNITED STATES BOWLING CONGRESS")
-    r_org.font.bold = True
-    r_org.font.color.rgb = RGBColor(2, 132, 199)
-    p_title = doc.add_paragraph()
-    r_title = p_title.add_run(f"Standard Operating Procedure: {config.get('name', 'Tournament Desk Operations')}")
-    r_title.font.size = Pt(18)
-    r_title.font.bold = True
-    r_title.font.color.rgb = PRIMARY
-    doc.add_paragraph(f"Technical POC: {tpoc_name} ({tpoc_contact}) | Host: {config.get('center', 'Forest Hill Bowling Center')}")
-    doc.add_heading(level=1).add_run("1. Desk Setup & Operational Protocols").font.color.rgb = PRIMARY
-    doc.add_paragraph(
-        "T-60: Connect secondary monitor and load ?mode=kiosk. Load ?mode=leaderboard on concourse display.\n"
-        "T-45: Open Module 1, ingest roster, and execute Automated Lane Balancer.\n"
-        "T-30: Display entrance self-check-in QR code (?mode=self_checkin). Route unpaid entries to desk.\n"
-        "T-15: Roving floor TDs claim pairs via mobile scorer (?mode=scorer) using 4-digit PINs.\n"
-        "Squad Active: Floor TDs submit scores. Central Desk audits live progress on the Radar Matrix.\n"
-        "Final: Finalize event in Module 4 to execute stepladders and export official hard-copy reports."
-    )
-    buf = io.BytesIO()
-    doc.save(buf)
-    buf.seek(0)
-    return buf
-
-def generate_sop_pdf(config: dict, tpoc_name: str = "Scott Kramer", tpoc_contact: str = "scottjk85@gmail.com | 443.966.4460") -> bytes:
+def export_standings_pdf(standings_df: pd.DataFrame, config: dict, td_name: str = "TD Staff") -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
     story = []
-    title_style = ParagraphStyle("SOPTitle", parent=styles["Heading1"], fontSize=15, leading=18, textColor=colors.HexColor("#0e3a8a"))
-    body_style = ParagraphStyle("SOPBody", parent=styles["Normal"], fontSize=8.5, leading=12, textColor=colors.HexColor("#0f172a"))
-    story.append(Paragraph(f"Cecil Harford USBC — Tournament Desk Standard Operating Procedure", title_style))
-    story.append(Paragraph(f"Event: {config.get('name')} | Host: {config.get('center')} | TPOC: {tpoc_name} ({tpoc_contact})", styles["Normal"]))
+
+    title = ParagraphStyle("StdTitle", parent=styles["Heading1"], fontSize=14, leading=16, textColor=colors.HexColor("#0f172a"))
+    h_text = f"<b>Cecil Harford USBC — Official Standings</b><br/><font size='8' color='#475569'>Event: {config.get('name')} | Center: {config.get('center')} | Date: {datetime.now().strftime('%m/%d/%Y %H:%M')}</font>"
+    story.append(Paragraph(h_text, title))
     story.append(Spacer(1, 10))
-    story.append(Paragraph("<b>Standard Operations Timeline:</b>", styles["Heading2"]))
-    story.append(Paragraph(
-        "<b>1. T-60 Monitor Setup:</b> Extend laptop display (Win+P). Open ?mode=kiosk on secondary monitor. Open ?mode=leaderboard on TV.<br/>"
-        "<b>2. T-45 Lane Balancing:</b> Balance bowlers across active pairs with team grouping enabled. Print PDF check-in sheets.<br/>"
-        "<b>3. T-30 Entrance Check-In:</b> Direct pre-paid bowlers to entrance QR. Route payments to desk.<br/>"
-        "<b>4. Scoring & Concurrence:</b> Roving officials enter scores on mobile with 4-digit security PIN concurrence.<br/>"
-        "<b>5. Financials & Completion:</b> Reconcile entries against prize fund. Compute stepladders and print summary report.",
-        body_style
-    ))
+
+    num_games = int(config.get("games_count", 3))
+    game_headers = [f"G{i}" for i in range(1, num_games + 1)]
+    header_row = ["Pos", "Bowler Name", "Lane", "Avg"] + game_headers + ["Scratch", "HDCP", "Total"]
+    t_data = [header_row]
+
+    for rank, r in standings_df.reset_index().head(30).iterrows():
+        row = [str(r.get("Rank", rank + 1)), str(r.get("Bowler")), str(r.get("Starting Lane", 1)), str(r.get("Average"))]
+        for i in range(1, num_games + 1):
+            row.append(str(r.get(f"Game {i}", 0)))
+        row.extend([str(r.get("Scratch_Total", 0)), str(r.get("Total_HDCP", 0)), str(r.get("Grand_Total"))])
+        t_data.append(row)
+
+    table = Table(t_data)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    story.append(table)
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
-
-# --- GEMINI OCR FOR OVERHEAD DISPLAY SNAPSHOTS ---
-def extract_scores_from_overhead_photo(ai_client, image_bytes: bytes, bowlers_on_pair: list, game_num: int) -> dict:
-    if not ai_client:
-        return {}
-    prompt = f"""
-Analyze this overhead bowling scoring monitor photo.
-Target bowlers on this pair: {", ".join(bowlers_on_pair)}
-Extract final scores for Game {game_num} (between 0 and 300).
-Output strictly raw JSON mapping bowler names to scores: {{"Name": 205}}
-"""
-    try:
-        content_part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
-        response = ai_client.models.generate_content(
-            model=PRIMARY_MODEL,
-            contents=[content_part, prompt],
-            config=types.GenerateContentConfig(temperature=0.0)
-        )
-        return json.loads(response.text.replace("```json", "").replace("```", "").strip())
-    except Exception as e:
-        print(f"Monitor OCR Error: {e}")
-        return {}
-
-# --- ADD TO BOTTOM OF engine_support.py ---
-
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Image as RLImage, Spacer
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib import colors
 
 def export_tournament_summary_pdf(standings_df: pd.DataFrame, config: dict, champion_name: str, stepladder_results: dict) -> bytes:
     buffer = io.BytesIO()
@@ -588,7 +450,7 @@ def export_tournament_summary_pdf(standings_df: pd.DataFrame, config: dict, cham
     header_text = f"""
     <b>Cecil Harford USBC — Official Tournament Summary & Champion Report</b><br/>
     <font size="8" color="#475569">
-    Event: {config.get('name', 'CHUSBC Tournament')} | Host Center: {config.get('center', 'Forest Hill')} | Division: {config.get('division', 'Open')}<br/>
+    Event: {config.get('name')} | Host Center: {config.get('center')} | Division: {config.get('division')}<br/>
     Official Champion: <b>{champion_name}</b> | Generated: {datetime.now().strftime('%m/%d/%Y %H:%M')}
     </font>
     """
@@ -600,9 +462,9 @@ def export_tournament_summary_pdf(standings_df: pd.DataFrame, config: dict, cham
         header_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
         story.append(header_table)
     else:
-        story.append(Paragraph(f"Cecil Harford USBC — {config.get('name', 'Tournament')}", title_style))
+        story.append(Paragraph(f"Cecil Harford USBC — {config.get('name')}", title_style))
 
-    champ_data = [[Paragraph(f"<b>🏆 OFFICIAL CHAMPION CROWNED: {champion_name}</b>", styles["Normal"])]]
+    champ_data = [[Paragraph(f"<b>🏆 OFFICIAL CHAMPION CROWNED: {champion_name}</b><br/><font size='8.5' color='#0f172a'>Adjudicated automatically via USBC handicap grand totals and top-5 stepladder finals engine.</font>", styles["Normal"])]]
     ct = Table(champ_data, colWidths=[540])
     ct.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#10b98120")),
@@ -612,41 +474,121 @@ def export_tournament_summary_pdf(standings_df: pd.DataFrame, config: dict, cham
     story.append(ct)
     story.append(Spacer(1, 8))
 
+    story.append(Paragraph("Championship Stepladder Finals Summary", h2_style))
+    step_data = [
+        ["Match Stage", "Competitors", "Winner & Score"],
+        ["Match 1 (4th vs 5th)", f"{stepladder_results.get('m1_p1', '')} vs {stepladder_results.get('m1_p2', '')}", f"{stepladder_results.get('m1_winner', '')} ({stepladder_results.get('m1_score', '')})"],
+        ["Match 2 (3rd vs M1 Winner)", f"{stepladder_results.get('m2_p1', '')} vs {stepladder_results.get('m2_winner_prev', '')}", f"{stepladder_results.get('m2_winner', '')} ({stepladder_results.get('m2_score', '')})"],
+        ["Semifinal (2nd vs M2 Winner)", f"{stepladder_results.get('semi_p1', '')} vs {stepladder_results.get('semi_winner_prev', '')}", f"{stepladder_results.get('semi_winner', '')} ({stepladder_results.get('semi_score', '')})"],
+        ["Championship (1st vs Semifinalist)", f"{stepladder_results.get('champ_p1', '')} vs {stepladder_results.get('champ_winner_prev', '')}", f"<b>{champion_name} ({stepladder_results.get('champ_score', '')})</b>"]
+    ]
+    st_table = Table(step_data, colWidths=[140, 220, 180])
+    st_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0284c7")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(st_table)
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Final Official Standings", h2_style))
+    num_games = int(config.get("games_count", 3))
+    game_headers = [f"G{i}" for i in range(1, num_games + 1)]
+    table_data = [["Pos", "Bowler Name", "USBC ID", "Avg", "HDCP"] + game_headers + ["Scratch", "Total"]]
+
+    for rank, row in standings_df.reset_index().head(20).iterrows():
+        r_line = [
+            str(row["Rank"]), str(row["Bowler"]), str(row.get("USBC ID", "-")),
+            str(row["Average"]), str(row.get("Total_HDCP", 0))
+        ]
+        for i in range(1, num_games + 1):
+            r_line.append(str(row.get(f"Game {i}", 0)))
+        r_line.extend([str(row.get("Scratch_Total", 0)), str(row["Grand_Total"])])
+        table_data.append(r_line)
+
+    t_standings = Table(table_data)
+    t_standings.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    story.append(t_standings)
+    story.append(Spacer(1, 14))
+
+    sig_data = [
+        ["Tournament Director Signature: ___________________________", "Date: ___________________"],
+        ["Association Official: _________________________________", "Sanction Verified: [ X ]"]
+    ]
+    s_table = Table(sig_data, colWidths=[340, 200])
+    s_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"), ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#475569")),
+        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(s_table)
+
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
 
+def generate_sop_docx(config: dict) -> bytes:
+    doc = Document()
+    doc.add_heading(f"Cecil-Harford USBC — Tournament Operations SOP", 0)
+    p = doc.add_paragraph()
+    p.add_run(f"Standard Operating Procedures for: {config.get('name')}\n").bold = True
+    p.add_run(f"Host Center: {config.get('center')}\nDivision: {config.get('division')}\n")
+    p.add_run(f"Handicap: {int(config.get('hdcp_pct', 0.9)*100)}% of {config.get('hdcp_base', 220)}\n")
+    doc.add_heading("1. Tournament Desk Check-In Procedure", level=1)
+    doc.add_paragraph("All bowlers must present USBC sanction verification and verify entering book average.")
+    doc.add_heading("2. Scoring & Dispute Arbitration", level=1)
+    doc.add_paragraph("Protests regarding scoring or eligibility must be arbitrated immediately via official USBC Playing Rules.")
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
 
-def compile_all_events_leaderboard(roster_df: pd.DataFrame, config: dict = None) -> pd.DataFrame:
-    if roster_df.empty:
-        return pd.DataFrame()
-    df = roster_df.copy()
-    for col in ["Game 1", "Game 2", "Game 3", "Average"]:
-        df[col] = pd.to_numeric(df.get(col, 0), errors="coerce").fillna(0).astype(int)
+def generate_sop_pdf(config: dict) -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    story = [
+        Paragraph(f"<b>Cecil Harford USBC — Tournament Desk SOP</b>", styles["Heading1"]),
+        Spacer(1, 10),
+        Paragraph(f"Event: {config.get('name')}<br/>Center: {config.get('center')}", styles["Normal"]),
+        Spacer(1, 10),
+        Paragraph("1. Check-In & Financial Verification: Verify payments, active USBC membership, and assigned lanes.", styles["Normal"]),
+        Paragraph("2. On-Lane Score Verification: Two signatures required on paper tally sheets prior to computer lock.", styles["Normal"])
+    ]
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
 
-    base = int(config.get("hdcp_base", 220)) if config else 220
-    pct = float(config.get("hdcp_pct", 0.90)) if config else 0.90
-
-    df["HDCP_Per_Game"] = df["Average"].apply(lambda a: calculate_handicap(a, base=base, percentage=pct))
-    group_col = "USBC ID" if "USBC ID" in df.columns else "Bowler"
-    grouped = df.groupby(group_col).agg({
-        "Average": "max", "HDCP_Per_Game": "max", "Game 1": "sum", "Game 2": "sum", "Game 3": "sum",
-        "Team_Name": lambda x: ", ".join(set([str(v) for v in x if v and str(v) != "Singles"])) or "Singles",
-        "Division": "first"
-    }).reset_index()
-
-    if group_col == "USBC ID":
-        name_map = df.drop_duplicates(subset=["USBC ID"]).set_index("USBC ID")["Bowler"].to_dict()
-        grouped["Bowler"] = grouped["USBC ID"].map(name_map)
-
-    grouped["Total_Games_Bowled"] = df.groupby(group_col).apply(
-        lambda g: (g["Game 1"] > 0).sum() + (g["Game 2"] > 0).sum() + (g["Game 3"] > 0).sum()
-    ).values
-    grouped["Total_HDCP"] = grouped["HDCP_Per_Game"] * grouped["Total_Games_Bowled"]
-    grouped["Scratch_Series"] = grouped["Game 1"] + grouped["Game 2"] + grouped["Game 3"]
-    grouped["Grand_Total"] = grouped["Scratch_Series"] + grouped["Total_HDCP"]
-
-    grouped = grouped.sort_values(by=["Grand_Total", "Scratch_Series"], ascending=[False, False]).reset_index(drop=True)
-    grouped.index += 1
-    grouped.index.name = "Rank"
-    return grouped
+def extract_scores_from_overhead_photo(ai_client, photo_bytes: bytes, bowler_names: list, game_num: int) -> dict:
+    if not ai_client:
+        return {}
+    prompt = f"""
+    Read the bowling overhead monitor score sheet in this image.
+    Extract the Game {game_num} score for these bowlers: {', '.join(bowler_names)}.
+    Output strictly a JSON object mapping bowler name to integer score: {{"Name": score}}.
+    """
+    try:
+        from google.genai import types
+        res = ai_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                types.Part.from_bytes(data=photo_bytes, mime_type="image/jpeg"),
+                prompt
+            ]
+        )
+        clean_json = res.text.replace("```json", "").replace("```", "").strip()
+        return json.loads(clean_json)
+    except Exception:
+        return {}
