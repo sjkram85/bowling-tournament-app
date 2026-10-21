@@ -20,7 +20,7 @@ from views.advanced_view import render_advanced_view
 from views.intake_gateway import render_intake_gateway
 
 
-st.set_page_config(page_title="Prism Lane Control v1.1", page_icon="🎳", layout="wide")
+st.set_page_config(page_title="Prism Tournament Assistant", page_icon="🎳", layout="wide")
 st.markdown("""
 <style>
     .stApp { background-color: #0b1120; color: #f8fafc !important; }

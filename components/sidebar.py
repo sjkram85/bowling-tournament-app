@@ -40,7 +40,7 @@ def render_desk_sidebar():
         if logo_path.is_file():
             st.image(str(logo_path), width=84, alt="Cecil-Harford USBC")
         st.markdown("### Cecil-Harford USBC")
-        st.caption("Prism Lane Control")
+        st.caption("Prism Tournament Assistant")
         st.markdown(f"**{st.session_state.get('td_name', 'Staff')}** · {st.session_state.get('td_role', 'staff').upper()}")
 
         live_state = fetch_active_tournament_state() or {}

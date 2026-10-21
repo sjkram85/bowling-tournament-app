@@ -199,7 +199,7 @@ def verify_user_login(username: str, password: str):
 
 def render_auth_portal():
     _ensure_default_staff()
-    st.title("Prism Lane Control")
+    st.title("🎳 Prism Tournament Assistant")
     login_tab, request_tab = st.tabs(["Staff sign in", "Request access"])
     with login_tab:
         with st.form("staff_login"):

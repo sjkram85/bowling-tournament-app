@@ -43,7 +43,7 @@ missing a fact, say so instead of inventing it.
 Your output is advisory decision support, not an official USBC ruling. Escalate
 unresolved eligibility, average, or award disputes to tournament management or USBC.
 Be concise and action-oriented: state the ruling or calculation first, then the exact
-desk action to record in Prism Lane Control.
+desk action to record in Prism Tournament Assistant.
 """.strip()
 
 BOWLING_LOADER_CSS = """
@@ -184,7 +184,7 @@ def stream_prism_ai(query_text: str, runtime_context: dict, client=None):
     if intent == "WORKFLOW_GUIDE":
         instructions = f"""
 INTENT DETECTED: WORKFLOW / NEXT STEPS
-The user needs direct guidance on what action to take next in Prism Lane Control.
+The user needs direct guidance on what action to take next in Prism Tournament Assistant.
 - DO NOT cite USBC rule numbers or quote rulebook sections unless specifically requested.
 - Provide a clean, numbered, step-by-step action plan tailored strictly to their CURRENT screen: '{runtime_context.get('screen')}' in {runtime_context.get('mode')} mode.
 - Explicitly name the exact tabs, buttons, or input cards they should click.
@@ -198,7 +198,7 @@ The user is arbitrating an on-lane competition dispute or eligibility rule quest
 Structure your response strictly into three clean sections:
 1. **Immediate Ruling:** State the exact verdict the Tournament Director must enforce on the pair right now.
 2. **USBC Rule Citation:** State the official USBC Rule # (e.g., Rule 10, Rule 17, Rule 18, Rule 400) and summarize the statute clearly.
-3. **Desk Action:** State what the TD must record or change on the screen in Prism Lane Control (e.g., score entry, zero frame, substitution, bracket adjustment).
+3. **Desk Action:** State what the TD must record or change on the screen in Prism Tournament Assistant (e.g., score entry, zero frame, substitution, bracket adjustment).
 """
     # 3. Hybrid routing for situational questions
     else:
