@@ -1,6 +1,7 @@
 import os
 import hashlib
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -199,52 +200,64 @@ def verify_user_login(username: str, password: str):
 
 def render_auth_portal():
     _ensure_default_staff()
-    st.title("🎳 Prism Tournament Assistant")
-    login_tab, request_tab = st.tabs(["Staff sign in", "Request access"])
-    with login_tab:
-        with st.form("staff_login"):
-            username = st.text_input("Username").strip()
-            password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Sign in", type="primary", width="stretch")
-        if submitted:
-            user = verify_user_login(username, password)
-            if user:
-                st.session_state.authenticated = True
-                st.session_state.username = user["username"]
-                st.session_state.td_name = user["name"] or user["username"]
-                st.session_state.td_role = user["role"]
-                st.session_state.center_id = user["center_id"]
-                st.session_state.preferred_mode = user["preferred_mode"]
-                st.session_state.must_change_password = bool(user.get("must_change_password", False))
-                st.rerun()
-            users = fetch_users_df()
-            pending = users[
-                users["username"].astype(str).str.casefold().eq(username.casefold())
-                & users["status"].astype(str).str.casefold().eq("pending")
-            ]
-            if not pending.empty:
-                st.warning("This registration is awaiting administrator approval.")
-            else:
-                st.error("Invalid username or password, or the account is not active.")
+    logo_path = next(
+        (Path(name) for name in ("CHUSBC.png", "CHUSBC.jpg") if Path(name).is_file()),
+        None,
+    )
+    _left, card, _right = st.columns([1, 2, 1])
+    with card, st.container(border=True):
+        if logo_path is not None:
+            _logo_left, logo_center, _logo_right = st.columns([1, 2, 1])
+            logo_center.image(str(logo_path), width=180)
+        st.markdown("# 🎳 Prism Tournament Assistant")
+        st.markdown("### Cecil Harford USBC Association")
+        st.caption("Official Tournament Operations & Desk Control Portal")
+        login_tab, request_tab = st.tabs(["Staff sign in", "Request access"])
+        with login_tab:
+            with st.form("staff_login"):
+                username = st.text_input("Username").strip()
+                password = st.text_input("Password", type="password")
+                submitted = st.form_submit_button("Sign in", type="primary", width="stretch")
+            if submitted:
+                user = verify_user_login(username, password)
+                if user:
+                    st.session_state.authenticated = True
+                    st.session_state.username = user["username"]
+                    st.session_state.td_name = user["name"] or user["username"]
+                    st.session_state.td_role = user["role"]
+                    st.session_state.center_id = user["center_id"]
+                    st.session_state.preferred_mode = user["preferred_mode"]
+                    st.session_state.must_change_password = bool(user.get("must_change_password", False))
+                    st.rerun()
+                users = fetch_users_df()
+                pending = users[
+                    users["username"].astype(str).str.casefold().eq(username.casefold())
+                    & users["status"].astype(str).str.casefold().eq("pending")
+                ]
+                if not pending.empty:
+                    st.warning("This registration is awaiting administrator approval.")
+                else:
+                    st.error("Invalid username or password, or the account is not active.")
 
-    with request_tab:
-        with st.form("staff_registration_request"):
-            requested_username = st.text_input("Desired username").strip()
-            requested_name = st.text_input("Full name").strip()
-            requested_email = st.text_input("Email address").strip()
-            requested_password = st.text_input("Password", type="password")
-            request_submitted = st.form_submit_button("Submit access request", width="stretch")
-        if request_submitted:
-            success, message = submit_user_registration(
-                requested_username, requested_name, requested_email, requested_password,
-            )
-            (st.success if success else st.error)(message)
-            if success:
-                from db_state import log_audit_event
+        with request_tab:
+            with st.form("staff_registration_request"):
+                requested_username = st.text_input("Desired username").strip()
+                requested_name = st.text_input("Full name").strip()
+                requested_email = st.text_input("Email address").strip()
+                requested_password = st.text_input("Password", type="password")
+                request_submitted = st.form_submit_button("Submit access request", width="stretch")
+            if request_submitted:
+                success, message = submit_user_registration(
+                    requested_username, requested_name, requested_email, requested_password,
+                )
+                (st.success if success else st.error)(message)
+                if success:
+                    from db_state import log_audit_event
 
-                log_audit_event("STAFF_REGISTRATION_REQUESTED", f"{requested_username} ({requested_name}).")
+                    log_audit_event("STAFF_REGISTRATION_REQUESTED", f"{requested_username} ({requested_name}).")
     if not all(_configured_password(staff["password_setting"]) for staff in DEFAULT_STAFF):
-        st.info(
+        _warn_left, warn_card, _warn_right = st.columns([1, 2, 1])
+        warn_card.info(
             "Configure PRISM_ADMIN_PASSWORD and PRISM_KIOSK_TV_PASSWORD "
             "in the environment or Streamlit secrets to activate the default accounts."
         )
