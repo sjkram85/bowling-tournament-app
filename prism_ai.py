@@ -2,8 +2,6 @@ import os
 import time
 import json
 import streamlit as st
-from google import genai
-from google.genai import types
 
 # Active Google GenAI Production Flash Endpoints
 PRIMARY_MODEL = "gemini-3.8-flash"
@@ -16,6 +14,8 @@ def get_ai_client(api_key: str = None):
     if not key:
         return None
     try:
+        from google import genai
+
         return genai.Client(api_key=key)
     except Exception:
         return None
@@ -60,6 +60,8 @@ def stream_prism_ai(query_text: str, runtime_context: dict, client=None):
     if not ai_client:
         yield "Prism AI is offline. Please configure a valid Gemini API key in secrets or the sidebar."
         return
+
+    from google.genai import types
 
     intent = classify_intent(query_text)
 
@@ -151,6 +153,8 @@ def parse_roster_text_with_gemini(raw_text: str, client=None) -> str:
     ai_client = client or get_ai_client()
     if not ai_client:
         return ""
+
+    from google.genai import types
 
     prompt = f"""
 You are an expert bowling tournament data ingest parser.

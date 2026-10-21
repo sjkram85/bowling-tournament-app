@@ -1,141 +1,190 @@
-import time
-import pandas as pd
+# routes/public_modes.py
 import streamlit as st
-from engine_support import (
-    read_kiosk_state, generate_qr_image, parse_active_pairs, 
-    get_bowler_lane_for_game, hash_secret, extract_scores_from_overhead_photo,
-    compile_standings
-)
+import pandas as pd
 
-def handle_public_modes(mode: str, fetch_active_tournament_state, write_active_tournament_state, log_audit_event, ai_client):
-    """Handles specialized standalone query routes like ?mode=kiosk, ?mode=display_tv, etc."""
+def calc_over_under(row, active_game_cols):
+    """
+    Computes scratch +/- 200 par pace based strictly on completed games.
+    """
+    completed_games = sum(1 for col in active_game_cols if int(row.get(col, 0)) > 0)
+    if completed_games == 0:
+        return 0, "E"
+    scratch = sum(int(row.get(col, 0)) for col in active_game_cols)
+    diff = scratch - (200 * completed_games)
+    diff_str = f"+{diff}" if diff > 0 else (f"{diff}" if diff < 0 else "E")
+    return diff, diff_str
+
+
+def get_standings_df():
+    """
+    Builds calculated standings from session state roster.
+    """
+    raw_roster = st.session_state.get("roster", [])
+    if isinstance(raw_roster, list):
+        df = pd.DataFrame(raw_roster)
+    else:
+        df = raw_roster.copy() if not raw_roster.empty else pd.DataFrame()
+
+    if df.empty:
+        return pd.DataFrame(), []
+
+    config = st.session_state.get("tournament_config", {})
+    games_count = int(config.get("games_count", 3))
+    active_games = [f"Game {g}" for g in range(1, games_count + 1) if f"Game {g}" in df.columns]
+
+    if not active_games:
+        for g in range(1, games_count + 1):
+            df[f"Game {g}"] = 0
+        active_games = [f"Game {g}" for g in range(1, games_count + 1)]
+
+    # Compute totals
+    df["Total Scratch"] = df[active_games].astype(int).sum(axis=1)
     
-    # 1. KIOSK DISPLAY (?mode=kiosk)
-    if mode == "kiosk":
-        st.markdown("<style>header, footer {visibility: hidden;} .block-container { max-width: 900px; padding-top: 1.5rem; }</style>", unsafe_allow_html=True)
-        card = read_kiosk_state()
-        detected_base = st.secrets.get("APP_URL", "https://chusbc-desk.streamlit.app").rstrip("/")
-        if card:
-            checkin_url = f"{detected_base}/?mode=checkin&usbc_id={card['usbc_id']}"
-            st.markdown(f"""
-            <div style="background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%); border: 2px solid #38bdf8; border-radius: 16px; padding: 24px; text-align: center;">
-                <h1 style="color: #f8fafc; font-size: 38px; margin: 0;">{card['name']}</h1>
-                <p style="color: #cbd5e1; font-size: 16px;">USBC ID: <b>{card['usbc_id']}</b> | Avg: <b>{card['avg']}</b></p>
+    # Handicap calculation
+    hdcp_base = float(config.get("hdcp_base", 220))
+    hdcp_pct = float(config.get("hdcp_pct", 0.90))
+    
+    if "Average" in df.columns:
+        df["HDCP_Game"] = df["Average"].apply(lambda avg: max(0, int((hdcp_base - int(avg)) * hdcp_pct)))
+    else:
+        df["HDCP_Game"] = 0
+
+    # Total HDCP = scratch + (hdcp * games count)
+    df["Total HDCP"] = df["Total Scratch"] + (df["HDCP_Game"] * games_count)
+
+    # Calculate +/- 200
+    ou_data = [calc_over_under(r, active_games) for _, r in df.iterrows()]
+    df["+/- Value"] = [d[0] for d in ou_data]
+    df["+/- 200"] = [d[1] for d in ou_data]
+
+    return df, active_games
+
+
+# =====================================================================
+# VIEW 1: BOWLER MOBILE PORTAL (Live Tracking & Doubles Partner Card)
+# =====================================================================
+def render_bowler_portal_view():
+    config = st.session_state.get("tournament_config", {})
+    t_name = config.get("name", "Tournament Standings")
+    
+    st.markdown(f"<h2 style='text-align: center; color: #38bdf8;'>📱 {t_name}</h2>", unsafe_allow_html=True)
+    st.caption("Live scores, cut-line bubble tracking, and doubles partner cards.")
+
+    df_standings, active_games = get_standings_df()
+    if df_standings.empty:
+        st.info("Standings will appear once tournament play begins.")
+        return
+
+    # Sort Mode Toggle: Scratch vs Handicap
+    sort_mode = st.radio("Leaderboard Sort:", ["Handicap Standings", "Scratch Standings"], horizontal=True)
+    sort_col = "Total HDCP" if sort_mode == "Handicap Standings" else "Total Scratch"
+    df_sorted = df_standings.sort_values(by=[sort_col, "Total Scratch"], ascending=False).reset_index(drop=True)
+    df_sorted["Rank"] = df_sorted.index + 1
+
+    # Doubles / Mystery Partner Pinned Card
+    bowler_list = df_sorted["Bowler"].tolist()
+    pinned_bowlers = st.multiselect(
+        "👥 Pin Bowler(s) / Doubles Partner:",
+        options=bowler_list,
+        placeholder="Search and select your name or doubles partner..."
+    )
+
+    if pinned_bowlers:
+        tracked_df = df_sorted[df_sorted["Bowler"].isin(pinned_bowlers)]
+        team_scratch = tracked_df["Total Scratch"].sum()
+        team_hdcp = tracked_df["Total HDCP"].sum()
+        team_ou_val = tracked_df["+/- Value"].sum()
+        team_ou_str = f"+{team_ou_val}" if team_ou_val > 0 else (f"{team_ou_val}" if team_ou_val < 0 else "E")
+        team_color = "#34d399" if team_ou_val >= 0 else "#f87171"
+
+        st.markdown(f"""
+        <div style='background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border: 2px solid #38bdf8; border-radius: 10px; padding: 14px 18px; margin: 12px 0 16px 0;'>
+            <div style='display: flex; justify-content: space-between; align-items: center;'>
+                <div>
+                    <span style='font-size: 11px; font-weight: 800; color: #38bdf8; text-transform: uppercase;'>⚡ Tracked Team / Doubles Status</span>
+                    <h3 style='margin: 4px 0 0 0; color: #f8fafc; font-size: 20px;'>{' & '.join(pinned_bowlers)}</h3>
+                </div>
+                <div style='text-align: right;'>
+                    <span style='font-size: 11px; color: #94a3b8; font-weight: 700;'>SCRATCH PAR</span>
+                    <div style='font-size: 24px; font-weight: 900; color: {team_color};'>{team_ou_str}</div>
+                </div>
             </div>
-            """, unsafe_allow_html=True)
-            col1, col2, col3 = st.columns([1, 2, 1])
-            with col2:
-                st.image(generate_qr_image(checkin_url), use_container_width=True)
-            st.markdown(f"<div class='match-box' style='text-align:center;'><h3>Assigned Starting Pair</h3><h1 style='color:#38bdf8;'>{card['pair_display']}</h1><p>Lead-off: Lane {card['lane']}</p></div>", unsafe_allow_html=True)
-        else:
-            st.markdown("<div class='brand-banner' style='text-align:center;'><h1>Cecil Harford USBC</h1><h3>Welcome to Tournament Check-In</h3><p>Please approach the desk to check in.</p></div>", unsafe_allow_html=True)
-        time.sleep(2.0)
-        st.rerun()
+            <div style='margin-top: 8px; font-size: 13px; color: #cbd5e1; border-top: 1px solid #334155; padding-top: 8px;'>
+                Combined Scratch: <b>{team_scratch}</b> &nbsp;|&nbsp; 
+                Combined HDCP: <b>{team_hdcp}</b> &nbsp;|&nbsp; 
+                +/- 200 Par: <b style='color:{team_color};'>{team_ou_str}</b>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # 2. ENTRANCE SELF-CHECK-IN (?mode=self_checkin)
-    elif mode == "self_checkin":
-        st.markdown("<style>header, footer {visibility: hidden;} .block-container { max-width: 580px; padding-top: 1.2rem; }</style>", unsafe_allow_html=True)
-        cloud_state = fetch_active_tournament_state()
-        if cloud_state:
-            st.session_state.tournament_config = cloud_state["config"]
-            st.session_state.roster = pd.DataFrame(cloud_state["roster"])
-        st.markdown("<div class='brand-banner' style='text-align:center;'><h1>Express Entrance Check-In</h1></div>", unsafe_allow_html=True)
-        if st.session_state.roster.empty:
-            st.info("Roster is being initialized by desk.")
-            st.stop()
-        bowlers = sorted(st.session_state.roster["Bowler"].dropna().unique().tolist())
-        selected_name = st.selectbox("Select Your Name:", ["-- Tap Your Name --"] + bowlers)
-        if selected_name != "-- Tap Your Name --" and st.button("Complete Check-In", type="primary", use_container_width=True):
-            row = st.session_state.roster[st.session_state.roster["Bowler"] == selected_name].iloc[0]
-            if not bool(row.get("Paid", False)):
-                st.error("Balance Due! Please see the desk official to pay your entry fee.")
-            else:
-                match_idx = st.session_state.roster.index[st.session_state.roster["Bowler"] == selected_name].tolist()[0]
-                st.session_state.roster.loc[match_idx, "Checked_In"] = True
-                write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
-                st.success(f"{selected_name} is checked in on Lane {row['Starting Lane']}!")
-        st.stop()
+    # 5th-Place Cut Bubble Indicator (Standard 5-person stepladder cut)
+    if len(df_sorted) >= 5:
+        cut_score = df_sorted.iloc[4][sort_col]
+        cut_bowler = df_sorted.iloc[4]["Bowler"]
+        st.warning(f"🏁 **Current Cut Line (5th Place - Stepladder):** {cut_bowler} with **{cut_score}** pins")
 
-    # 3. BOWLER PORTAL (?mode=bowler_portal)
-    elif mode == "bowler_portal":
-        st.markdown("<style>header, footer {visibility: hidden;} .block-container { max-width: 620px; padding-top: 1.2rem; }</style>", unsafe_allow_html=True)
-        cloud_state = fetch_active_tournament_state()
-        if cloud_state:
-            st.session_state.tournament_config = cloud_state["config"]
-            st.session_state.roster = pd.DataFrame(cloud_state["roster"])
-        st.markdown("<div class='brand-banner' style='text-align:center;'><h1>Live Bowler Portal</h1></div>", unsafe_allow_html=True)
-        standings = compile_standings(st.session_state.roster, st.session_state.tournament_config)
-        st.dataframe(standings[["Bowler", "Starting Lane", "Average", "Game 1", "Game 2", "Game 3", "Grand_Total"]], use_container_width=True)
-        st.stop()
+    # Render Table
+    lane_col = "Starting Lane" if "Starting Lane" in df_sorted.columns else "Lane"
+    display_cols = ["Rank", "Bowler", lane_col] + active_games + ["+/- 200", "Total Scratch", "Total HDCP"]
+    display_cols = [c for c in display_cols if c in df_sorted.columns]
+    
+    st.dataframe(df_sorted[display_cols], use_container_width=True, hide_index=True)
 
-    # 4. ROVING FLOOR SCORER (?mode=scorer)
-    elif mode == "scorer":
-        st.markdown("<style>header, footer {visibility: hidden;} .block-container { max-width: 600px; padding-top: 1rem; }</style>", unsafe_allow_html=True)
-        cloud_state = fetch_active_tournament_state()
-        if cloud_state:
-            st.session_state.tournament_config = cloud_state["config"]
-            st.session_state.roster = pd.DataFrame(cloud_state["roster"])
-            st.session_state.td_pins = cloud_state.get("td_pins", {})
 
-        st.markdown("<div class='brand-banner' style='text-align:center;'><h1>Mobile Floor Scorer</h1></div>", unsafe_allow_html=True)
-        if "mobile_scorer_td" not in st.session_state or not st.session_state.mobile_scorer_td:
-            with st.form("scorer_login"):
-                td_n = st.text_input("Floor Official Name:").strip()
-                pin_n = st.text_input("4-Digit Security PIN:", type="password", max_chars=6).strip()
-                if st.form_submit_button("Authenticate & Score", type="primary", use_container_width=True):
-                    if td_n and len(pin_n) >= 4:
-                        st.session_state.mobile_scorer_td = td_n
-                        st.session_state.td_pins[td_n] = hash_secret(pin_n)
-                        st.rerun()
-            st.stop()
+# =====================================================================
+# VIEW 2: CONCOURSE TV KIOSK DISPLAY (Zero-Timeout, 10s Live Fragment)
+# =====================================================================
+def render_tv_kiosk_display(state_fetcher_fn=None):
+    # JavaScript client-side keep-alive to suppress monitor sleep
+    st.markdown("""
+        <script>
+            if ('wakeLock' in navigator) {
+                navigator.wakeLock.request('screen').catch((err) => {});
+            }
+        </script>
+    """, unsafe_allow_html=True)
 
-        parsed_pairs = parse_active_pairs(st.session_state.tournament_config.get("lanes_range", "1-40"), max_lanes=40)
-        p_labels = [f"Lanes {p[0]} & {p[1]}" for p in parsed_pairs]
-        c_p, c_g = st.columns([2, 1])
-        sel_p = c_p.selectbox("Select Active Pair:", p_labels)
-        sel_g = c_g.selectbox("Game:", [1, 2, 3])
-        t_pair = parsed_pairs[p_labels.index(sel_p)]
+    render_tv_kiosk_fragment()
 
-        working = st.session_state.roster.copy()
-        working["Starting Lane"] = pd.to_numeric(working["Starting Lane"], errors="coerce").fillna(1).astype(int)
-        working["Active_Lane"] = working["Starting Lane"].apply(lambda l: get_bowler_lane_for_game(int(l), sel_g, st.session_state.tournament_config.get("movement_rule", "")))
-        pair_b = working[working["Active_Lane"].isin(t_pair)]
 
-        with st.expander("📸 Overhead Monitor Photo OCR (Gemini Vision)"):
-            cam_shot = st.camera_input("Take photo of screen:")
-            if cam_shot and st.button("Read Scores with Gemini", type="primary"):
-                scores = extract_scores_from_overhead_photo(ai_client, cam_shot.getvalue(), pair_b["Bowler"].tolist(), sel_g)
-                for b_name, val in scores.items():
-                    st.session_state[f"temp_{b_name}_{sel_g}"] = val
-                st.success("Extracted scores!")
+@st.fragment(run_every="10s")
+def render_tv_kiosk_fragment():
+    df_standings, active_games = get_standings_df()
+    config = st.session_state.get("tournament_config", {})
+    t_name = config.get("name", "CHUSBC Tournament Championship")
+    center_name = config.get("center", "")
 
-        with st.form("score_submit"):
-            new_scores = {}
-            for _, b_row in pair_b.iterrows():
-                new_scores[b_row["USBC ID"]] = st.number_input(f"Lane {b_row['Active_Lane']}: {b_row['Bowler']}", 0, 300, int(st.session_state.get(f"temp_{b_row['Bowler']}_{sel_g}", b_row[f"Game {sel_g}"])))
-            c_pin = st.text_input(f"Enter PIN for {st.session_state.mobile_scorer_td}:", type="password")
-            if st.form_submit_button(f"Lock Game {sel_g}", type="primary"):
-                for u_id, sc in new_scores.items():
-                    idx = st.session_state.roster.index[st.session_state.roster["USBC ID"].astype(str) == str(u_id)].tolist()[0]
-                    st.session_state.roster.loc[idx, f"Game {sel_g}"] = sc
-                    st.session_state.roster.loc[idx, f"G{sel_g}_Verified_By"] = st.session_state.mobile_scorer_td
-                write_active_tournament_state(st.session_state.tournament_config, st.session_state.roster, st.session_state.brackets)
-                log_audit_event(f"Mobile TD {st.session_state.mobile_scorer_td} locked Game {sel_g} on {sel_p}.")
-                st.success("Scores locked!")
-                st.rerun()
-        st.stop()
+    st.markdown(f"""
+        <div style='background-color: #0f172a; padding: 12px 20px; border-radius: 8px; border-bottom: 3px solid #38bdf8; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;'>
+            <div>
+                <h1 style='color: #f8fafc; margin: 0; font-size: 32px;'>🎳 {t_name}</h1>
+                <span style='color: #94a3b8; font-size: 16px;'>{center_name} &nbsp;•&nbsp; Official Live Concourse Leaderboard</span>
+            </div>
+            <div style='text-align: right;'>
+                <span style='color: #10b981; font-weight: 800; font-size: 14px;'>● LIVE AUTO-REFRESH (10s)</span>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
 
-    # 5. PUBLIC CONCOURSE / CLUBHOUSE LEADERBOARD (?mode=leaderboard or ?mode=display_tv)
-    elif mode in ["leaderboard", "display_tv"]:
-        st.markdown("<style>header, footer {visibility: hidden;} .block-container { padding: 1.2rem !important; max-width: 100% !important; }</style>", unsafe_allow_html=True)
-        cloud_state = fetch_active_tournament_state()
-        if cloud_state:
-            st.session_state.tournament_config = cloud_state["config"]
-            st.session_state.roster = pd.DataFrame(cloud_state["roster"])
-        st.markdown(f"<h1 style='text-align: center; color: #38bdf8;'>🎳 {st.session_state.tournament_config.get('name')}</h1>", unsafe_allow_html=True)
-        st.markdown(f"<p style='text-align: center; color: #94a3b8;'>Host: {st.session_state.tournament_config.get('center')} • Live Public Standings</p>", unsafe_allow_html=True)
-        standings = compile_standings(st.session_state.roster, st.session_state.tournament_config)
-        if not standings.empty:
-            st.dataframe(standings.reset_index()[["Rank", "Bowler", "Starting Lane", "Average", "Game 1", "Game 2", "Game 3", "Grand_Total"]], use_container_width=True, hide_index=True)
-        time.sleep(12.0)
-        st.rerun()
+    if df_standings.empty:
+        st.info("Leaderboard active. Awaiting first game scores from the desk...")
+        return
+
+    df_sorted = df_standings.sort_values(by=["Total HDCP", "Total Scratch"], ascending=False).reset_index(drop=True)
+    df_sorted["Rank"] = df_sorted.index + 1
+
+    # Cut Line Banner
+    if len(df_sorted) >= 5:
+        cut_val = df_sorted.iloc[4]["Total HDCP"]
+        c_name = df_sorted.iloc[4]["Bowler"]
+        st.markdown(f"""
+        <div style='background-color: #854d0e; color: #fef08a; padding: 6px 14px; border-radius: 6px; font-weight: 700; margin-bottom: 12px;'>
+            ✂️ STEPLADDER CUT BUBBLE (5th Place): {c_name} at {cut_val}
+        </div>
+        """, unsafe_allow_html=True)
+
+    lane_col = "Starting Lane" if "Starting Lane" in df_sorted.columns else "Lane"
+    tv_cols = ["Rank", "Bowler", lane_col] + active_games + ["+/- 200", "Total Scratch", "Total HDCP"]
+    tv_cols = [c for c in tv_cols if c in df_sorted.columns]
+
+    st.dataframe(df_sorted[tv_cols], use_container_width=True, hide_index=True)
