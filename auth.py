@@ -26,6 +26,12 @@ DEFAULT_STAFF = [
     },
 ]
 
+# Local-development fallbacks so the desk never hard-locks when secrets are absent.
+DEFAULT_ACCOUNT_PASSWORDS = {
+    "PRISM_ADMIN_PASSWORD": "Chusbc2026!",
+    "PRISM_KIOSK_TV_PASSWORD": "ConcourseKiosk2026!",
+}
+
 
 def hash_password(password: str) -> str:
     if not password:
@@ -84,9 +90,10 @@ def _configured_password(setting_name: str):
     if value:
         return value
     try:
-        return st.secrets.get(setting_name)
+        value = st.secrets.get(setting_name)
     except Exception:
-        return None
+        value = None
+    return value or DEFAULT_ACCOUNT_PASSWORDS.get(setting_name)
 
 
 def _ensure_default_staff():
