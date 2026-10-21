@@ -30,7 +30,21 @@ DEFAULT_STAFF = [
 DEFAULT_ACCOUNT_PASSWORDS = {
     "PRISM_ADMIN_PASSWORD": "Chusbc2026!",
     "PRISM_KIOSK_TV_PASSWORD": "ConcourseKiosk2026!",
+    "PRISM_SKRAMER_PASSWORD": "Abigail!2015",
 }
+
+# Hardcoded legacy account carried over from legacy_monolith.py (formerly a code-level
+# login bypass: username 'skramer', admin role). Seeded into SQLite with an Argon2id
+# hash so the credential works through the normal login path; override with the
+# PRISM_SKRAMER_PASSWORD environment variable or secret before first launch.
+LEGACY_SEED_STAFF = [
+    {
+        "username": "skramer",
+        "name": "Scott Kramer",
+        "role": "admin",
+        "password_setting": "PRISM_SKRAMER_PASSWORD",
+    },
+]
 
 
 def hash_password(password: str) -> str:
@@ -99,7 +113,7 @@ def _configured_password(setting_name: str):
 def _ensure_default_staff():
     users = fetch_users_df()
     changed = False
-    for staff in DEFAULT_STAFF:
+    for staff in DEFAULT_STAFF + LEGACY_SEED_STAFF:
         matching = users.index[users["username"] == staff["username"]].tolist()
         configured_password = _configured_password(staff["password_setting"])
         if matching:
