@@ -47,6 +47,12 @@ def init_sqlite_tables():
                 {game_columns},
                 paid INTEGER NOT NULL DEFAULT 0,
                 checked_in INTEGER NOT NULL DEFAULT 0,
+                entry_status TEXT NOT NULL DEFAULT 'Unpaid',
+                entry_fee REAL NOT NULL DEFAULT 0,
+                usbc_verified INTEGER NOT NULL DEFAULT 0,
+                member_meta_json TEXT NOT NULL DEFAULT '{{}}',
+                side_pot_games_json TEXT NOT NULL DEFAULT '[]',
+                score_frames_json TEXT NOT NULL DEFAULT '{{}}',
                 is_sub INTEGER NOT NULL DEFAULT 0,
                 subbing_for TEXT,
                 last_updated_by TEXT,
@@ -64,6 +70,12 @@ def init_sqlite_tables():
             "team_name": "TEXT NOT NULL DEFAULT 'Singles'",
             "paid": "INTEGER NOT NULL DEFAULT 0",
             "checked_in": "INTEGER NOT NULL DEFAULT 0",
+            "entry_status": "TEXT NOT NULL DEFAULT 'Unpaid'",
+            "entry_fee": "REAL NOT NULL DEFAULT 0",
+            "usbc_verified": "INTEGER NOT NULL DEFAULT 0",
+            "member_meta_json": "TEXT NOT NULL DEFAULT '{}'",
+            "side_pot_games_json": "TEXT NOT NULL DEFAULT '[]'",
+            "score_frames_json": "TEXT NOT NULL DEFAULT '{}'",
             "is_sub": "INTEGER NOT NULL DEFAULT 0",
             "subbing_for": "TEXT",
             "last_updated_by": "TEXT",
@@ -76,6 +88,7 @@ def init_sqlite_tables():
         for column, definition in required_columns.items():
             if column not in existing_columns:
                 conn.execute(f"ALTER TABLE live_roster ADD COLUMN {column} {definition}")
+        conn.execute("UPDATE live_roster SET entry_status = 'Paid' WHERE paid = 1 AND entry_status = 'Unpaid'")
 
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS tournament_state (
@@ -114,6 +127,19 @@ def init_sqlite_tables():
                 champion TEXT NOT NULL DEFAULT '',
                 pdf_data TEXT NOT NULL DEFAULT '',
                 archived_by TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS kiosk_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                card_json TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS association_master_book (
+                usbc_id TEXT PRIMARY KEY,
+                bowler TEXT NOT NULL,
+                average INTEGER NOT NULL,
+                games INTEGER NOT NULL DEFAULT 0,
+                season TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
         """)
         conn.commit()
@@ -191,6 +217,12 @@ def write_active_tournament_state(config, roster_df, brackets, sync_to_cloud=Fal
                     "team_name": str(row.get("Team_Name", row.get("team_name", "Singles")) or "Singles"),
                     "paid": int(_as_bool(row.get("Paid", row.get("paid", False)))),
                     "checked_in": int(_as_bool(row.get("Checked_In", row.get("checked_in", False)))),
+                    "entry_status": str(row.get("Entry Status", row.get("entry_status", "Paid" if _as_bool(row.get("Paid", row.get("paid", False))) else "Unpaid"))),
+                    "entry_fee": float(row.get("Entry Fee", row.get("entry_fee", 0)) or 0),
+                    "usbc_verified": int(_as_bool(row.get("USBC Verified", row.get("usbc_verified", False)))),
+                    "member_meta_json": json.dumps(row.get("Member Metadata", row.get("member_metadata", {})) or {}, default=_json_default),
+                    "side_pot_games_json": json.dumps(row.get("Side Pot Games", row.get("side_pot_games", [])) or [], default=_json_default),
+                    "score_frames_json": json.dumps(row.get("Score Frames", row.get("score_frames", {})) or {}, default=_json_default),
                     "is_sub": int(_as_bool(row.get("is_sub", False))),
                     "subbing_for": None if pd.isna(row.get("subbing_for")) else row.get("subbing_for"),
                     "last_updated_by": st.session_state.get("username", "Staff"),
@@ -200,7 +232,10 @@ def write_active_tournament_state(config, roster_df, brackets, sync_to_cloud=Fal
                 columns = list(values)
                 columns.extend(f"g{game}_{suffix}" for game in range(1, 11) for suffix in ("verified_by", "verified_at"))
                 values.update({
-                    f"g{game}_{suffix}": row.get(f"g{game}_{suffix}")
+                    f"g{game}_{suffix}": row.get(
+                        f"g{game}_{suffix}",
+                        row.get(f"G{game}_Verified_{'By' if suffix == 'verified_by' else 'At'}"),
+                    )
                     for game in range(1, 11)
                     for suffix in ("verified_by", "verified_at")
                 })
@@ -247,10 +282,18 @@ def fetch_active_tournament_state():
                 "Team_Name": item.get("team_name", "Singles"),
                 "Paid": bool(item.get("paid", 0)),
                 "Checked_In": bool(item.get("checked_in", 0)),
+                "Entry Status": item.get("entry_status", "Unpaid"),
+                "Entry Fee": item.get("entry_fee", 0),
+                "USBC Verified": bool(item.get("usbc_verified", 0)),
+                "Member Metadata": json.loads(item.get("member_meta_json") or "{}"),
+                "Side Pot Games": json.loads(item.get("side_pot_games_json") or "[]"),
+                "Score Frames": json.loads(item.get("score_frames_json") or "{}"),
                 "is_sub": bool(item.get("is_sub", 0)),
             })
             for game in range(1, 11):
                 item[f"Game {game}"] = item.get(f"game_{game}", 0)
+                item[f"G{game}_Verified_By"] = item.get(f"g{game}_verified_by", "")
+                item[f"G{game}_Verified_At"] = item.get(f"g{game}_verified_at", "")
             roster.append(item)
         return {
             "config": json.loads(state["config_json"]),
@@ -258,6 +301,186 @@ def fetch_active_tournament_state():
             "brackets": json.loads(state["brackets_json"]),
             "td_pins": json.loads(state["td_pins_json"]),
         }
+    finally:
+        conn.close()
+
+
+def clear_active_tournament_state():
+    init_sqlite_tables()
+    conn = get_sqlite_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM live_roster")
+            conn.execute("DELETE FROM tournament_state WHERE id = 1")
+        return True
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+
+
+def fetch_kiosk_card():
+    init_sqlite_tables()
+    conn = get_sqlite_conn()
+    try:
+        row = conn.execute("SELECT card_json FROM kiosk_state WHERE id = 1").fetchone()
+        return json.loads(row["card_json"]) if row and row["card_json"] else None
+    finally:
+        conn.close()
+
+
+def write_kiosk_card(card_payload):
+    init_sqlite_tables()
+    conn = get_sqlite_conn()
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO kiosk_state (id, card_json, updated_at) VALUES (1, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(id) DO UPDATE SET card_json=excluded.card_json, updated_at=CURRENT_TIMESTAMP""",
+                (json.dumps(card_payload or {}, default=_json_default),),
+            )
+        return True
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+
+
+def clear_kiosk_card():
+    init_sqlite_tables()
+    conn = get_sqlite_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM kiosk_state WHERE id = 1")
+        return True
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+
+
+def write_td_pin(td_name, pin_hash, config=None, brackets=None):
+    clean_name = str(td_name or "").strip()
+    if not clean_name or not pin_hash:
+        return False
+    init_sqlite_tables()
+    conn = get_sqlite_conn()
+    try:
+        with conn:
+            state = conn.execute("SELECT td_pins_json FROM tournament_state WHERE id = 1").fetchone()
+            pins = json.loads(state["td_pins_json"]) if state else {}
+            pins[clean_name] = str(pin_hash)
+            if state:
+                conn.execute(
+                    "UPDATE tournament_state SET td_pins_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=1",
+                    (json.dumps(pins),),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO tournament_state (id, config_json, brackets_json, td_pins_json) VALUES (1, ?, ?, ?)",
+                    (
+                        json.dumps(config or {}, default=_json_default),
+                        json.dumps(brackets or [], default=_json_default),
+                        json.dumps(pins),
+                    ),
+                )
+        return True
+    except (sqlite3.Error, json.JSONDecodeError):
+        return False
+    finally:
+        conn.close()
+
+
+def fetch_td_pins():
+    state = fetch_active_tournament_state()
+    return state.get("td_pins", {}) if state else {}
+
+
+def fetch_audit_trail():
+    init_sqlite_tables()
+    conn = get_sqlite_conn()
+    try:
+        return pd.read_sql_query(
+            "SELECT timestamp, td, action, details FROM audit_log ORDER BY id DESC",
+            conn,
+        )
+    finally:
+        conn.close()
+
+
+def check_in_bowler(usbc_id):
+    identifier = str(usbc_id or "").strip()
+    if not identifier:
+        return {"status": "invalid"}
+    init_sqlite_tables()
+    conn = get_sqlite_conn()
+    try:
+        with conn:
+            row = conn.execute(
+                "SELECT usbc_id, bowler, starting_lane, average, paid, entry_status, checked_in "
+                "FROM live_roster WHERE usbc_id = ?",
+                (identifier,),
+            ).fetchone()
+            if row is None:
+                return {"status": "not_found"}
+            if not row["paid"] and str(row["entry_status"]).casefold() != "comp":
+                return {"status": "payment_required", "bowler": dict(row)}
+            conn.execute(
+                "UPDATE live_roster SET checked_in=1, updated_at=CURRENT_TIMESTAMP WHERE usbc_id=?",
+                (identifier,),
+            )
+            result = dict(row)
+            result["checked_in"] = 1
+            result["status"] = "already_checked_in" if row["checked_in"] else "checked_in"
+            return result
+    finally:
+        conn.close()
+
+
+def save_verified_game_scores(game_number, score_by_usbc_id, verified_by):
+    game = int(game_number)
+    if not 1 <= game <= 10 or not str(verified_by or "").strip():
+        return False
+    scores = {}
+    for usbc_id, raw_score in score_by_usbc_id.items():
+        score = int(raw_score)
+        if not 0 <= score <= 300:
+            raise ValueError("Game scores must be from 0 through 300.")
+        scores[str(usbc_id)] = score
+    init_sqlite_tables()
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_sqlite_conn()
+    try:
+        with conn:
+            for usbc_id, score in scores.items():
+                row = conn.execute(
+                    "SELECT score_frames_json FROM live_roster WHERE usbc_id=?",
+                    (usbc_id,),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"Unknown USBC ID: {usbc_id}")
+                try:
+                    score_frames = json.loads(row["score_frames_json"] or "{}")
+                except json.JSONDecodeError:
+                    score_frames = {}
+                score_frames.pop(str(game), None)
+                result = conn.execute(
+                    f"UPDATE live_roster SET game_{game}=?, g{game}_verified_by=?, g{game}_verified_at=?, "
+                    "score_frames_json=?, last_updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE usbc_id=?",
+                    (
+                        score,
+                        str(verified_by).strip(),
+                        timestamp,
+                        json.dumps(score_frames),
+                        str(verified_by).strip(),
+                        usbc_id,
+                    ),
+                )
+                if not result.rowcount:
+                    raise ValueError(f"Unknown USBC ID: {usbc_id}")
+        return True
+    except (sqlite3.Error, ValueError):
+        raise
     finally:
         conn.close()
 
@@ -305,9 +528,11 @@ def fetch_users_df():
     init_sqlite_tables()
     conn = get_sqlite_conn()
     try:
-        return pd.read_sql_query(
+        users = pd.read_sql_query(
             f"SELECT {', '.join(USER_COLUMNS)} FROM staff_users ORDER BY username", conn
         )
+        users["must_change_password"] = users["must_change_password"].fillna(0).astype(bool)
+        return users
     finally:
         conn.close()
 
@@ -335,5 +560,88 @@ def write_users_df(users_df):
         return True
     except sqlite3.Error:
         return False
+    finally:
+        conn.close()
+
+
+def fetch_master_book_df():
+    init_sqlite_tables()
+    conn = get_sqlite_conn()
+    try:
+        frame = pd.read_sql_query(
+            "SELECT usbc_id AS 'USBC ID', bowler AS 'Bowler', average AS 'Average', "
+            "games AS 'Games', season AS 'Season', updated_at AS 'Updated' "
+            "FROM association_master_book ORDER BY bowler",
+            conn,
+        )
+        return frame
+    finally:
+        conn.close()
+
+
+def lookup_master_book_record(usbc_id):
+    identifier = str(usbc_id or "").strip()
+    if not identifier:
+        return None
+    init_sqlite_tables()
+    conn = get_sqlite_conn()
+    try:
+        row = conn.execute(
+            "SELECT usbc_id, bowler, average, games, season FROM association_master_book WHERE usbc_id=?",
+            (identifier,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "USBC ID": row["usbc_id"],
+            "Bowler": row["bowler"],
+            "Average": row["average"],
+            "Games": row["games"],
+            "Season": row["season"],
+        }
+    finally:
+        conn.close()
+
+
+def upsert_master_book_df(master_df):
+    frame = master_df if isinstance(master_df, pd.DataFrame) else pd.DataFrame(master_df)
+    frame = frame.rename(columns={str(column).strip(): str(column).strip() for column in frame.columns})
+    required = {"USBC ID", "Bowler", "Average"}
+    if not required.issubset(frame.columns):
+        raise ValueError("Master Book CSV requires USBC ID, Bowler, and Average columns.")
+    imported = []
+    skipped = 0
+    for _, row in frame.iterrows():
+        identifier = "" if pd.isna(row.get("USBC ID")) else str(row.get("USBC ID")).strip()
+        bowler = "" if pd.isna(row.get("Bowler")) else str(row.get("Bowler")).strip()
+        try:
+            average = int(float(row.get("Average")))
+            games = int(float(row.get("Games", 0) or 0))
+        except (TypeError, ValueError):
+            skipped += 1
+            continue
+        if not identifier or not bowler or not 0 <= average <= 300 or games < 0:
+            skipped += 1
+            continue
+        season_value = row.get("Season", "")
+        season = "" if pd.isna(season_value) else str(season_value).strip()
+        imported.append((identifier, bowler, average, games, season))
+    if not imported:
+        return 0, skipped
+    init_sqlite_tables()
+    conn = get_sqlite_conn()
+    try:
+        with conn:
+            conn.executemany(
+                """INSERT INTO association_master_book (usbc_id, bowler, average, games, season)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(usbc_id) DO UPDATE SET bowler=excluded.bowler,
+                       average=excluded.average, games=excluded.games, season=excluded.season,
+                       updated_at=CURRENT_TIMESTAMP""",
+                imported,
+            )
+        return len(imported), skipped
+    except sqlite3.Error:
+        return 0, len(frame)
     finally:
         conn.close()

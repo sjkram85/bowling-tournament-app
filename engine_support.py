@@ -1,21 +1,33 @@
 import os
 import io
+import csv
 import time
 import math
 import json
 import base64
 import random
-import sqlite3
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from html import escape
 from pathlib import Path
 from datetime import datetime
+from xml.sax.saxutils import escape
 import pandas as pd
 import qrcode
 from PIL import Image
+from db_state import (
+    clear_kiosk_card as _db_clear_kiosk_card,
+    fetch_kiosk_card as _db_fetch_kiosk_card,
+    get_sqlite_conn as _db_get_sqlite_conn,
+    init_sqlite_tables as _db_init_sqlite_tables,
+    write_kiosk_card as _db_write_kiosk_card,
+)
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
 # ReportLab components for championship summaries
-from reportlab.lib.pagesizes import letter
+from reportlab.lib.pagesizes import landscape, letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Image as RLImage, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
@@ -29,6 +41,14 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 # ASSET RESOLUTION (CASE-INSENSITIVE & RECURSIVE)
 # ---------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
+RULEBOOK_PATH = BASE_DIR / "USBC-Playing-Rulebook-26-27.pdf"
+
+
+def load_official_rulebook_bytes():
+    try:
+        return RULEBOOK_PATH.read_bytes() if RULEBOOK_PATH.is_file() else None
+    except OSError:
+        return None
 
 def find_logo_path(target_stem: str = "logo_chusbc") -> str | None:
     search_dirs = [BASE_DIR, BASE_DIR / "assets", Path.cwd(), Path.cwd() / "assets"]
@@ -58,9 +78,6 @@ _fh_found = find_logo_path("logo_forest_hill") or find_logo_path("forest_hill")
 LOGO_FOREST_HILL_PATH = _fh_found if _fh_found else str(BASE_DIR / "assets" / "logo_forest_hill.png")
 HAS_FOREST_HILL_LOGO = _fh_found is not None
 
-KIOSK_FILE_PATH = "kiosk_state.json"
-SQLITE_DB_PATH = "prism_operational.db"
-
 ph = PasswordHasher()
 
 def hash_secret(secret_text: str) -> str:
@@ -74,75 +91,19 @@ def verify_secret(hashed_value: str, plain_text: str) -> tuple[bool, bool]:
         return False, False
 
 def get_sqlite_conn():
-    conn = sqlite3.connect(SQLITE_DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return _db_get_sqlite_conn()
 
 def init_sqlite_tables():
-    conn = get_sqlite_conn()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS live_roster (
-            usbc_id TEXT PRIMARY KEY,
-            bowler TEXT NOT NULL,
-            average INTEGER DEFAULT 200,
-            starting_lane INTEGER DEFAULT 1,
-            division TEXT DEFAULT 'Open',
-            team_name TEXT DEFAULT 'Singles',
-            game_1 INTEGER DEFAULT 0,
-            game_2 INTEGER DEFAULT 0,
-            game_3 INTEGER DEFAULT 0,
-            game_4 INTEGER DEFAULT 0,
-            game_5 INTEGER DEFAULT 0,
-            game_6 INTEGER DEFAULT 0,
-            paid INTEGER DEFAULT 0,
-            checked_in INTEGER DEFAULT 0,
-            is_sub INTEGER DEFAULT 0,
-            subbing_for TEXT,
-            g1_verified_by TEXT, g1_verified_at TEXT,
-            g2_verified_by TEXT, g2_verified_at TEXT,
-            g3_verified_by TEXT, g3_verified_at TEXT,
-            g4_verified_by TEXT, g4_verified_at TEXT,
-            g5_verified_by TEXT, g5_verified_at TEXT,
-            g6_verified_by TEXT, g6_verified_at TEXT,
-            last_updated_by TEXT,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-
-    # Defensive schema migration for existing databases
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(live_roster)")
-    existing_cols = [row[1] for row in cursor.fetchall()]
-    for g in [4, 5, 6]:
-        if f"game_{g}" not in existing_cols:
-            cursor.execute(f"ALTER TABLE live_roster ADD COLUMN game_{g} INTEGER DEFAULT 0")
-        if f"g{g}_verified_by" not in existing_cols:
-            cursor.execute(f"ALTER TABLE live_roster ADD COLUMN g{g}_verified_by TEXT")
-        if f"g{g}_verified_at" not in existing_cols:
-            cursor.execute(f"ALTER TABLE live_roster ADD COLUMN g{g}_verified_at TEXT")
-    conn.commit()
-    conn.close()
+    return _db_init_sqlite_tables()
 
 def read_kiosk_state() -> dict:
-    if os.path.exists(KIOSK_FILE_PATH):
-        try:
-            with open(KIOSK_FILE_PATH, "r") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+    return _db_fetch_kiosk_card() or {}
 
 def write_kiosk_state(data: dict):
-    with open(KIOSK_FILE_PATH, "w") as f:
-        json.dump(data, f)
+    return _db_write_kiosk_card(data)
 
 def clear_kiosk_state():
-    if os.path.exists(KIOSK_FILE_PATH):
-        try:
-            os.remove(KIOSK_FILE_PATH)
-        except Exception:
-            pass
+    return _db_clear_kiosk_card()
 
 def generate_qr_image(url_string: str) -> io.BytesIO:
     qr = qrcode.QRCode(version=1, box_size=8, border=2)
@@ -155,10 +116,52 @@ def generate_qr_image(url_string: str) -> io.BytesIO:
     return buf
 
 def notify_admin_new_registration(username: str, name: str, email: str, timestamp: str):
-    pass
+    try:
+        sender = st.secrets.get("EMAIL_SENDER", "")
+        password = st.secrets.get("EMAIL_APP_PASSWORD", "")
+        recipient = st.secrets.get("ADMIN_EMAIL", sender)
+        if not sender or not password or not recipient:
+            return False
+        app_url = escape(str(st.secrets.get("APP_URL", "http://localhost:8501")))
+        message = MIMEMultipart("alternative")
+        message["Subject"] = f"Tournament staff access request: {escape(name)}"
+        message["From"] = f"Tournament Desk <{sender}>"
+        message["To"] = recipient
+        message.attach(MIMEText(
+            f"<p>New staff access request</p><p>Name: {escape(name)}<br>Username: {escape(username)}"
+            f"<br>Email: {escape(email)}<br>Submitted: {escape(timestamp)}</p>"
+            f"<p>Review the request at <a href=\"{app_url}\">Tournament Desk</a>.</p>",
+            "html",
+        ))
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender, password)
+            server.sendmail(sender, recipient, message.as_string())
+        return True
+    except Exception:
+        return False
 
 def notify_user_account_approved(email: str, name: str, username: str):
-    pass
+    try:
+        sender = st.secrets.get("EMAIL_SENDER", "")
+        password = st.secrets.get("EMAIL_APP_PASSWORD", "")
+        if not sender or not password or not email:
+            return False
+        app_url = escape(str(st.secrets.get("APP_URL", "http://localhost:8501")))
+        message = MIMEMultipart("alternative")
+        message["Subject"] = "Tournament desk account approved"
+        message["From"] = f"Tournament Desk <{sender}>"
+        message["To"] = email
+        message.attach(MIMEText(
+            f"<p>Hello {escape(name)},</p><p>Your account <b>{escape(username)}</b> has been approved.</p>"
+            f"<p><a href=\"{app_url}\">Sign in to the tournament desk</a>.</p>",
+            "html",
+        ))
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender, password)
+            server.sendmail(sender, email, message.as_string())
+        return True
+    except Exception:
+        return False
 
 def parse_active_pairs(lane_range_str: str, max_lanes: int = 40) -> list[tuple[int, int]]:
     pairs = []
@@ -194,8 +197,14 @@ def get_bowler_lane_for_game(starting_lane: int, game_num: int, movement_rule: s
         offset = 2 * (game_num - 1)
     elif "Move Right 2 Pairs" in movement_rule:
         offset = 4 * (game_num - 1)
+    elif "Move Right 3 Pairs" in movement_rule:
+        offset = 6 * (game_num - 1)
     elif "Move Left 1 Pair" in movement_rule:
         offset = -2 * (game_num - 1)
+    elif "Move Left 2 Pairs" in movement_rule:
+        offset = -4 * (game_num - 1)
+    elif "Move Left 3 Pairs" in movement_rule:
+        offset = -6 * (game_num - 1)
 
     new_lane = starting_lane + offset
     while new_lane > max_lanes:
@@ -215,45 +224,37 @@ def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list[tuple[int, int]], max
     if len(df) > total_slots:
         return df, f"Field size ({len(df)}) exceeds total lane capacity ({total_slots} on {len(pairs)} pairs)."
 
-    pair_allocations = {p: [] for p in pairs}
-    pair_cycle = list(pairs)
-    if shuffle and not group_by_team:
-        random.shuffle(pair_cycle)
+    units = {}
+    for index, row in df.iterrows():
+        team_name = str(row.get("Team_Name", "Singles") or "Singles").strip()
+        normalized_team = team_name.casefold()
+        unit_key = team_name if group_by_team and normalized_team not in {"", "singles", "open", "none", "nan"} else f"Individual_{index}"
+        units.setdefault(unit_key, []).append(row.to_dict())
+    if any(len(unit) > max_per_pair for unit in units.values()):
+        return df, "A team is larger than the selected pair capacity; increase capacity or split that team before balancing."
 
-    if group_by_team and "Team_Name" in df.columns:
-        teams = df["Team_Name"].unique().tolist()
-        if shuffle:
-            random.shuffle(teams)
-        p_idx = 0
-        for team in teams:
-            t_bowlers = df[df["Team_Name"] == team].to_dict(orient="records")
-            placed = False
-            for _ in range(len(pairs)):
-                target_pair = pair_cycle[p_idx % len(pair_cycle)]
-                if len(pair_allocations[target_pair]) + len(t_bowlers) <= max_per_pair:
-                    for b in t_bowlers:
-                        lead_lane = target_pair[0] if len(pair_allocations[target_pair]) % 2 == 0 else target_pair[1]
-                        b["Starting Lane"] = lead_lane
-                        pair_allocations[target_pair].append(b)
-                    placed = True
-                    p_idx += 1
-                    break
-                p_idx += 1
-            if not placed:
-                target_pair = min(pair_allocations, key=lambda k: len(pair_allocations[k]))
-                for b in t_bowlers:
-                    lead_lane = target_pair[0] if len(pair_allocations[target_pair]) % 2 == 0 else target_pair[1]
-                    b["Starting Lane"] = lead_lane
-                    pair_allocations[target_pair].append(b)
-    else:
-        bowler_list = df.to_dict(orient="records")
-        if shuffle:
-            random.shuffle(bowler_list)
-        for idx, b in enumerate(bowler_list):
-            target_pair = pair_cycle[idx % len(pair_cycle)]
-            lead_lane = target_pair[0] if len(pair_allocations[target_pair]) % 2 == 0 else target_pair[1]
-            b["Starting Lane"] = lead_lane
-            pair_allocations[target_pair].append(b)
+    unit_list = list(units.values())
+    if shuffle:
+        random.shuffle(unit_list)
+    pair_allocations = {pair: [] for pair in pairs}
+    next_pair_index = 0
+    for unit in unit_list:
+        available_index = next(
+            (
+                (next_pair_index + offset) % len(pairs)
+                for offset in range(len(pairs))
+                if len(pair_allocations[pairs[(next_pair_index + offset) % len(pairs)]]) + len(unit) <= max_per_pair
+            ),
+            None,
+        )
+        if available_index is None:
+            return df, "The teams cannot fit within the selected lane-pair capacities."
+        target_pair = pairs[available_index]
+        for bowler in unit:
+            target_lane = target_pair[0] if len(pair_allocations[target_pair]) % 2 == 0 else target_pair[1]
+            bowler["Starting Lane"] = target_lane
+            pair_allocations[target_pair].append(bowler)
+        next_pair_index = (available_index + 1) % len(pairs)
 
     assigned_records = []
     for p in pairs:
@@ -261,7 +262,17 @@ def auto_assign_lanes(roster_df: pd.DataFrame, pairs: list[tuple[int, int]], max
 
     return pd.DataFrame(assigned_records), ""
 
-def calculate_handicap(entering_average: int, base: int = 220, percentage: float = 0.90) -> int:
+def calculate_handicap(
+    entering_average: int,
+    base: int = 220,
+    percentage: float = 0.90,
+    method: str = "percentage",
+    fixed_handicap: int = 0,
+) -> int:
+    if method == "scratch":
+        return 0
+    if method == "fixed":
+        return max(0, int(fixed_handicap))
     if entering_average >= base:
         return 0
     return int(math.floor((base - entering_average) * percentage))
@@ -280,8 +291,12 @@ def compile_standings(roster_df: pd.DataFrame, config: dict = None) -> pd.DataFr
 
     base = int(config.get("hdcp_base", 220)) if config else 220
     pct = float(config.get("hdcp_pct", 0.90)) if config else 0.90
+    method = str(config.get("handicap_method", "percentage")) if config else "percentage"
+    fixed_handicap = int(config.get("fixed_handicap", 0)) if config else 0
 
-    df["HDCP_Per_Game"] = df["Average"].apply(lambda a: calculate_handicap(a, base=base, percentage=pct))
+    df["HDCP_Per_Game"] = df["Average"].apply(
+        lambda average: calculate_handicap(average, base, pct, method, fixed_handicap)
+    )
     df["Total_HDCP"] = df["HDCP_Per_Game"] * num_games
     df["Scratch_Total"] = df[game_cols].sum(axis=1)
     df["Grand_Total"] = df["Scratch_Total"] + df["Total_HDCP"]
@@ -306,8 +321,12 @@ def compile_all_events_leaderboard(roster_df: pd.DataFrame, config: dict = None)
 
     base = int(config.get("hdcp_base", 220)) if config else 220
     pct = float(config.get("hdcp_pct", 0.90)) if config else 0.90
+    method = str(config.get("handicap_method", "percentage")) if config else "percentage"
+    fixed_handicap = int(config.get("fixed_handicap", 0)) if config else 0
 
-    df["HDCP_Per_Game"] = df["Average"].apply(lambda a: calculate_handicap(a, base=base, percentage=pct))
+    df["HDCP_Per_Game"] = df["Average"].apply(
+        lambda average: calculate_handicap(average, base, pct, method, fixed_handicap)
+    )
     group_col = "USBC ID" if "USBC ID" in df.columns else "Bowler"
 
     agg_rules = {
@@ -338,37 +357,69 @@ def compile_all_events_leaderboard(roster_df: pd.DataFrame, config: dict = None)
     grouped.index.name = "Rank"
     return grouped
 
-def calculate_financial_summary(roster_df: pd.DataFrame, config: dict) -> dict:
-    paid_count = int(roster_df["Paid"].sum()) if ("Paid" in roster_df.columns and not roster_df.empty) else len(roster_df)
+def calculate_financial_summary(
+    roster_df: pd.DataFrame,
+    config: dict,
+    lineage_per_game: float = 3.75,
+    games_count: int | None = None,
+) -> dict:
+    games = int(games_count or config.get("games_count", 3))
+    lineage_rate = float(config.get("lineage_per_game", lineage_per_game))
+    expense_per_bowler = float(config.get("expenses_per_bowler", config.get("expenses_rate", 5.0)))
+    if roster_df.empty:
+        paid_roster = roster_df
+    elif "Paid" in roster_df:
+        paid_roster = roster_df[roster_df["Paid"].fillna(False).astype(bool)]
+    else:
+        paid_roster = roster_df
+    paid_count = len(paid_roster)
     entry_fee = float(config.get("entry_fee", 50.0))
-    lineage_rate = float(config.get("lineage_rate", 15.0))
-    expenses_rate = float(config.get("expenses_rate", 5.0))
-
-    gross = paid_count * entry_fee
-    total_lineage = paid_count * lineage_rate
-    total_expenses = paid_count * expenses_rate
+    if "Entry Fee" in paid_roster.columns:
+        fees = pd.to_numeric(paid_roster["Entry Fee"], errors="coerce").fillna(0)
+        gross = float(fees.sum()) if fees.ne(0).any() else paid_count * entry_fee
+    else:
+        gross = paid_count * entry_fee
+    total_lineage = paid_count * lineage_rate * games
+    total_expenses = paid_count * expense_per_bowler
     net_prize = max(0.0, gross - total_lineage - total_expenses)
-
     return {
         "paid_count": paid_count,
-        "gross_revenue": gross,
-        "total_lineage": total_lineage,
-        "total_expenses": total_expenses,
-        "net_prize_fund": net_prize
+        "entry_fee": entry_fee,
+        "gross_revenue": round(gross, 2),
+        "total_lineage": round(total_lineage, 2),
+        "total_expenses": round(total_expenses, 2),
+        "net_prize_fund": round(net_prize, 2),
+        "lineage_per_game": lineage_rate,
+        "games_count": games,
+        "expense_per_bowler": expense_per_bowler,
     }
 
 def generate_smart_scholarship_csv(roster_df: pd.DataFrame, prize_pool: float, tournament_name: str) -> str:
-    out = io.StringIO()
-    out.write("USBC ID,Bowler,Scholarship_Amount,Program,Event\n")
-    if not roster_df.empty:
-        top_award = prize_pool * 0.50
-        second_award = prize_pool * 0.30
-        third_award = prize_pool * 0.20
-        awards = [top_award, second_award, third_award]
-        for idx, row in roster_df.head(3).iterrows():
-            amt = awards[idx] if idx < len(awards) else 0.0
-            out.write(f"{row.get('USBC ID', 'N/A')},{row.get('Bowler', 'Youth')},{amt:.2f},USBC SMART,{tournament_name}\n")
-    return out.getvalue()
+    if roster_df.empty or prize_pool <= 0:
+        return ""
+    award_count = max(1, math.ceil(len(roster_df) * 0.25))
+    if award_count < 3:
+        base_weights = [0.40, 0.25, 0.15][:award_count]
+        total_weight = sum(base_weights)
+        weights = [weight / total_weight for weight in base_weights]
+    else:
+        weights = [0.40, 0.25, 0.15] + [0.20 / (award_count - 3)] * (award_count - 3)
+    amounts = [round(prize_pool * weight, 2) for weight in weights]
+    amounts[-1] = round(prize_pool - sum(amounts[:-1]), 2)
+
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(["USBC ID", "Bowler Name", "SMART Account #", "Award Amount ($)", "Tournament Name", "Date"])
+    for rank, (_, row) in enumerate(roster_df.head(award_count).iterrows()):
+        writer.writerow([
+            row.get("USBC ID", ""),
+            row.get("Bowler", ""),
+            "",
+            f"{amounts[rank]:.2f}",
+            tournament_name,
+            datetime.now().strftime("%Y-%m-%d"),
+        ])
+    return output.getvalue()
 
 def resolve_bracket_match(usbc1: str, usbc2: str, game_col: str, bracket_type: str, roster_df: pd.DataFrame):
     def get_info(uid):
@@ -390,34 +441,72 @@ def resolve_bracket_match(usbc1: str, usbc2: str, game_col: str, bracket_type: s
 
 def export_lane_assignments_pdf(roster_df: pd.DataFrame, config: dict, td_name: str = "TD Staff") -> bytes:
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+    games_count = max(1, min(10, int(config.get("games_count", 3))))
+    page_size = landscape(letter) if games_count > 4 else letter
+    doc = SimpleDocTemplate(buffer, pagesize=page_size, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
     story = []
 
     title = ParagraphStyle("LaneTitle", parent=styles["Heading1"], fontSize=14, leading=16, textColor=colors.HexColor("#0f172a"))
-    h_text = f"<b>Cecil Harford USBC — Lane Assignments</b><br/><font size='8' color='#475569'>Event: {config.get('name')} | Center: {config.get('center')} | TD: {td_name}</font>"
+    h_text = (
+        f"<b>Cecil Harford USBC — Lane Assignments</b><br/>"
+        f"<font size='8' color='#475569'>Event: {escape(str(config.get('name', '')))} | "
+        f"Center: {escape(str(config.get('center', '')))} | TD: {escape(str(td_name))}</font>"
+    )
     story.append(Paragraph(h_text, title))
     story.append(Spacer(1, 10))
 
-    t_data = [["Lane", "Bowler Name", "USBC ID", "Average", "Division", "Team / Group"]]
-    sorted_df = roster_df.sort_values(by=["Starting Lane", "Bowler"])
-    for _, r in sorted_df.iterrows():
-        t_data.append([
-            str(r.get("Starting Lane", 1)), str(r.get("Bowler", "")), str(r.get("USBC ID", "-")),
-            str(r.get("Average", 200)), str(r.get("Division", "Open")), str(r.get("Team_Name", "Singles"))
-        ])
-
-    table = Table(t_data, colWidths=[36, 170, 70, 48, 80, 136])
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
-        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-    ]))
-    story.append(table)
+    game_columns = [f"Game {game}" for game in range(1, games_count + 1)]
+    headers = ["Lane", "Bowler Name", "USBC ID", "Average", "Division", "Team / Group", "Paid", "Check-in"]
+    headers.extend(f"G{game}" for game in range(1, games_count + 1))
+    fixed_widths = [30, 112, 62, 38, 62, 78, 34, 42]
+    available_width = page_size[0] - doc.leftMargin - doc.rightMargin
+    game_width = max(24, (available_width - sum(fixed_widths)) / games_count)
+    widths = fixed_widths + [game_width] * games_count
+    sorted_df = roster_df.copy()
+    for column in ["Starting Lane", "Bowler", "USBC ID", "Average", "Division", "Team_Name", "Paid", "Checked_In", *game_columns]:
+        if column not in sorted_df:
+            sorted_df[column] = "" if column not in {"Paid", "Checked_In"} else False
+    sorted_df["_pair_low"] = pd.to_numeric(sorted_df["Starting Lane"], errors="coerce").fillna(1).astype(int).map(lambda lane: lane if lane % 2 else lane - 1)
+    for pair_low, group in sorted_df.sort_values(["_pair_low", "Starting Lane", "Bowler"]).groupby("_pair_low", sort=True):
+        pair_name = f"Lanes {int(pair_low)} & {int(pair_low) + 1}"
+        table_data = [[Paragraph(f"<b>{pair_name}</b>", styles["Heading3"])] + [""] * (len(headers) - 1), headers]
+        for _, row in group.iterrows():
+            team_name = str(row.get("Team_Name", "Singles"))
+            paid_value = row.get("Paid", False)
+            checked_value = row.get("Checked_In", False)
+            if team_name.casefold() in {"", "none", "nan", "singles"}:
+                team_name = "Singles"
+            values = [
+                str(row.get("Starting Lane", "")),
+                Paragraph(escape(str(row.get("Bowler", ""))), styles["Normal"]),
+                str(row.get("USBC ID", "")),
+                str(row.get("Average", "")),
+                escape(str(row.get("Division", "Open"))),
+                escape(team_name),
+                "Yes" if pd.notna(paid_value) and bool(paid_value) else "No",
+                "Yes" if pd.notna(checked_value) and bool(checked_value) else "No",
+            ]
+            values.extend(str(row.get(column, 0)) for column in game_columns)
+            table_data.append(values)
+        table = Table(table_data, colWidths=widths, repeatRows=2)
+        table.setStyle(TableStyle([
+            ("SPAN", (0, 0), (-1, 0)),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#0284c7")),
+            ("TEXTCOLOR", (0, 1), (-1, 1), colors.white),
+            ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 7),
+            ("ALIGN", (0, 0), (0, -1), "CENTER"),
+            ("ALIGN", (2, 0), (-1, -1), "CENTER"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+            ("ROWBACKGROUNDS", (0, 2), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        story.append(table)
+        story.append(Spacer(1, 8))
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
@@ -570,8 +659,14 @@ def generate_sop_docx(config: dict) -> bytes:
     p.add_run(f"Handicap: {int(config.get('hdcp_pct', 0.9)*100)}% of {config.get('hdcp_base', 220)}\n")
     doc.add_heading("1. Tournament Desk Check-In Procedure", level=1)
     doc.add_paragraph("All bowlers must present USBC sanction verification and verify entering book average.")
-    doc.add_heading("2. Scoring & Dispute Arbitration", level=1)
-    doc.add_paragraph("Protests regarding scoring or eligibility must be arbitrated immediately via official USBC Playing Rules.")
+    doc.add_heading("2. First-Time Tournament Director Quickstart", level=1)
+    for step in generate_first_time_td_guide(config).splitlines():
+        if step.strip():
+            doc.add_paragraph(step)
+    doc.add_heading("3. Scoring & Dispute Arbitration", level=1)
+    doc.add_paragraph("Verify lane, game, and entering-average information before saving. Review disputes against the bundled USBC rulebook and the published event rules; record the director’s decision and supporting details in the audit log.")
+    doc.add_heading("4. Youth Awards", level=1)
+    doc.add_paragraph("Confirm Rule 400 eligibility and route youth scholarship awards through the SMART provider process. Cash side pots are not available to youth entries.")
     buf = io.BytesIO()
     doc.save(buf)
     buf.seek(0)
@@ -584,14 +679,37 @@ def generate_sop_pdf(config: dict) -> bytes:
     story = [
         Paragraph("<b>Cecil Harford USBC — Tournament Desk SOP</b>", styles["Heading1"]),
         Spacer(1, 10),
-        Paragraph(f"Event: {config.get('name')}<br/>Center: {config.get('center')}", styles["Normal"]),
+        Paragraph(f"Event: {escape(str(config.get('name', '')))}<br/>Center: {escape(str(config.get('center', '')))}", styles["Normal"]),
         Spacer(1, 10),
-        Paragraph("1. Check-In & Financial Verification: Verify payments, active USBC membership, and assigned lanes.", styles["Normal"]),
-        Paragraph("2. On-Lane Score Verification: Two signatures required on paper tally sheets prior to computer lock.", styles["Normal"])
+        Paragraph("1. Check-in and financial verification: Confirm the bowler, USBC ID, fee status, entering average, and assigned lane.", styles["Normal"]),
+        Paragraph("2. Lane assignment: Review the active lane pairs, team-aware assignment, and game-by-game movement schedule before practice.", styles["Normal"]),
+        Paragraph("3. Scoring: Enter game scores, verify them with an authorized floor official, and retain the score audit trail.", styles["Normal"]),
+        Paragraph("4. Finals and closeout: Seed the top five, record each stepladder match and tiebreak, then export the signed tournament summary.", styles["Normal"]),
+        Paragraph("5. Youth awards: Review USBC Rule 400 and manage eligible scholarships through the USBC SMART provider portal. Do not enter youth bowlers in cash side pots.", styles["Normal"]),
+        Spacer(1, 6),
+        Paragraph("First-time director quickstart", styles["Heading2"]),
     ]
+    for step in generate_first_time_td_guide(config).splitlines():
+        if step.strip():
+            story.append(Paragraph(escape(step), styles["Normal"]))
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
+
+
+def generate_first_time_td_guide(config: dict | None = None) -> str:
+    event = (config or {}).get("name", "the active event")
+    games = int((config or {}).get("games_count", 3))
+    return "\n".join([
+        f"Tournament: {event} ({games} qualifying games).",
+        "1. Setup: Open the customer kiosk on the desk monitor and the public leaderboard on concourse screens.",
+        "2. Intake: Import or enter the roster, verify IDs and averages, then balance teams across active lane pairs.",
+        "3. Check-in: Display the entrance QR; unpaid bowlers are directed to the desk before check-in is accepted.",
+        "4. Floor scoring: Admins enroll floor officials with Argon2id PINs; scorers enter scores and sign each game before it is marked verified.",
+        "5. Live operations: Review lane movement, the scoring radar, standings, and the fifth-place stepladder cutline.",
+        "6. Side action: Enroll eligible paid adult bowlers; youth side competitions require 100% scholarship return under Rule 400.",
+        "7. Finals and records: Resolve each stepladder match and tie, mark the champion, export the summary, and archive the event in SQLite.",
+    ])
 
 def extract_scores_from_overhead_photo(ai_client, photo_bytes: bytes, bowler_names: list, game_num: int) -> dict:
     """

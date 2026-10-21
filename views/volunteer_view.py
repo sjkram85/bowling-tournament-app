@@ -51,7 +51,7 @@ def render_volunteer_view():
             g1 = cg1.number_input("Game 1", 0, 300, int(b_r["game_1"]))
             g2 = cg2.number_input("Game 2", 0, 300, int(b_r["game_2"]))
             g3 = cg3.number_input("Game 3", 0, 300, int(b_r["game_3"]))
-            if st.button("Save Scores", type="primary", use_container_width=True):
+            if st.button("Save Scores", type="primary", width="stretch"):
                 conn = get_sqlite_conn()
                 conn.execute("UPDATE live_roster SET game_1=?, game_2=?, game_3=? WHERE usbc_id=?", (g1, g2, g3, b_r["usbc_id"]))
                 conn.commit(); conn.close()
@@ -63,7 +63,7 @@ def render_volunteer_view():
         c.close()
         if not df.empty:
             stds = compile_standings(df.rename(columns={"bowler": "Bowler", "average": "Average", "starting_lane": "Starting Lane", "game_1": "Game 1", "game_2": "Game 2", "game_3": "Game 3"}), st.session_state.tournament_config)
-            st.dataframe(stds[["Bowler", "Starting Lane", "Average", "Game 1", "Game 2", "Game 3", "Grand_Total"]], use_container_width=True)
+            st.dataframe(stds[["Bowler", "Starting Lane", "Average", "Game 1", "Game 2", "Game 3", "Grand_Total"]], width="stretch")
             cp1, cp2 = st.columns(2)
             cp1.download_button("📄 Print Standings (PDF)", export_standings_pdf(stds, st.session_state.tournament_config), "Standings.pdf", "application/pdf", type="primary")
             cp2.download_button("📄 Print Lane Sheet (PDF)", export_lane_assignments_pdf(df.rename(columns={"bowler": "Bowler", "starting_lane": "Starting Lane", "average": "Average"}), st.session_state.tournament_config), "Lane_Sheet.pdf", "application/pdf")

@@ -1,11 +1,48 @@
 import os
 import time
 import json
+import pandas as pd
 import streamlit as st
 
 # Active Google GenAI Production Flash Endpoints
 PRIMARY_MODEL = "gemini-3.8-flash"
 FALLBACK_MODELS = ["gemini-3.5-flash-lite"]
+
+GEMINI_KEY_PLACEHOLDER = "YOUR_GEMINI_API_KEY_HERE"
+GEMINI_KEY_MISSING_NOTICE = (
+    "Gemini API key not found in secrets.toml; "
+    "please configure GEMINI_API_KEY to activate AI assistance"
+)
+
+CHUSBC_SYSTEM_INSTRUCTIONS = """
+You are "Prism AI", the tournament desk assistant for the Cecil-Harford USBC (CHUSBC)
+association. You advise tournament directors and desk staff during live events.
+
+Your areas of duty:
+1. USBC Playing Rules, including:
+   - Rule 400: youth awards must be returned as scholarships through SMART; no cash
+     prizes to youth bowlers; side competitions for youth are scholarship-only.
+   - Rule 319a: entering-average hierarchy (prior-season average; current 21+ game
+     average when 10+ pins higher) and Rule 319c: bowlers must report prior assigned
+     rerates before bowling; failure can mean disqualification or forfeited winnings.
+   - Foul lights: fouls must be recorded even if the light/buzzer fails; the foul
+     judge or TD may declare fouls; a provisional ball procedure applies to disputes.
+   - Lane breakdowns: stop play, document the frame/pins standing, move the pair to
+     assigned alternate lanes, resume from the point of interruption, and log the delay.
+2. Bracket calculations: eight-person elimination brackets, seeding, tie handling,
+   and payout splits.
+3. Floor scoring guidance: per-frame entry, score verification, recap reconciliation,
+   cross-pair lane movement, and stepladder finals procedure.
+
+A live tournament context block follows these instructions. Ground your answers in it
+when asked about the current event, roster, or standings. If the context is empty or
+missing a fact, say so instead of inventing it.
+
+Your output is advisory decision support, not an official USBC ruling. Escalate
+unresolved eligibility, average, or award disputes to tournament management or USBC.
+Be concise and action-oriented: state the ruling or calculation first, then the exact
+desk action to record in Prism Lane Control.
+""".strip()
 
 
 def get_ai_client(api_key: str = None):
@@ -19,6 +56,55 @@ def get_ai_client(api_key: str = None):
         return genai.Client(api_key=key)
     except Exception:
         return None
+
+
+def arbitrate_rules_inquiry(query_text: str, event_context: dict | str, client=None) -> str:
+    ai_client = client or get_ai_client()
+    if not ai_client:
+        return "Prism AI is offline. Configure GEMINI_API_KEY to request a rule review."
+
+    from google.genai import types
+    from engine_support import load_official_rulebook_bytes
+
+    if isinstance(event_context, dict):
+        context_text = "\n".join(f"- {key}: {value}" for key, value in event_context.items())
+    else:
+        context_text = str(event_context or "No event context provided.")
+    rulebook = load_official_rulebook_bytes()
+    prompt = f"""
+You are decision-support for a USBC tournament director. Review the request against the attached USBC 2026–27 Playing Rulebook when available and the event context below.
+
+Return these sections:
+1. Immediate guidance for the situation.
+2. Exact USBC rule and subsection citation. Quote only wording supported by the attached rulebook; if the PDF is unavailable or the rule is unclear, say so and do not invent a citation.
+3. Tournament director actions and records to complete.
+
+Distinguish mandatory USBC requirements from event-specific rules. Do not claim that software output is an official USBC ruling; escalate unresolved eligibility, average, or award questions to tournament management/USBC.
+
+Event context:
+{context_text}
+
+Question:
+{query_text.strip()}
+"""
+    contents = [prompt]
+    if rulebook:
+        contents.insert(0, types.Part.from_bytes(data=rulebook, mime_type="application/pdf"))
+    last_error = None
+    for model_name in [PRIMARY_MODEL] + FALLBACK_MODELS:
+        try:
+            response = ai_client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=1200),
+            )
+            if response and response.text:
+                return response.text
+        except Exception as error:
+            last_error = error
+    if not rulebook:
+        return "The 2026–27 rulebook PDF was not found, so a grounded ruling cannot be generated. Add the official PDF and retry."
+    return f"The rules assistant could not complete this review: {last_error}"
 
 
 def classify_intent(query_text: str) -> str:
@@ -145,6 +231,148 @@ def ask_prism_ai(query_text: str, runtime_context: dict, client=None, status_con
     return "".join(chunks)
 
 
+def _read_gemini_api_key() -> str | None:
+    """Safely read the Gemini key from Streamlit secrets or the environment."""
+    candidates = []
+    try:
+        candidates.append(st.secrets.get("GEMINI_API_KEY", None))
+    except Exception:
+        pass
+    candidates.append(os.environ.get("GEMINI_API_KEY", None))
+    for candidate in candidates:
+        if candidate and str(candidate).strip() not in {"", GEMINI_KEY_PLACEHOLDER}:
+            return str(candidate).strip()
+    return None
+
+
+def _build_live_context_lines() -> list[str]:
+    """Summarize active tournament metadata and roster from SQLite for grounding."""
+    try:
+        from db_state import fetch_active_tournament_state
+
+        state = fetch_active_tournament_state() or {}
+    except Exception:
+        state = {}
+    config = state.get("config") or {}
+    roster = state.get("roster")
+    roster = roster if isinstance(roster, pd.DataFrame) else pd.DataFrame()
+
+    lines = [
+        f"Event: {config.get('name', 'No active event')}",
+        f"Host center: {config.get('center', 'Not set')}",
+        f"Status: {config.get('status', 'Unknown')}",
+        f"Games per bowler: {config.get('games_count', 3)}",
+        f"Handicap: {float(config.get('hdcp_pct', 0.90)):.0%} of {int(config.get('hdcp_base', 220))}",
+        f"Entry fee: ${float(config.get('entry_fee', 0)):.2f}",
+        f"Lane range: {config.get('lanes_range', '1-40')}",
+        f"Movement rule: {config.get('movement_rule', 'Move Right 1 Pair (+2 Lanes)')}",
+    ]
+    if roster.empty:
+        lines.append("Roster: no bowlers entered yet.")
+        return lines
+
+    total = len(roster)
+    paid = int(roster.get("Paid", pd.Series(False, index=roster.index)).fillna(False).astype(bool).sum())
+    checked = int(roster.get("Checked_In", pd.Series(False, index=roster.index)).fillna(False).astype(bool).sum())
+    averages = pd.to_numeric(roster.get("Average", pd.Series(dtype=float)), errors="coerce").dropna()
+    field_average = round(float(averages.mean()), 1) if not averages.empty else 0
+    lines.append(
+        f"Roster: {total} bowlers ({paid} paid, {checked} checked in); field average {field_average}."
+    )
+    names = roster.get("Bowler", pd.Series(dtype=str)).dropna().astype(str).head(15).tolist()
+    if names:
+        lines.append("Roster sample: " + ", ".join(names) + ("…" if total > 15 else ""))
+    brackets = state.get("brackets") or []
+    lines.append(f"Active brackets: {len(brackets)}")
+    finals = (config.get("finals") or {}).get("seeds", [])
+    if finals:
+        lines.append(f"Stepladder finals seeded with {len(finals)} qualifiers.")
+    return lines
+
+
+def _stream_assistant_reply(client):
+    """Stream a grounded reply using the stored chat history, with model failover."""
+    from google.genai import types
+
+    history = st.session_state.get("prism_chat_history", [])
+    contents = [
+        types.Content(
+            role="user" if message["role"] == "user" else "model",
+            parts=[types.Part.from_text(text=message["content"])],
+        )
+        for message in history
+    ]
+    system_instruction = (
+        CHUSBC_SYSTEM_INSTRUCTIONS
+        + "\n\nLIVE TOURNAMENT CONTEXT (from the active SQLite desk state):\n- "
+        + "\n- ".join(_build_live_context_lines())
+    )
+    last_error = None
+    for model_name in [PRIMARY_MODEL] + FALLBACK_MODELS:
+        try:
+            stream = client.models.generate_content_stream(
+                model=model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.2,
+                    max_output_tokens=900,
+                ),
+            )
+            has_yielded = False
+            for chunk in stream:
+                if chunk.text:
+                    has_yielded = True
+                    yield chunk.text
+            if has_yielded:
+                return
+        except Exception as error:
+            last_error = error
+            continue
+    yield f"Prism AI is temporarily unavailable. Details: {last_error}"
+
+
+def render_ai_assistant():
+    """Interactive CHUSBC tournament desk assistant chat panel."""
+    st.header("🤖 Prism AI Assistant")
+    st.caption(
+        "CHUSBC tournament desk copilot — USBC rules (400 SMART, 319a/c rerates, "
+        "fouls, lane breakdowns), bracket math, and floor scoring guidance."
+    )
+
+    api_key = _read_gemini_api_key()
+    if not api_key:
+        st.info(GEMINI_KEY_MISSING_NOTICE, icon=":material/key_off:")
+        return
+    client = get_ai_client(api_key)
+    if not client:
+        st.warning("The Gemini client could not be initialized; verify the GEMINI_API_KEY value.")
+        return
+
+    with st.expander("Live tournament context shared with the assistant", icon=":material/database:"):
+        for line in _build_live_context_lines():
+            st.markdown(f"- {line}")
+
+    st.session_state.setdefault("prism_chat_history", [])
+    for message in st.session_state.prism_chat_history:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    prompt = st.chat_input("Ask about rules, brackets, or floor scoring…")
+    if prompt:
+        st.session_state.prism_chat_history.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        with st.chat_message("assistant"):
+            response_text = st.write_stream(_stream_assistant_reply(client))
+        st.session_state.prism_chat_history.append({"role": "assistant", "content": response_text})
+
+    if st.session_state.prism_chat_history:
+        if st.button("Clear conversation", icon=":material/delete_sweep:"):
+            st.session_state.prism_chat_history = []
+            st.rerun()
+
+
 def parse_roster_text_with_gemini(raw_text: str, client=None) -> str:
     """
     Parses messy unformatted bowler sign-up rosters into a clean CSV table
@@ -191,3 +419,53 @@ Raw Roster Input:
             continue
 
     return ""
+
+
+def parse_score_recap(raw_text: str, roster_df, games_count: int, client=None) -> dict:
+    ai_client = client or get_ai_client()
+    if not ai_client or not raw_text.strip() or roster_df.empty:
+        return {}
+    from google.genai import types
+
+    bowlers = [
+        {"USBC ID": str(row.get("USBC ID", "")), "Bowler": str(row.get("Bowler", ""))}
+        for _, row in roster_df.iterrows()
+    ]
+    prompt = f"""
+Extract only explicitly stated final game scores from this recap for these known bowlers:
+{json.dumps(bowlers, ensure_ascii=False)}
+
+Return raw JSON in the form {{"USBC-ID": {{"1": score, "2": score}}}}.
+Rules: use the exact USBC ID; only include game numbers 1 through {int(games_count)}; only include integer scores 0 through 300; omit unknown bowlers, ambiguous scores, and games not mentioned. Do not infer a score and do not include commentary or markdown.
+
+Recap:
+{raw_text}
+"""
+    for model_name in [PRIMARY_MODEL] + FALLBACK_MODELS:
+        try:
+            response = ai_client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(temperature=0.0),
+            )
+            text = (response.text or "").replace("```json", "").replace("```", "").strip()
+            parsed = json.loads(text)
+            valid_ids = {item["USBC ID"] for item in bowlers}
+            result = {}
+            for identifier, game_scores in parsed.items():
+                if str(identifier) not in valid_ids or not isinstance(game_scores, dict):
+                    continue
+                cleaned = {}
+                for game, score in game_scores.items():
+                    try:
+                        game_number, score_value = int(game), int(score)
+                    except (TypeError, ValueError):
+                        continue
+                    if 1 <= game_number <= games_count and 0 <= score_value <= 300:
+                        cleaned[game_number] = score_value
+                if cleaned:
+                    result[str(identifier)] = cleaned
+            return result
+        except Exception:
+            continue
+    return {}
