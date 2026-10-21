@@ -93,9 +93,10 @@ def render_desk_sidebar():
                         "event_rules": st.session_state.get("tournament_config", {}).get("rules_text", ""),
                         "total_bowlers": len(st.session_state.get("roster", [])),
                     }
-                    st.session_state.copilot_response = "".join(
-                        stream_prism_ai(question.strip(), state_context, client=get_ai_client())
-                    )
+                    with st.spinner("🎳 Rolling through tournament rules..."):
+                        st.session_state.copilot_response = "".join(
+                            stream_prism_ai(question.strip(), state_context, client=get_ai_client())
+                        )
             response = st.session_state.get("copilot_response", "")
             if response:
                 st.markdown(response)

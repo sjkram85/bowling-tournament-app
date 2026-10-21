@@ -1,6 +1,8 @@
 import os
 import time
 import json
+import queue
+import threading
 import pandas as pd
 import streamlit as st
 
@@ -43,6 +45,33 @@ unresolved eligibility, average, or award disputes to tournament management or U
 Be concise and action-oriented: state the ruling or calculation first, then the exact
 desk action to record in Prism Lane Control.
 """.strip()
+
+BOWLING_LOADER_CSS = """
+<style>
+@keyframes roll-ball {
+  0% { transform: translateX(-8px) rotate(0deg); }
+  50% { transform: translateX(8px) rotate(180deg); }
+  100% { transform: translateX(-8px) rotate(360deg); }
+}
+.bowling-ball-loader {
+  display: inline-block;
+  font-size: 1.6rem;
+  animation: roll-ball 1.2s infinite ease-in-out;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+</style>
+"""
+
+PRISM_THINKING_MESSAGES = [
+    "Scanning USBC rulebook…",
+    "Verifying tournament state…",
+    "Analyzing tournament conditions…",
+    "Checking lane assignments…",
+    "Reviewing bracket math…",
+]
+
+PRISM_SPINNER_FALLBACK = "🎳 Rolling through tournament rules..."
 
 
 def get_ai_client(api_key: str = None):
@@ -332,8 +361,63 @@ def _stream_assistant_reply(client):
     yield f"Prism AI is temporarily unavailable. Details: {last_error}"
 
 
+def _stream_with_thinking_loader(stream_factory):
+    """
+    Consume a token stream on a worker thread while showing the animated
+    bowling-ball thinking container; hand off to the caller's st.write_stream
+    once the first chunk arrives so the response streams live and cleanly.
+    """
+    token_queue = queue.Queue()
+    sentinel = object()
+
+    def worker():
+        try:
+            for chunk in stream_factory():
+                token_queue.put(chunk)
+        except Exception as error:
+            token_queue.put(f"\n\nPrism AI hit an error: {error}")
+        finally:
+            token_queue.put(sentinel)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    loader = st.empty()
+    cycle_index = 0
+    first_chunks = []
+    while True:
+        try:
+            item = token_queue.get(timeout=0.9)
+        except queue.Empty:
+            with loader.container():
+                st.markdown(
+                    '<span class="bowling-ball-loader">🎳</span> '
+                    '**Prism AI is checking the lanes...**',
+                    unsafe_allow_html=True,
+                )
+                st.caption(PRISM_THINKING_MESSAGES[cycle_index % len(PRISM_THINKING_MESSAGES)])
+            cycle_index += 1
+            continue
+        if item is sentinel:
+            loader.empty()
+            return iter(())
+        first_chunks.append(item)
+        break
+    loader.empty()
+
+    def replay_stream():
+        yield from first_chunks
+        while True:
+            item = token_queue.get()
+            if item is sentinel:
+                return
+            yield item
+
+    return replay_stream()
+
+
 def render_ai_assistant():
     """Interactive CHUSBC tournament desk assistant chat panel."""
+    st.markdown(BOWLING_LOADER_CSS, unsafe_allow_html=True)
     st.header("🤖 Prism AI Assistant")
     st.caption(
         "CHUSBC tournament desk copilot — USBC rules (400 SMART, 319a/c rerates, "
@@ -364,7 +448,9 @@ def render_ai_assistant():
         with st.chat_message("user"):
             st.markdown(prompt)
         with st.chat_message("assistant"):
-            response_text = st.write_stream(_stream_assistant_reply(client))
+            response_text = st.write_stream(
+                _stream_with_thinking_loader(lambda: _stream_assistant_reply(client))
+            )
         st.session_state.prism_chat_history.append({"role": "assistant", "content": response_text})
 
     if st.session_state.prism_chat_history:
