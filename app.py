@@ -39,7 +39,8 @@ def _initials(name: str) -> str:
 def _sidebar_brand() -> None:
     seal = _logo_tag(str(CHUSBC_LOGO), 48) if CHUSBC_LOGO.is_file() else ""
     st.sidebar.markdown(
-        f'<div class="ptcc-side-brand">{seal}<div><div class="ptcc-side-title">PTCC</div>'
+        f'<div class="ptcc-side-brand">{seal}<div class="ptcc-side-text"><div class="ptcc-side-title">'
+        'Prism Tournament Control Center</div>'
         '<span class="ptcc-side-badge">Tournament Control</span></div></div>',
         unsafe_allow_html=True,
     )

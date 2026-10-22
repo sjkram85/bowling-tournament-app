@@ -77,7 +77,15 @@ div[data-testid="stVerticalBlockBorderWrapper"][class*="st-key-card"],
     margin-bottom: 8px;
     padding-bottom: 16px;
 }
-.ptcc-side-title { color: #FFFFFF; font-size: 18px; font-weight: 700; line-height: 1.1; }
+.ptcc-side-brand .ptcc-logo-plate { flex: 0 0 auto; }
+.ptcc-side-text { flex: 1 1 0; min-width: 0; }
+.ptcc-side-title {
+    color: #F8FAFC !important;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.25;
+    overflow-wrap: break-word;
+}
 .ptcc-side-badge {
     color: #10B981;
     display: inline-block;
