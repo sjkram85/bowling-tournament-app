@@ -67,6 +67,92 @@ div[data-testid="stVerticalBlockBorderWrapper"][class*="st-key-card"],
 [data-testid="stMetricLabel"] { color: #94A3B8; }
 [data-testid="stMetricValue"] { color: #F8FAFC; }
 
+/* ---- sidebar navigation rail ---- */
+[data-testid="stSidebar"] { background: #0F172A; border-right: 1px solid #334155; }
+.ptcc-side-brand {
+    align-items: center;
+    border-bottom: 1px solid #334155;
+    display: flex;
+    gap: 12px;
+    margin-bottom: 8px;
+    padding-bottom: 16px;
+}
+.ptcc-side-title { color: #FFFFFF; font-size: 18px; font-weight: 700; line-height: 1.1; }
+.ptcc-side-badge {
+    color: #10B981;
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    margin-top: 4px;
+    text-transform: uppercase;
+}
+.ptcc-nav-heading {
+    color: #64748B;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    margin: 16px 0 4px 8px;
+}
+[data-testid="stSidebar"] [data-testid="stPageLink-NavLink"] {
+    border-left: 3px solid transparent;
+    border-radius: 8px;
+    color: #CBD5E1;
+    margin: 0;
+    min-height: 40px;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+[data-testid="stSidebar"] [data-testid="stPageLink-NavLink"]:hover { background: #1E293B80; }
+div[class*="st-key-nav_active"] [data-testid="stPageLink-NavLink"] {
+    background: #1E293B;
+    border-left: 3px solid #E11D48;
+    color: #FFFFFF;
+    font-weight: 700;
+}
+div[class*="st-key-nav_active"] [data-testid="stPageLink-NavLink"] p { font-weight: 700; color: #FFFFFF; }
+
+div[class*="st-key-side_identity"] {
+    background: #1E293B;
+    border: 1px solid #334155;
+    border-radius: 10px;
+    margin-top: 24px;
+    padding: 12px;
+}
+.ptcc-id-row { align-items: center; display: flex; gap: 10px; }
+.ptcc-avatar {
+    align-items: center;
+    background: #2563EB;
+    border-radius: 50%;
+    color: #FFFFFF;
+    display: flex;
+    flex: 0 0 38px;
+    font-size: 14px;
+    font-weight: 700;
+    height: 38px;
+    justify-content: center;
+    width: 38px;
+}
+.ptcc-id-name { color: #F8FAFC; font-weight: 700; line-height: 1.2; }
+.ptcc-role-pill {
+    border-radius: 999px;
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    margin-top: 3px;
+    padding: 1px 8px;
+}
+.ptcc-role-admin { background: #064E3B; border: 1px solid #10B981; color: #6EE7B7; }
+.ptcc-role-td { background: #1E3A8A; border: 1px solid #3B82F6; color: #93C5FD; }
+.ptcc-id-center { color: #94A3B8; font-size: 0.8rem; margin: 8px 0 10px 0; }
+div[class*="st-key-side_about"] button { background: transparent; border: 1px solid #334155; color: #CBD5E1; }
+div[class*="st-key-side_signout"] button { background: transparent; border: 1px solid #334155; color: #CBD5E1; }
+div[class*="st-key-side_signout"] button:hover {
+    background: #EF44441A;
+    border-color: #EF4444;
+    color: #FCA5A5;
+}
+
 /* ---- login card ---- */
 div[class*="st-key-auth_card"] {
     background: #1E293B;
