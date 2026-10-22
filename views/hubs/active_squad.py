@@ -2,9 +2,11 @@
 
 import streamlit as st
 
+from components.header import render_header
 from components.leaderboard import render_leaderboard
 from components.styles import inject_styles
 from components.tournament_picker import pick_tournament
+from modules.constants import DEFAULT_MYSTERY_DOUBLES_FEE
 from modules.db_state import init_db
 from modules.prism_ai import get_prism_ai_guidance, query_usbc_rulebook
 from modules.standings import (
@@ -13,6 +15,7 @@ from modules.standings import (
     commit_scores,
     compute_standings,
     current_game,
+    query,
     squad_pairs,
 )
 
@@ -65,19 +68,45 @@ def _heatmap_panel(tournament_id: int, game_number: int) -> None:
             color = "green" if pair["complete"] else "amber"
             low, high = pair["lanes"]
             if pair["complete"]:
+                pill = '<span class="ptcc-pill ptcc-pill-green">REPORTED</span>'
                 stat = f"{sum(b['score'] for b in pair['bowlers'])} total pinfall"
             else:
-                stat = f"{pair['reported']}/{len(pair['bowlers'])} reported"
+                pill = '<span class="ptcc-pill ptcc-pill-amber">BOWLING</span>'
+                stat = f"{pair['reported']}/{len(pair['bowlers'])} scores in"
             with column, st.container(key=f"tile_{color}_{game_number}_{pair['pair']}"):
                 st.markdown(
                     f'<div class="ptcc-tile-title">Pair {pair["pair"]} · Lanes {low}–{high}</div>'
-                    f'<div class="ptcc-tile-stat">{stat}</div>',
+                    f'{pill}<div class="ptcc-tile-stat">{stat}</div>',
                     unsafe_allow_html=True,
                 )
                 if st.button("Enter / Edit Scores", key=f"edit_{game_number}_{pair['pair']}", width="stretch"):
                     st.session_state[PENDING_DIALOG_KEY] = (tournament_id, game_number, pair["pair"])
                     st.rerun()
     st.caption("🟩 reported   🟧 still bowling")
+
+
+@st.fragment(run_every=REFRESH_SECONDS)
+def _kpi_row(tournament: dict, game_number: int) -> None:
+    tid = tournament["id"]
+    pairs = squad_pairs(tid, game_number)
+    reported = sum(p["complete"] for p in pairs)
+    standings = compute_standings(tid)
+    entries = query(
+        "SELECT COUNT(*) AS n FROM bowlers WHERE tournament_id = ? AND mystery_doubles_opt_in = 1", (tid,)
+    )[0]["n"]
+    fee = tournament.get("mystery_doubles_fee")
+    fee = DEFAULT_MYSTERY_DOUBLES_FEE if fee is None else float(fee)
+
+    cut_row = standings[CUT_SEED - 1] if len(standings) >= CUT_SEED else None
+    first, second, third = st.columns(3)
+    first.metric("Lanes Reported", f"{reported} / {len(pairs)} Pairs")
+    second.metric(
+        f"Seed #{CUT_SEED} Cut Line",
+        str(cut_row["handicap_total"]) if cut_row and cut_row["games_bowled"] else "—",
+        delta=cut_row["name"] if cut_row and cut_row["games_bowled"] else f"needs {CUT_SEED} bowlers",
+        delta_color="off",
+    )
+    third.metric("Mystery Doubles Pot", f"${entries * fee:,.2f}", delta=f"{entries} entries × ${fee:,.2f}", delta_color="off")
 
 
 @st.fragment(run_every=REFRESH_SECONDS)
@@ -138,8 +167,16 @@ def render_active_squad(tournament_id: int | None = None) -> None:
     tid = tournament["id"]
 
     default_game = current_game(tid, tournament["game_count"])
+    render_header(
+        tournament["name"],
+        tournament["host_center"],
+        active_game=default_game if tournament["status"] == "active" else None,
+        total_games=tournament["game_count"],
+        logo_path=tournament["logo_path"],
+        squad_format=tournament["squad_format"],
+    )
     game_number = (
-        st.radio("Game", range(1, tournament["game_count"] + 1), index=default_game - 1, horizontal=True)
+        st.radio("View game", range(1, tournament["game_count"] + 1), index=default_game - 1, horizontal=True)
         if tournament["game_count"] > 1
         else 1
     )
@@ -148,6 +185,7 @@ def render_active_squad(tournament_id: int | None = None) -> None:
     if pending:
         _desk_scoring_dialog(*pending)
 
+    _kpi_row(tournament, game_number)
     _heatmap_panel(tid, game_number)
     left, right = st.columns([7, 3])
     with left:
