@@ -10,9 +10,32 @@ from modules.standings import query
 
 def _staff() -> list[dict]:
     return query(
-        "SELECT id, username, display_name, center_affiliation, role, created_at "
+        "SELECT id, username, display_name, email, center_affiliation, role, is_approved, created_at "
         "FROM staff_users ORDER BY username"
     )
+
+
+def _pending_requests(pending: list[dict], me: dict) -> None:
+    with st.container(border=True):
+        st.subheader(f"Pending access requests ({len(pending)})")
+        for row in pending:
+            info, approve, reject = st.columns([5, 1, 1])
+            info.markdown(
+                f"**{row['display_name']}** ({row['username']}) · {row['center_affiliation']} · "
+                f"{row['email'] or 'no email'}"
+            )
+            if approve.button("Approve", key=f"approve_{row['id']}", type="primary", width="stretch"):
+                error = auth.approve_user(row["id"], me["display_name"])
+                if error:
+                    st.error(error)
+                else:
+                    st.rerun()
+            if reject.button("Reject", key=f"reject_{row['id']}", width="stretch"):
+                error = auth.delete_user(row["id"], me["id"], me["display_name"])
+                if error:
+                    st.error(error)
+                else:
+                    st.rerun()
 
 
 def _report(error: str | None, success: str) -> None:
@@ -96,6 +119,9 @@ def render_staff_accounts() -> None:
         return
 
     staff = _staff()
+    pending = [row for row in staff if not row["is_approved"]]
+    if pending:
+        _pending_requests(pending, me)
     st.dataframe(
         [{k: v for k, v in row.items() if k != "id"} for row in staff],
         hide_index=True,

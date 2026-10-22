@@ -67,6 +67,29 @@ div[data-testid="stVerticalBlockBorderWrapper"][class*="st-key-card"],
 [data-testid="stMetricLabel"] { color: #94A3B8; }
 [data-testid="stMetricValue"] { color: #F8FAFC; }
 
+/* ---- login card ---- */
+div[class*="st-key-auth_card"] {
+    background: #1E293B;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    max-width: 520px;
+    margin: 0 auto;
+    padding: 28px;
+}
+.ptcc-auth-title { color: #F8FAFC; font-size: 1.5rem; font-weight: 700; margin-top: 14px; }
+div[class*="st-key-auth_card"] [data-testid="stForm"] {
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+div[class*="st-key-auth_card"] [data-testid="stTextInputRootElement"],
+div[class*="st-key-auth_card"] [data-testid="stSelectbox"] [data-baseweb="select"] > div {
+    background: #0F172A;
+    border: 1px solid #475569;
+    border-radius: 8px;
+}
+.ptcc-auth-subtitle { color: #94A3B8; font-size: 0.9rem; margin: 4px 0 12px 0; }
+
 /* ---- top banner ---- */
 div[class*="st-key-ptcc_header"] {
     background: #1E293B;

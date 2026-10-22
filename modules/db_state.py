@@ -223,6 +223,15 @@ def init_db() -> None:
         connection.close()
 
 
+def checkpoint_db() -> None:
+    """Flush the WAL into the main database file."""
+    connection = get_connection()
+    try:
+        connection.execute("PRAGMA wal_checkpoint(FULL);")
+    finally:
+        connection.close()
+
+
 def log_desk_action(user_name: str, role: str, action: str) -> None:
     """Record a desk action in the audit log."""
     connection = get_connection()

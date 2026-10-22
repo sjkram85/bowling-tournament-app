@@ -13,7 +13,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from modules.cde_bls_bridge import build_bls_streams, generate_bls_export
-from modules.db_state import get_connection
+from modules.db_state import checkpoint_db, get_connection
 from modules.standings import (
     CUT_SEED,
     MAX_GAME_SCORE,
@@ -233,6 +233,7 @@ def freeze_tournament(tournament_id: int, archived_by: str, pdf: bytes, smart_cs
             connection.execute("UPDATE tournaments SET status = 'completed' WHERE id = ?", (tournament_id,))
     finally:
         connection.close()
+    checkpoint_db()
 
 
 def get_archive(tournament_id: int) -> dict | None:

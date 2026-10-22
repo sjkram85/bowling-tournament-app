@@ -52,14 +52,68 @@ def create_staff_user(
     try:
         with connection:
             connection.execute(
-                "INSERT INTO staff_users (username, password_hash, display_name, center_affiliation, role) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO staff_users "
+                "(username, password_hash, display_name, center_affiliation, role, is_approved) "
+                "VALUES (?, ?, ?, ?, ?, 1)",
                 (username, hash_password(password), display_name.strip(), center_affiliation, role),
             )
     except sqlite3.IntegrityError:
         return "That username is already taken."
     finally:
         connection.close()
+    return None
+
+
+def register_applicant(
+    display_name: str, username: str, email: str, password: str, center_affiliation: str
+) -> str | None:
+    """Store a self-service access request (role 'td', not approved); returns an error or None."""
+    username = username.strip().lower()
+    email = email.strip()
+    if not (display_name.strip() and username and email and center_affiliation):
+        return "All fields are required."
+    if "@" not in email or "." not in email.rsplit("@", 1)[-1]:
+        return "Enter a valid email address."
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+    connection = get_connection()
+    try:
+        with connection:
+            connection.execute(
+                "INSERT INTO staff_users "
+                "(username, password_hash, display_name, email, center_affiliation, role, is_approved) "
+                "VALUES (?, ?, ?, ?, ?, 'td', 0)",
+                (username, hash_password(password), display_name.strip(), email, center_affiliation),
+            )
+    except sqlite3.IntegrityError:
+        return "That username is already taken."
+    finally:
+        connection.close()
+    return None
+
+
+def approve_user(user_id: int, actor: str) -> str | None:
+    """Approve a pending applicant and email them; returns an error message or None."""
+    connection = get_connection()
+    try:
+        with connection:
+            row = connection.execute(
+                "SELECT username, display_name, email FROM staff_users WHERE id = ? AND is_approved = 0",
+                (user_id,),
+            ).fetchone()
+            if row is None:
+                return "That request is no longer pending."
+            connection.execute("UPDATE staff_users SET is_approved = 1 WHERE id = ?", (user_id,))
+    finally:
+        connection.close()
+    _audit(actor, f"Approved staff access request for '{row['username']}'")
+    if row["email"]:
+        from modules.mailer import send_applicant_approval_notice
+
+        try:
+            send_applicant_approval_notice(row["email"], row["display_name"])
+        except Exception:
+            pass
     return None
 
 
@@ -234,23 +288,24 @@ def _setup_form() -> None:
 
 
 def _login_form() -> None:
-    st.title("Tournament Desk Login")
-    with st.form("desk_login"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Sign in", type="primary")
-    if not submitted:
-        return
+    from views.auth_view import render_auth_view
+
+    render_auth_view()
+
+
+def try_login(username: str, password: str) -> str | None:
+    """Sign in on valid, approved credentials; otherwise returns a message kind: 'locked', 'invalid' or 'pending'."""
     attempts = st.session_state.get("login_attempts", 0)
     if attempts >= MAX_LOGIN_ATTEMPTS:
-        st.error("Too many failed attempts. Reload the page to try again.")
-        return
+        return "locked"
     user = authenticate(username, password)
     if user is None:
         st.session_state["login_attempts"] = attempts + 1
-        st.error("Invalid username or password.")
-        return
+        return "invalid"
+    if not user.get("is_approved"):
+        return "pending"
     _login_user(user)
+    return None
 
 
 def require_login() -> dict | None:
