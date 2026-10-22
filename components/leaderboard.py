@@ -1,4 +1,4 @@
-"""Leaderboard table with a red finals cut line."""
+"""Leaderboard table with a red finals cut line, legible on the dark theme."""
 
 from html import escape
 
@@ -7,9 +7,10 @@ import streamlit as st
 from modules.standings import CUT_SEED
 
 _TABLE_STYLE = (
-    "width:100%;border-collapse:collapse;background:#FFFFFF;border:1px solid #E2E8F0;"
-    "border-radius:12px;overflow:hidden;font-size:0.95rem"
+    "width:100%;border-collapse:separate;border-spacing:0;background:#1E293B;color:#F1F5F9;"
+    "border:1px solid #334155;border-radius:12px;overflow:hidden;font-size:0.95rem"
 )
+_CELL = "padding:8px 12px;color:#F1F5F9"
 
 
 def render_leaderboard(
@@ -18,24 +19,35 @@ def render_leaderboard(
     if not standings:
         st.info("No scores yet.")
         return
+    has_cut_line = len(standings) > cut
     rows = []
     for row in standings:
-        background = "#FEF9C3" if row["id"] == highlight_bowler_id else "#FFFFFF"
-        border = "3px solid #DC2626" if row["rank"] == cut and len(standings) > cut else "1px solid #E2E8F0"
+        is_cut_row = row["rank"] == cut
+        if row["id"] == highlight_bowler_id:
+            background, color = "#78350F", "#FEF3C7"
+        elif row["rank"] <= cut:
+            background, color = "#1E293B", "#F1F5F9"
+        else:
+            background, color = "#162033", "#CBD5E1"
+        # Amber accent on the seed #cut row, red rule under it marks the cut line.
+        accent = "border-left:5px solid #F59E0B;" if is_cut_row else "border-left:5px solid transparent;"
+        bottom = "3px solid #EF4444" if is_cut_row and has_cut_line else "1px solid #334155"
+        cell = f"padding:8px 12px;color:{color};border-bottom:{bottom};background:{background}"
         marker = "T" if row["tied"] else ""
         rows.append(
-            f'<tr style="background:{background};border-bottom:{border}">'
-            f'<td style="padding:6px 10px">{marker}{row["rank"]}</td>'
-            f'<td style="padding:6px 10px">{escape(row["name"])}</td>'
-            f'<td style="padding:6px 10px;text-align:right">{row["games_bowled"]}</td>'
-            f'<td style="padding:6px 10px;text-align:right">{row["scratch_total"]}</td>'
-            f'<td style="padding:6px 10px;text-align:right"><b>{row["handicap_total"]}</b></td>'
+            "<tr>"
+            f'<td style="{cell};{accent}">{marker}{row["rank"]}</td>'
+            f'<td style="{cell}">{escape(row["name"])}</td>'
+            f'<td style="{cell};text-align:right">{row["games_bowled"]}</td>'
+            f'<td style="{cell};text-align:right">{row["scratch_total"]}</td>'
+            f'<td style="{cell};text-align:right"><b>{row["handicap_total"]}</b></td>'
             "</tr>"
         )
     header = "".join(
-        f'<th style="padding:8px 10px;text-align:{align};background:#334155;color:#FFFFFF">{label}</th>'
+        f'<th style="padding:10px 12px;text-align:{align};background:#0F172A;color:#E2E8F0;'
+        f'border-bottom:1px solid #334155">{label}</th>'
         for label, align in (("#", "left"), ("Bowler", "left"), ("Gms", "right"), ("Scratch", "right"), ("Total", "right"))
     )
     st.markdown(f'<table style="{_TABLE_STYLE}"><tr>{header}</tr>{"".join(rows)}</table>', unsafe_allow_html=True)
-    if len(standings) > cut:
+    if has_cut_line:
         st.caption(f"Red line = Seed #{cut} cut line")

@@ -23,6 +23,7 @@ def _kiosk_board(tournament_id: int) -> None:
         active_game=game if tournament["status"] == "active" else None,
         total_games=tournament["game_count"],
         logo_path=tournament["logo_path"],
+        squad_format=tournament["squad_format"],
     )
     render_leaderboard(compute_standings(tournament_id))
 
