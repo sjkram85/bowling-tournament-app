@@ -8,7 +8,6 @@ from components.styles import inject_styles
 from components.tournament_picker import pick_tournament
 from modules.constants import DEFAULT_MYSTERY_DOUBLES_FEE
 from modules.db_state import init_db
-from modules.prism_ai import get_prism_ai_guidance, query_usbc_rulebook
 from modules.standings import (
     CUT_SEED,
     MAX_GAME_SCORE,
@@ -115,49 +114,6 @@ def _leaderboard_panel(tournament_id: int) -> None:
     render_leaderboard(compute_standings(tournament_id))
 
 
-def _arbitrator(tournament_id: int) -> None:
-    with st.expander("Dispute & Rule Arbitrator"):
-        question = st.text_area(
-            "Describe the dispute",
-            placeholder="e.g. Foul on the first ball of frame 4 — what is the ruling?",
-            key=f"arbitrator_q_{tournament_id}",
-        )
-        if st.button("Ask the rulebook", key=f"arbitrator_btn_{tournament_id}", width="stretch"):
-            if not question.strip():
-                st.warning("Enter a question.")
-            else:
-                with st.spinner("Searching the USBC rulebook..."):
-                    st.session_state[f"arbitrator_a_{tournament_id}"] = query_usbc_rulebook(question.strip())
-        if st.session_state.get(f"arbitrator_a_{tournament_id}"):
-            st.markdown(st.session_state[f"arbitrator_a_{tournament_id}"])
-
-
-def _prism_card(tournament_id: int, game_number: int) -> None:
-    pairs = squad_pairs(tournament_id, game_number)
-    reported = sum(p["complete"] for p in pairs)
-    with st.container(border=True):
-        st.markdown("**✨ Prism A.I · Next step**")
-        st.write(f"{reported} of {len(pairs)} pairs have reported Game {game_number}.")
-        # Re-ask only when the squad state changes, not on every refresh.
-        key = f"prism_guidance_{tournament_id}_{game_number}_{reported}"
-        refresh = st.button("Refresh guidance", key=f"prism_btn_{key}", width="stretch")
-        if refresh or key not in st.session_state:
-            standings = compute_standings(tournament_id)
-            state = {
-                "screen": "active_squad",
-                "game": game_number,
-                "pairs_reported": reported,
-                "pairs_total": len(pairs),
-                "pairs_pending": [p["pair"] for p in pairs if not p["complete"]],
-                "cut_line_seed": CUT_SEED,
-                "top_seeds": [(r["rank"], r["handicap_total"]) for r in standings[: CUT_SEED + 1]],
-            }
-            with st.spinner("Thinking..."):
-                st.session_state[key] = get_prism_ai_guidance(state)
-        st.info(st.session_state[key])
-    _arbitrator(tournament_id)
-
-
 def render_active_squad(tournament_id: int | None = None) -> None:
     init_db()
     inject_styles()
@@ -187,8 +143,4 @@ def render_active_squad(tournament_id: int | None = None) -> None:
 
     _kpi_row(tournament, game_number)
     _heatmap_panel(tid, game_number)
-    left, right = st.columns([7, 3])
-    with left:
-        _leaderboard_panel(tid)
-    with right:
-        _prism_card(tid, game_number)
+    _leaderboard_panel(tid)

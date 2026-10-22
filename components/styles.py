@@ -161,6 +161,36 @@ div[class*="st-key-side_signout"] button:hover {
     color: #FCA5A5;
 }
 
+/* ---- Prism A.I dock ---- */
+div[class*="st-key-prism_dock"] {
+    background: #1E293B;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    margin-top: 24px;
+    max-height: 70vh;
+    overflow-y: auto;
+    padding: 14px 18px;
+}
+.ptcc-dock-title { color: #F8FAFC; font-weight: 700; }
+.ptcc-dock-spark { color: #F59E0B; }
+.ptcc-dock-view {
+    background: #0F172A;
+    border: 1px solid #334155;
+    border-radius: 999px;
+    color: #94A3B8;
+    font-size: 0.75rem;
+    margin-left: 10px;
+    padding: 2px 10px;
+}
+.ptcc-dock-guidance {
+    background: #0F172A;
+    border-left: 4px solid #F59E0B;
+    border-radius: 8px;
+    color: #E2E8F0;
+    margin: 6px 0 10px 0;
+    padding: 10px 14px;
+}
+
 /* ---- login card ---- */
 div[class*="st-key-auth_card"] {
     background: #1E293B;

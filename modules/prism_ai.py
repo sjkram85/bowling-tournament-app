@@ -105,6 +105,8 @@ def _fallback_guidance(screen_state: dict, user_prompt: str | None) -> str:
     if _is_rules_query(user_prompt):
         return "💡 The rules assistant is unavailable. Check the USBC Playing Rulebook directly and note the ruling in the audit log."
     state = screen_state if isinstance(screen_state, dict) else {}
+    if state.get("local_hint"):
+        return str(state["local_hint"])
     game = state.get("game")
     reported, total = state.get("pairs_reported"), state.get("pairs_total")
     pending = state.get("pairs_pending") or []

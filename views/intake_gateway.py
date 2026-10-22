@@ -155,13 +155,18 @@ def render_intake_gateway() -> None:
         f"{DEFAULT_HANDICAP_BASE} minus the entering average."
     )
 
-    with st.container(border=True):
-        st.markdown("**✨ Prism A.I**")
-        st.write(
-            f"Want to add some fun? I recommend a **${DEFAULT_MYSTERY_DOUBLES_FEE:.0f} Mystery Doubles "
-            "side pot** — bowlers are randomly paired when the squad starts."
-        )
-        mystery = st.toggle(f"Run ${DEFAULT_MYSTERY_DOUBLES_FEE:.0f} Mystery Doubles draw on start")
+    valid_now = edited[edited["Bowler Name"].fillna("").astype(str).str.strip() != ""]
+    mystery = st.toggle(
+        f"Run ${DEFAULT_MYSTERY_DOUBLES_FEE:.0f} Mystery Doubles side pot draw on start",
+        help="Bowlers are randomly paired when the squad starts.",
+    )
+    st.session_state["intake_summary"] = {
+        "bowlers": len(valid_now),
+        "pacers": int(valid_now["Pacer"].fillna(False).astype(bool).sum()),
+        "unpaid": int((~valid_now["Paid"].fillna(False).astype(bool)).sum()),
+        "host_code": host_code,
+        "mystery_doubles": mystery,
+    }
 
     pin = st.text_input(
         "Scoring PIN (4 digits, for ?mode=score)",

@@ -8,6 +8,7 @@ st.set_page_config(page_title="Prism Tournament Control Center", layout="wide")
 
 from components.about_dialog import show_about_dialog
 from components.header import CHUSBC_LOGO, _logo_tag
+from components.prism_dock import collect_view_state, render_prism_dock
 from components.styles import apply_clean_theme
 from modules import auth
 from modules.constants import CENTERS
@@ -89,6 +90,8 @@ def render_desk() -> None:
                 st.page_link(item, width="stretch")
     _sidebar_identity(user)
     page.run()
+    current_view = page.title
+    render_prism_dock(current_view=current_view, view_state=collect_view_state(current_view))
 
 
 mode = st.query_params.get("mode")
