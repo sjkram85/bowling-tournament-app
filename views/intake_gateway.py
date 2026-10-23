@@ -1,4 +1,4 @@
-"""Intake Gateway — Squad initialization, AI roster ingestion (file upload or copy/paste), manual entry, multi-event package registration, and concourse check-in."""
+"""Intake Gateway — Squad initialization, CHUSBC Template Library, AI roster ingestion, manual entry, multi-event package registration, and concourse check-in."""
 
 import base64
 import io
@@ -26,6 +26,7 @@ except Exception:
 from modules.auth import current_user
 from modules.constants import CENTERS, HOST_CENTERS
 from modules.db_state import get_connection, log_desk_action
+from modules.tournament_templates import CHUSBC_TEMPLATES, create_tournament_from_template
 
 # Pure SVG bowling ball with 3D gradient & finger holes
 BOWLING_BALL_SVG = (
@@ -185,7 +186,30 @@ def render_intake_gateway() -> None:
     active_tourney = _get_active_tournament()
 
     if not active_tourney:
-        st.info("No active tournament squad is loaded. Create a new event or squad below.")
+        st.info("No active tournament squad is loaded. Select a CHUSBC Template or create a custom event below.")
+
+        # --- CHUSBC MASTER TOURNAMENT TEMPLATES ---
+        with st.container(border=True):
+            st.markdown("##### 🏆 CHUSBC Master Tournament Templates")
+            st.caption("Quick-load standardized association tournament configurations.")
+
+            selected_tmpl_key = st.selectbox("Select Association Template", list(CHUSBC_TEMPLATES.keys()))
+            tmpl_info = CHUSBC_TEMPLATES[selected_tmpl_key]
+            st.markdown(f"<small style='color: #94A3B8;'>{tmpl_info['description']} &middot; <b>{tmpl_info['game_count']} Games</b> &middot; Format: {tmpl_info['squad_format']}</small>", unsafe_allow_html=True)
+
+            center_keys = list(CENTERS.keys())
+            template_center = st.selectbox("Template Host Center", center_keys, format_func=lambda k: CENTERS[k]["name"], key="tmpl_center")
+            template_pin = st.text_input("Floor Scorer PIN", value="6199", max_chars=8, key="tmpl_pin")
+
+            if st.button("🚀 Load Template & Unlock Intake", type="primary", use_container_width=True):
+                new_id = create_tournament_from_template(selected_tmpl_key, template_center, template_pin)
+                st.session_state["active_tournament_id"] = new_id
+                log_desk_action(td_name, "td", f"Initialized tournament squad #{new_id} from template '{selected_tmpl_key}'")
+                st.success(f"Template loaded successfully as Tournament #{new_id}!")
+                st.rerun()
+
+        st.markdown("---")
+        st.markdown("##### 🛠️ Or Create Custom Tournament Squad")
         with st.form("create_tournament_form"):
             t_name = st.text_input("Tournament Name", value="CHUSBC Championship Squad")
             center_keys = list(CENTERS.keys())
