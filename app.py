@@ -4,7 +4,7 @@ from html import escape
 
 import streamlit as st
 
-st.set_page_config(page_title="Prism Tournament Control Center", layout="wide")
+st.set_page_config(page_title="Prism Tournament Control Center (PTCC)", layout="wide")
 
 from components.about_dialog import show_about_dialog
 from components.header import CHUSBC_LOGO, _logo_tag
@@ -60,9 +60,9 @@ def _sidebar_identity(user: dict) -> None:
             unsafe_allow_html=True,
         )
         about, sign_out = st.columns(2)
-        if about.button("About", key="side_about", width="stretch"):
+        if about.button("About", key="side_about", use_container_width=True):
             show_about_dialog()
-        if sign_out.button("Sign Out", key="side_signout", width="stretch"):
+        if sign_out.button("Sign Out", key="side_signout", use_container_width=True):
             auth.logout()
             st.rerun()
 
@@ -87,7 +87,7 @@ def render_desk() -> None:
         for item in items:
             state = "active" if item.url_path == page.url_path else "idle"
             with st.sidebar.container(key=f"nav_{state}_{item.url_path}"):
-                st.page_link(item, width="stretch")
+                st.page_link(item, use_container_width=True)
     _sidebar_identity(user)
     page.run()
     current_view = page.title

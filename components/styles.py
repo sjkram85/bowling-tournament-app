@@ -214,6 +214,16 @@ div[class*="st-key-auth_card"] [data-testid="stSelectbox"] [data-baseweb="select
 }
 .ptcc-auth-subtitle { color: #94A3B8; font-size: 0.9rem; margin: 4px 0 12px 0; }
 
+/* ---- browser & iOS autofill fix ---- */
+input:-webkit-autofill,
+input:-webkit-autofill:hover, 
+input:-webkit-autofill:focus, 
+input:-webkit-autofill:active {
+    -webkit-box-shadow: 0 0 0 50px #0F172A inset !important;
+    -webkit-text-fill-color: #F8FAFC !important;
+    caret-color: #F8FAFC !important;
+}
+
 /* ---- top banner ---- */
 div[class*="st-key-ptcc_header"] {
     background: #1E293B;

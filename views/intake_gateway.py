@@ -1,8 +1,10 @@
 """Tournament intake dashboard."""
 
+import io
 import secrets
 
 import pandas as pd
+import qrcode
 import streamlit as st
 
 from modules.auth import current_user
@@ -63,6 +65,18 @@ def _records_to_frame(records: list[dict]) -> pd.DataFrame:
 
 def _int_or_none(value) -> int | None:
     return None if pd.isna(value) else int(value)
+
+
+def _generate_qr_buffer(url: str) -> io.BytesIO:
+    """Generate high-contrast QR code image in memory."""
+    qr = qrcode.QRCode(box_size=5, border=2)
+    qr.add_data(url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="#0F172A", back_color="#FFFFFF")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
 
 def _create_tournament(name, host_code, squad_format, game_count, roster, mystery_doubles, pin) -> int:
@@ -173,6 +187,67 @@ def render_intake_gateway() -> None:
         value=st.session_state.setdefault("intake_pin", f"{secrets.randbelow(10000):04d}"),
         max_chars=4,
     )
+
+    # --- CONCOURSE & FLOOR ACCESS STATION ---
+    st.markdown("---")
+    st.markdown("### 📲 Concourse Check-In & Floor Scorer Access Station")
+    st.caption("Display or share these QR codes with bowlers and floor score assistants prior to launching the squad.")
+
+    qr_col1, qr_col2 = st.columns(2)
+
+    bowler_url = "https://chusbc-desk.streamlit.app/?mode=bowler"
+    scorer_url = "https://chusbc-desk.streamlit.app/?mode=score"
+
+    with qr_col1:
+        st.markdown(
+            """
+            <div style="background:#1E293B; border:1px solid #334155; border-radius:10px; padding:12px; text-align:center;">
+                <h4 style="color:#F8FAFC; margin-bottom:4px;">Bowler Live Portal</h4>
+                <p style="color:#94A3B8; font-size:12px; margin-bottom:8px;">Scan to view live standings, cuts & brackets</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        buf_b = _generate_qr_buffer(bowler_url)
+        st.image(buf_b.getvalue(), caption="Bowler Live Tracker QR", width=220)
+        st.markdown(f"[🔗 Open Bowler Portal Directly]({bowler_url})")
+
+    with qr_col2:
+        st.markdown(
+            f"""
+            <div style="background:#1E293B; border:1px solid #334155; border-radius:10px; padding:12px; text-align:center;">
+                <h4 style="color:#F8FAFC; margin-bottom:4px;">Floor Verifier Portal</h4>
+                <p style="color:#10B981; font-weight:700; font-size:14px; margin-bottom:8px;">🔑 Active PIN: {pin}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        buf_s = _generate_qr_buffer(scorer_url)
+        st.image(buf_s.getvalue(), caption="Floor Assistant 10-Key Pad QR", width=220)
+        st.markdown(f"[🔗 Open Mobile Scorer Directly]({scorer_url})")
+
+    with st.expander("🖨️ Concourse Display / Printable Placard Mode", expanded=False):
+        st.markdown(
+            f"""
+            <div style="background:#0F172A; border:2px dashed #475569; border-radius:12px; padding:20px; text-align:center;">
+                <h2 style="color:#F8FAFC; margin-bottom:4px;">CECIL HARFORD USBC TOURNAMENT ACCESS</h2>
+                <p style="color:#94A3B8; font-size:14px; margin-bottom:16px;">Scan either code below using your smartphone camera</p>
+                <div style="display:flex; justify-content:space-around; align-items:center; flex-wrap:wrap; gap:20px;">
+                    <div>
+                        <h4 style="color:#38BDF8;">BOWLER LIVE PORTAL</h4>
+                        <p style="color:#CBD5E1; font-size:12px;">Track Standings, High Pots & Cut Lines</p>
+                    </div>
+                    <div>
+                        <h4 style="color:#34D399;">FLOOR SCORING PAD</h4>
+                        <p style="color:#CBD5E1; font-size:12px;">Authorized Verifiers Only (PIN: <strong>{pin}</strong>)</p>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
 
     if st.button("Start Squad", type="primary", width="stretch"):
         valid = edited[edited["Bowler Name"].fillna("").astype(str).str.strip() != ""]
