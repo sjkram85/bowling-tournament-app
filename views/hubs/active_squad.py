@@ -74,6 +74,27 @@ def _get_game_scores(tournament_id: int, game_number: int) -> dict[int, dict]:
         conn.close()
 
 
+def _get_total_games_completed_count(tournament_id: int) -> int:
+    """Returns how many bowlers have completed all required games."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) as count FROM (
+                SELECT b.id FROM bowlers b
+                JOIN scores s ON b.id = s.bowler_id
+                WHERE b.tournament_id = ? AND b.is_pacer = 0 AND s.scratch_score > 0
+                GROUP BY b.id
+                HAVING COUNT(DISTINCT s.game_number) >= (SELECT game_count FROM tournaments WHERE id = ?)
+            )
+            """,
+            (tournament_id, tournament_id),
+        ).fetchone()
+        return row["count"] if row else 0
+    finally:
+        conn.close()
+
+
 def _save_score(tournament_id: int, bowler_id: int, game_number: int, scratch: int, hdcp: int, user_name: str) -> None:
     conn = get_connection()
     total = scratch + hdcp
@@ -110,7 +131,7 @@ def _calculate_lane_movement(starting_lane: int, current_game: int, total_lanes:
 
 
 @st.fragment(run_every="8s")
-def _render_live_scoring_matrix(t_id: int, active_game: int, total_lanes: int, bowlers: list[dict], td_name: str) -> None:
+def _render_live_scoring_matrix(t_id: int, active_game: int, total_lanes: int, bowlers: list[dict], td_name: str, tourney_game_count: int) -> None:
     """Auto-polling fragment executing every 8 seconds to reflect floor submissions in real time."""
     scores_map = _get_game_scores(t_id, active_game)
 
@@ -207,6 +228,32 @@ def _render_live_scoring_matrix(t_id: int, active_game: int, total_lanes: int, b
         st.success(f"Successfully recorded and audited {count_updated} scores for Game {active_game}!")
         st.rerun()
 
+    # =========================================================
+    # SQUAD COMPLETION & FINALS CLOSEOUT CALLOUT
+    # =========================================================
+    active_field_count = sum(1 for b in bowlers if not b.get("is_pacer"))
+    fully_completed_count = _get_total_games_completed_count(t_id)
+
+    if fully_completed_count >= active_field_count and active_field_count > 0:
+        st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown(
+                f"""
+                <div style="background: linear-gradient(135deg, #064E3B 0%, #0F172A 100%); border: 1px solid #10B981; border-radius: 10px; padding: 18px 20px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                    <div>
+                        <span style="background: #10B981; color: #022C22; font-size: 11px; font-weight: 800; padding: 3px 10px; border-radius: 999px; text-transform: uppercase;">
+                            QUALIFYING ROUND COMPLETE
+                        </span>
+                        <h3 style="color: #ECFDF5; margin: 8px 0 2px 0;">🎉 All {active_field_count} Bowlers Finished ({tourney_game_count} Games)</h3>
+                        <p style="color: #6EE7B7; font-size: 13px; margin: 0;">Scores are fully tallied. Advance to Finals Closeout to seed stepladders, verify SMART payouts, and seal the tournament.</p>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button("🏆 Advance to Finals Closeout & Payouts ➔", type="primary", use_container_width=True):
+                st.switch_page("views/hubs/finals_close.py")
+
 
 def render_active_squad() -> None:
     st.title("🎳 Active Squad Hub")
@@ -230,7 +277,7 @@ def render_active_squad() -> None:
         active_game = st.selectbox(
             "Active Game",
             options=list(range(1, tourney["game_count"] + 1)),
-            index=0,
+            index=min(2, tourney["game_count"] - 1),
             key="hub_active_game_select",
         )
     with top_col3:
@@ -249,7 +296,6 @@ def render_active_squad() -> None:
         unsafe_allow_html=True,
     )
 
-    # Bowler roster and check-in analysis
     bowlers = _get_squad_bowlers(t_id)
     if not bowlers:
         st.warning("No bowlers registered on the squad roster.")
@@ -393,7 +439,6 @@ def render_active_squad() -> None:
                 score_bracket_round(t_id, game_round=active_game)
                 st.success(f"Advanced brackets using Game {active_game} scores!")
 
-    # Pass live render into auto-polling fragment
     user = current_user() or {}
     td_name = user.get("display_name", "Tournament Director")
-    _render_live_scoring_matrix(t_id, active_game, total_lanes, bowlers, td_name)
+    _render_live_scoring_matrix(t_id, active_game, total_lanes, bowlers, td_name, tourney["game_count"])
