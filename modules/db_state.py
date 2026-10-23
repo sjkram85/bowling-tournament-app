@@ -1,10 +1,9 @@
 """Database connection and schema management for PTCC SQLite backend."""
 
 import os
+from pathlib import Path
 import shutil
 import sqlite3
-from datetime import datetime
-from pathlib import Path
 
 DB_FILE = Path(os.environ.get("PTCC_DB_PATH", "prism_operational.db"))
 BACKUP_DIR = Path("backups")
@@ -34,6 +33,8 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
         cursor.execute("ALTER TABLE bowlers ADD COLUMN is_youth INTEGER DEFAULT 0")
     if "smart_account_id" not in existing_cols:
         cursor.execute("ALTER TABLE bowlers ADD COLUMN smart_account_id TEXT")
+    if "email" not in existing_cols:
+        cursor.execute("ALTER TABLE bowlers ADD COLUMN email TEXT")
 
 
 def init_db() -> None:
@@ -82,6 +83,7 @@ def init_db() -> None:
                     is_pacer INTEGER NOT NULL DEFAULT 0,
                     is_youth INTEGER NOT NULL DEFAULT 0,
                     smart_account_id TEXT,
+                    email TEXT,
                     paid_status TEXT NOT NULL DEFAULT 'unpaid',
                     mystery_doubles_opt_in INTEGER NOT NULL DEFAULT 0,
                     checked_in INTEGER NOT NULL DEFAULT 0,
@@ -151,7 +153,6 @@ def checkpoint_db(label: str = "manual") -> Path:
     sanitized_label = "".join(c for c in label if c.isalnum() or c in ("-", "_")).strip() or "checkpoint"
     dest_path = BACKUP_DIR / f"prism_{timestamp}_{sanitized_label}.db"
 
-    # Flush database to disk before copying
     if DB_FILE.exists():
         conn = get_connection()
         try:

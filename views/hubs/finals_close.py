@@ -46,13 +46,21 @@ def _get_final_standings(tournament_id: int) -> list[dict]:
 
 
 def _get_tournament_emails(tournament_id: int) -> list[dict]:
+    """Resilient email reader that guards against missing table columns during migrations."""
     conn = get_connection()
     try:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(bowlers)")
+        cols = {row["name"] for row in cursor.fetchall()}
+        if "email" not in cols:
+            return []
         rows = conn.execute(
             "SELECT name, email FROM bowlers WHERE tournament_id = ? AND email IS NOT NULL AND email != ''",
             (tournament_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+    except Exception:
+        return []
     finally:
         conn.close()
 
@@ -140,7 +148,7 @@ def render_finals_close() -> None:
 
             c_print, c_email, c_lock = st.columns(3, gap="medium")
 
-            # Action 1: Lazy-loaded Concourse Print PDF
+            # Action 1: On-Demand PDF Concourse Printout
             with c_print:
                 st.download_button(
                     label="🖨️ Download Printable PDF",
@@ -163,7 +171,7 @@ def render_finals_close() -> None:
                         st.success(f"Dispatched recap notifications to {len(emails_on_file)} bowler(s)!")
                         log_desk_action(td_name, "td", f"Dispatched recap email to {len(emails_on_file)} bowlers for event #{t_id}")
 
-            # Action 3: Finalize and Seal Tournament
+            # Action 3: Finalize and Lock Tournament
             with c_lock:
                 if is_closed:
                     st.success("✅ Tournament Archived & Locked")
@@ -273,7 +281,7 @@ def render_finals_close() -> None:
 
         col_smart, col_csv = st.columns(2)
         with col_smart:
-            smart_csv = build_smart_scholarship_csv(t_id, prize_pool=smart_total if 'smart_total' in locals() else 0.0)
+            smart_csv = build_smart_scholarship_csv(t_id, prize_pool=smart_total if "smart_total" in locals() else 0.0)
             st.download_button(
                 "🎓 Download USBC SMART Upload CSV",
                 data=smart_csv,
