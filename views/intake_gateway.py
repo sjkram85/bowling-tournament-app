@@ -227,16 +227,32 @@ def render_intake_gateway() -> None:
     st.session_state["active_tournament_id"] = t_id
     pin = active_tourney.get("pin_verifier", "6199")
 
-    # Active event banner
-    st.markdown(
-        f"""
-        <div style="background:#1E293B; border-left:4px solid #3B82F6; padding:12px 16px; border-radius:6px; margin-bottom:16px;">
-            <strong style="color:#F8FAFC; font-size:16px;">Active Event: {active_tourney['name']} (#{t_id})</strong><br/>
-            <span style="color:#94A3B8; font-size:13px;">Host Center: {active_tourney['host_center']} | Format: {active_tourney['squad_format']} ({active_tourney['game_count']} Games) | Floor PIN: <code>{pin}</code></span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Active event banner with Cancel / Purge Control
+    col_banner_info, col_banner_action = st.columns([5, 1])
+    with col_banner_info:
+        st.markdown(
+            f"""
+            <div style="background:#1E293B; border-left:4px solid #3B82F6; padding:12px 16px; border-radius:6px; margin-bottom:16px;">
+                <strong style="color:#F8FAFC; font-size:16px;">Active Event: {active_tourney['name']} (#{t_id})</strong><br/>
+                <span style="color:#94A3B8; font-size:13px;">Host Center: {active_tourney['host_center']} | Format: {active_tourney['squad_format']} ({active_tourney['game_count']} Games) | Floor PIN: <code>{pin}</code></span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col_banner_action:
+        st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
+        if st.button("🛑 Cancel Event", type="secondary", use_container_width=True, help="Cancel and close active tournament squad"):
+            conn = get_connection()
+            try:
+                with conn:
+                    conn.execute("UPDATE tournaments SET status = 'cancelled' WHERE id = ?", (t_id,))
+                log_desk_action(td_name, "td", f"Cancelled/purged active tournament squad #{t_id}")
+                if "active_tournament_id" in st.session_state:
+                    del st.session_state["active_tournament_id"]
+                st.success("Tournament squad cancelled successfully.")
+                st.rerun()
+            finally:
+                conn.close()
 
     tab_roster, tab_entry, tab_concourse = st.tabs(
         ["📋 Squad Roster", "➕ Add Competitors (AI & Manual)", "📱 Concourse Access Badges"]
