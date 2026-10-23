@@ -40,14 +40,14 @@ CENTERS = {
         "name": "Harford Lanes",
         "lanes": 20,
         "pairs": 10,
-        "logo_file": "hl_logo.png",
+        "logo_file": "Harford.png",
         "address": "20 Custis Street, Aberdeen, MD 21001",
     },
     "APG": {
         "name": "APG Bowling Center",
         "lanes": 12,
         "pairs": 6,
-        "logo_file": "apg_logo.png",
+        "logo_file": "APG.png",
         "address": "Aberdeen Blvd Bldg 2342, APG, MD 21005",
     },
     "CHUSBC": {
