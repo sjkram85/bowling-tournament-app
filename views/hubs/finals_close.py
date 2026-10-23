@@ -9,7 +9,11 @@ from modules.auth import current_user
 from modules.brackets import get_bracket_financial_ledger
 from modules.cde_bls_bridge import build_bls_streams
 from modules.db_state import get_connection, log_desk_action
-from modules.reports import build_certified_pdf, build_smart_scholarship_csv
+from modules.reports import (
+    build_certified_pdf,
+    build_smart_scholarship_csv,
+    freeze_tournament,
+)
 from modules.stepladder import (
     get_stepladder_state,
     initialize_stepladder,
@@ -49,7 +53,7 @@ def _get_final_standings(tournament_id: int) -> list[dict]:
 
 
 def _get_tournament_emails(tournament_id: int) -> list[dict]:
-    """Resilient email reader that guards against missing table columns during migrations."""
+    """Resilient email reader guarding against missing table columns during migrations."""
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -108,7 +112,7 @@ def render_finals_close() -> None:
     selected_label = st.selectbox("Active Event", list(tourney_map.keys()), index=default_index)
     tourney = tourney_map[selected_label]
     t_id = tourney["id"]
-    is_closed = tourney["status"] == "closed"
+    is_closed = tourney["status"] in ("closed", "completed")
 
     user = current_user() or {}
     td_name = user.get("display_name") or "Tournament Director"
@@ -170,7 +174,7 @@ def render_finals_close() -> None:
 
             c_print, c_email, c_lock = st.columns(3, gap="medium")
 
-            # Action 1: Lazy-loaded Concourse Print PDF
+            # Action 1: On-Demand Concourse Printout PDF
             with c_print:
                 st.download_button(
                     label="🖨️ Download Printable PDF",
@@ -182,7 +186,7 @@ def render_finals_close() -> None:
                     help="Ready-to-print official results sheet for posting on the house bulletin board.",
                 )
 
-            # Action 2: Email Recap to Bowlers
+            # Action 2: Email Results
             with c_email:
                 emails_on_file = _get_tournament_emails(t_id)
                 btn_email_label = f"📧 Email Results ({len(emails_on_file)} on file)"
@@ -193,18 +197,41 @@ def render_finals_close() -> None:
                         st.success(f"Dispatched recap notifications to {len(emails_on_file)} bowler(s)!")
                         log_desk_action(td_name, "td", f"Dispatched recap email to {len(emails_on_file)} bowlers for event #{t_id}")
 
-            # Action 3: Finalize and Lock Tournament
+            # Action 3: Freeze, Seal, and Archive Tournament
             with c_lock:
-                if is_closed:
+                conn = get_connection()
+                has_archive = bool(
+                    conn.execute("SELECT 1 FROM tournament_archives WHERE tournament_id = ?", (t_id,)).fetchone()
+                )
+                conn.close()
+
+                if is_closed and has_archive:
                     st.success("✅ Tournament Archived & Locked")
+                elif is_closed and not has_archive:
+                    st.warning("Event status is closed, but Vault snapshot is unsealed.")
+                    if st.button("📦 Archive into Vault Now", type="primary", use_container_width=True):
+                        pdf_data = build_certified_pdf(t_id, td_name)
+                        smart_data = build_smart_scholarship_csv(
+                            t_id, prize_pool=smart_total if "smart_total" in locals() else 0.0
+                        )
+                        freeze_tournament(t_id, td_name, pdf_data, smart_data)
+                        log_desk_action(td_name, "td", f"Generated archive vault record for closed tournament #{t_id}")
+                        st.success("Sealed in Historical Archive Vault!")
+                        st.rerun()
                 else:
                     if st.button("🔒 Finalize & Close Tournament", type="primary", use_container_width=True):
+                        pdf_data = build_certified_pdf(t_id, td_name)
+                        smart_data = build_smart_scholarship_csv(
+                            t_id, prize_pool=smart_total if "smart_total" in locals() else 0.0
+                        )
+                        freeze_tournament(t_id, td_name, pdf_data, smart_data)
+
                         conn = get_connection()
                         try:
                             with conn:
                                 conn.execute("UPDATE tournaments SET status = 'closed' WHERE id = ?", (t_id,))
-                            log_desk_action(td_name, "td", f"Finalized and closed tournament #{t_id} '{tourney['name']}'")
-                            st.success("Tournament officially closed! Standings permanently locked.")
+                            log_desk_action(td_name, "td", f"Finalized, froze archive, and closed tournament #{t_id} '{tourney['name']}'")
+                            st.success("Tournament officially closed and archived into Vault!")
                             st.rerun()
                         finally:
                             conn.close()
