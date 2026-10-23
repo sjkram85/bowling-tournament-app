@@ -9,12 +9,19 @@ import streamlit as st
 
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
+DEFAULT_ALERT_EMAIL = "chusbc.tournaments@gmail.com"
 
 
 def send_ptcc_mail(to_email: str, subject: str, html_content: str) -> bool:
-    """Send an HTML email; returns True on success, False if sending failed."""
-    sender = st.secrets["CHUSBC_GMAIL_USER"]
-    app_password = st.secrets["CHUSBC_GMAIL_APP_PASSWORD"]
+    """Send an HTML email; returns True on success, False if sending failed or unconfigured."""
+    sender = st.secrets.get("CHUSBC_GMAIL_USER", DEFAULT_ALERT_EMAIL)
+    app_password = st.secrets.get("CHUSBC_GMAIL_APP_PASSWORD")
+
+    if not sender or not app_password or not to_email:
+        return False
+
+    # Remove any unintended whitespace from the app password
+    cleaned_password = app_password.replace(" ", "").strip()
 
     message = MIMEMultipart("alternative")
     message["From"] = sender
@@ -25,7 +32,7 @@ def send_ptcc_mail(to_email: str, subject: str, html_content: str) -> bool:
     try:
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
             server.starttls()
-            server.login(sender, app_password)
+            server.login(sender, cleaned_password)
             server.sendmail(sender, [to_email], message.as_string())
     except (smtplib.SMTPException, OSError):
         return False
@@ -34,7 +41,7 @@ def send_ptcc_mail(to_email: str, subject: str, html_content: str) -> bool:
 
 def send_admin_registration_alert(applicant: dict) -> bool:
     """Tell the administrator that someone has applied for a staff account."""
-    admin_email = st.secrets["ADMIN_ALERT_EMAIL"]
+    admin_email = st.secrets.get("ADMIN_ALERT_EMAIL", DEFAULT_ALERT_EMAIL)
     rows = "".join(
         f"<tr><td><b>{label}</b></td><td>{escape(str(applicant.get(key) or '-'))}</td></tr>"
         for label, key in (
@@ -47,9 +54,9 @@ def send_admin_registration_alert(applicant: dict) -> bool:
     )
     html_content = f"""
     <html><body>
-      <h2>New staff account awaiting approval</h2>
-      <table cellpadding="6" cellspacing="0">{rows}</table>
-      <p>Sign in to the Prism Tournament Control Center and open Staff Accounts to approve or reject this request.</p>
+    <h2>New staff account awaiting approval</h2>
+    <table cellpadding="6" cellspacing="0">{rows}</table>
+    <p>Sign in to the Prism Tournament Control Center and open Staff Accounts to approve or reject this request.</p>
     </body></html>
     """
     return send_ptcc_mail(str(admin_email), "Prism: new staff registration awaiting approval", html_content)
@@ -61,10 +68,10 @@ def send_applicant_approval_notice(applicant_email: str, display_name: str) -> b
         return False
     html_content = f"""
     <html><body>
-      <h2>Your account is approved</h2>
-      <p>Hello {escape(display_name)},</p>
-      <p>Your Prism Tournament Control Center account has been approved. You can now sign in.</p>
-      <p>Cecil Harford USBC</p>
+    <h2>Your account is approved</h2>
+    <p>Hello {escape(display_name)},</p>
+    <p>Your Prism Tournament Control Center account has been approved. You can now sign in.</p>
+    <p>Cecil Harford USBC</p>
     </body></html>
     """
     return send_ptcc_mail(applicant_email, "Your Prism account has been approved", html_content)
@@ -108,14 +115,14 @@ def dispatch_bowler_recap_email(bowler: dict, scores: list, totals: dict | None)
 
     html_content = f"""
     <html><body>
-      <h2>Tournament Recap for {name}</h2>
-      <table border="1" cellpadding="6" cellspacing="0">
-        <tr><th>Game</th><th>Scratch</th><th>With Handicap</th></tr>
-        {''.join(rows)}
-        <tr><td><b>Total</b></td><td><b>{total_scratch}</b></td><td><b>{total_handicap}</b></td></tr>
-      </table>
-      {prize_html}
-      <p>Thank you for bowling with Cecil Harford USBC!</p>
+    <h2>Tournament Recap for {name}</h2>
+    <table border="1" cellpadding="6" cellspacing="0">
+    <tr><th>Game</th><th>Scratch</th><th>With Handicap</th></tr>
+    {''.join(rows)}
+    <tr><td><b>Total</b></td><td><b>{total_scratch}</b></td><td><b>{total_handicap}</b></td></tr>
+    </table>
+    {prize_html}
+    <p>Thank you for bowling with Cecil Harford USBC!</p>
     </body></html>
     """
     return send_ptcc_mail(str(to_email), "Your CHUSBC Tournament Recap", html_content)

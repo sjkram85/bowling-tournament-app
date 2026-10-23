@@ -9,6 +9,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from modules.constants import CENTERS
 from modules.db_state import get_connection, log_desk_action
+from modules.mailer import send_admin_registration_alert
 
 ph = PasswordHasher()
 
@@ -155,7 +156,7 @@ def create_staff_user(
     finally:
         conn.close()
 
-    # Log action outside transaction scope to prevent file deadlock
+    # Log action outside transaction scope to prevent database lockups
     log_desk_action(
         "Admin",
         "admin",
@@ -204,12 +205,26 @@ def register_staff_user(
     finally:
         conn.close()
 
-    # Log action after closing the write transaction
+    # Log audit entry after transaction commit
     log_desk_action(
         display_name.strip(),
         "applicant",
         f"New staff access request submitted for affiliation: {center_affiliation}",
     )
+
+    # Dispatch email notification to chusbc.tournaments@gmail.com
+    applicant_payload = {
+        "display_name": display_name.strip(),
+        "username": username.strip(),
+        "email": email.strip(),
+        "center_affiliation": center_affiliation,
+        "role": "td",
+    }
+    try:
+        send_admin_registration_alert(applicant_payload)
+    except Exception:
+        pass
+
     return True, "Access request submitted successfully! An administrator will review and activate your account."
 
 
