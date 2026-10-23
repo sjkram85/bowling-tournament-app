@@ -4,7 +4,7 @@ import streamlit as st
 
 
 def apply_clean_theme() -> None:
-    """Inject core layout, Slate palette, and responsive anti-dimming styles."""
+    """Inject core layout, Slate palette, responsive anti-dimming, and custom animations."""
     st.markdown(
         """
         <style>
@@ -24,6 +24,84 @@ def apply_clean_theme() -> None:
 
         div[data-testid="stMain"] > div {
             opacity: 1 !important;
+        }
+
+        /* =========================================================
+           THEMATIC ROLLING BOWLING BALL & PIN LOADING ANIMATION
+           ========================================================= */
+        .bowling-loading-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 14px;
+            background: #0F172A;
+            border: 1px dashed #334155;
+            border-radius: 6px;
+            margin: 10px 0;
+        }
+
+        .bowling-lane-micro {
+            position: relative;
+            width: 44px;
+            height: 20px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+        }
+
+        .bowling-ball-rolling {
+            font-size: 14px;
+            position: absolute;
+            left: 0;
+            animation: roll-and-bounce 1.2s infinite ease-in-out;
+            transform-origin: center;
+        }
+
+        .pins-target {
+            font-size: 14px;
+            position: absolute;
+            right: 2px;
+            animation: pin-shake 1.2s infinite ease-in-out;
+        }
+
+        .loading-text-glow {
+            color: #F59E0B;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            animation: pulse-text 1.5s infinite ease-in-out;
+        }
+
+        @keyframes roll-and-bounce {
+            0% {
+                left: 0%;
+                transform: rotate(0deg);
+            }
+            50% {
+                left: 65%;
+                transform: rotate(360deg);
+            }
+            100% {
+                left: 0%;
+                transform: rotate(0deg);
+            }
+        }
+
+        @keyframes pin-shake {
+            0%, 40%, 60%, 100% { transform: translate(0, 0) rotate(0deg); }
+            45% { transform: translate(1px, -1px) rotate(3deg); }
+            50% { transform: translate(-1px, 1px) rotate(-3deg); }
+            55% { transform: translate(0px, -1px) rotate(1deg); }
+        }
+
+        @keyframes pulse-text {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        /* Hide the native streamlit loader in operations to prevent double loading icons */
+        [data-testid="stLoading"] {
+            display: none !important;
         }
 
         /* =========================================================

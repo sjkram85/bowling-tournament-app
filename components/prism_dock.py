@@ -1,7 +1,50 @@
 """Prism A.I Operational Assistant & Dedicated USBC Rule Arbitrator."""
 
+import time
 import streamlit as st
 from modules.prism_ai import get_prism_ai_guidance
+
+
+def _rolling_ball_loader(label: str = "Analyzing...") -> None:
+    """Display an inline animated rolling bowling ball heading toward pins."""
+    st.markdown(
+        f"""
+        <div class="bowling-loading-container">
+            <div class="bowling-lane-micro">
+                <span class="bowling-ball-rolling">🎳</span>
+                <span class="pins-target">░</span>
+            </div>
+            <div class="loading-text-glow">{label}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _stream_response(full_text: str):
+    """Chunk the response data to show up on screen instantly in streaming style."""
+    placeholder = st.empty()
+    words = full_text.split(" ")
+    streamed_text = ""
+    for word in words:
+        streamed_text += word + " "
+        placeholder.markdown(
+            f"""
+            <div style="background:#1E293B; border-left:3px solid #38BDF8; border-radius:6px; padding:8px 10px; color:#E2E8F0; font-size:12px; margin-bottom:10px; line-height:1.4;">
+                {streamed_text}▒
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        time.sleep(0.012)  # Adjusts speed of instant streaming cascade
+    placeholder.markdown(
+        f"""
+        <div style="background:#1E293B; border-left:3px solid #38BDF8; border-radius:6px; padding:8px 10px; color:#E2E8F0; font-size:12px; margin-bottom:10px; line-height:1.4;">
+            {full_text}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def collect_view_state(current_view: str) -> dict:
@@ -78,10 +121,10 @@ def render_prism_dock(current_view: str = "Active Squad Hub", view_state: dict |
 
         if not guidance_text:
             if st.button("💡 Analyze This Screen", key=f"btn_analyze_{current_view}", use_container_width=True):
-                with st.spinner("Analyzing operations..."):
-                    guidance_text = get_prism_ai_guidance(state)
-                    st.session_state[cache_key] = guidance_text
-                    st.rerun()
+                _rolling_ball_loader("Rolling analyzer ball...")
+                guidance_text = get_prism_ai_guidance(state)
+                st.session_state[cache_key] = guidance_text
+                st.rerun()
         else:
             st.markdown(
                 f"""
@@ -101,9 +144,9 @@ def render_prism_dock(current_view: str = "Active Squad Hub", view_state: dict |
         )
         if st.button("Ask Assistant", key="copilot_submit", use_container_width=True):
             if td_query.strip():
-                with st.spinner("Analyzing..."):
-                    answer = get_prism_ai_guidance(state, user_prompt=td_query)
-                    st.info(answer)
+                _rolling_ball_loader("Delivering query...")
+                answer = get_prism_ai_guidance(state, user_prompt=td_query)
+                _stream_response(answer)
 
     # ==========================================
     # 2. DEDICATED USBC RULE ARBITRATOR SECTION
@@ -118,9 +161,9 @@ def render_prism_dock(current_view: str = "Active Squad Hub", view_state: dict |
         )
         if st.button("Arbitrate USBC Rule", key="rulebook_submit", use_container_width=True):
             if rule_query.strip():
-                with st.spinner("Consulting USBC Playing Rules..."):
-                    rule_answer = get_prism_ai_guidance(
-                        {"view": "USBC Rules Engine"},
-                        user_prompt=f"USBC Rule Arbitration Query: {rule_query.strip()}",
-                    )
-                    st.success(rule_answer)
+                _rolling_ball_loader("Sifting USBC rules...")
+                rule_answer = get_prism_ai_guidance(
+                    {"view": "USBC Rules Engine"},
+                    user_prompt=f"USBC Rule Arbitration Query: {rule_query.strip()}",
+                )
+                _stream_response(rule_answer)
