@@ -66,8 +66,7 @@ def render_finals_close() -> None:
         return
 
     tourney_map = {f"{t['name']} (#{t['id']}) - {t['status'].upper()}": t for t in tournaments}
-    
-    # Auto-select the active tournament if set in session state
+
     default_index = 0
     active_t_id = st.session_state.get("active_tournament_id")
     if active_t_id:
@@ -84,9 +83,6 @@ def render_finals_close() -> None:
     user = current_user() or {}
     td_name = user.get("display_name") or "Tournament Director"
 
-    # =========================================================
-    # REORDERED TABS: STANDINGS & CLOSEOUT FIRST
-    # =========================================================
     tab_standings, tab_brackets, tab_stepladder, tab_audit = st.tabs(
         ["📋 Final Standings & Closeout", "🌿 Bracket Ledger", "🎳 Stepladder Finals", "🔒 Audit & Exports"]
     )
@@ -110,7 +106,7 @@ def render_finals_close() -> None:
             for rank, bowler in enumerate(standings, start=1):
                 prize = prize_template[rank - 1] if rank <= len(prize_template) else 0.0
                 is_youth = bool(bowler["is_youth"])
-                
+
                 if is_youth and prize > 0:
                     routing = "USBC SMART Scholarship"
                     smart_total += prize
@@ -144,12 +140,11 @@ def render_finals_close() -> None:
 
             c_print, c_email, c_lock = st.columns(3, gap="medium")
 
-            # Action 1: Print / Download Certified Concourse PDF
+            # Action 1: Lazy-loaded Concourse Print PDF
             with c_print:
-                pdf_bytes = build_certified_pdf(t_id, td_name)
                 st.download_button(
                     label="🖨️ Download Printable PDF",
-                    data=pdf_bytes,
+                    data=lambda: build_certified_pdf(t_id, td_name),
                     file_name=f"{tourney['name'].replace(' ', '_')}_Certified_Results.pdf",
                     mime="application/pdf",
                     type="primary",

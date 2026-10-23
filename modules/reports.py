@@ -27,14 +27,25 @@ LADDER_PAYOUT_WEIGHTS = [0.40, 0.25, 0.15]
 
 
 def stepladder_matches(tournament_id: int) -> list[dict]:
-    return query(
-        "SELECT m.*, a.name AS name_a, b.name AS name_b, w.name AS winner_name "
-        "FROM stepladder_matches m "
-        "JOIN bowlers a ON a.id = m.bowler_a_id JOIN bowlers b ON b.id = m.bowler_b_id "
-        "JOIN bowlers w ON w.id = m.winner_id "
-        "WHERE m.tournament_id = ? ORDER BY m.round_number",
-        (tournament_id,),
-    )
+    """Retrieve stepladder matches with low/high bowler names, safely handling pending slots."""
+    try:
+        return query(
+            """
+            SELECT m.*, 
+                   COALESCE(a.name, 'TBD') AS name_a, 
+                   COALESCE(b.name, 'TBD') AS name_b, 
+                   COALESCE(w.name, 'Pending') AS winner_name
+            FROM stepladder_matches m
+            LEFT JOIN bowlers a ON a.id = m.bowler_low_id
+            LEFT JOIN bowlers b ON b.id = m.bowler_high_id
+            LEFT JOIN bowlers w ON w.id = m.winner_id
+            WHERE m.tournament_id = ?
+            ORDER BY m.match_number
+            """,
+            (tournament_id,),
+        )
+    except Exception:
+        return []
 
 
 def ladder_size(standings: list[dict]) -> int:
@@ -47,15 +58,21 @@ def final_places(tournament_id: int) -> dict[int, str]:
     size = ladder_size(standings)
     matches = stepladder_matches(tournament_id)
     places = {row["id"]: f"Rank {row['rank']}" for row in standings}
-    if size >= 2 and len(matches) == size - 1:
+    
+    completed_matches = [m for m in matches if m.get("status") == "completed" and m.get("winner_id")]
+    if size >= 2 and len(completed_matches) >= 1:
         order = []
-        for match in reversed(matches):
-            loser = match["bowler_a_id"] if match["winner_id"] == match["bowler_b_id"] else match["bowler_b_id"]
-            order.append(loser)
-        order.insert(0, matches[-1]["winner_id"])
+        for match in reversed(completed_matches):
+            loser = match["bowler_low_id"] if match["winner_id"] == match["bowler_high_id"] else match["bowler_high_id"]
+            if loser and loser not in order:
+                order.append(loser)
+        champion = completed_matches[-1]["winner_id"]
+        if champion:
+            order.insert(0, champion)
         suffix = {1: "Champion", 2: "2nd place", 3: "3rd place"}
         for place, bowler_id in enumerate(order, start=1):
-            places[bowler_id] = suffix.get(place, f"{place}th place") + " (stepladder)"
+            if bowler_id:
+                places[bowler_id] = suffix.get(place, f"{place}th place") + " (stepladder)"
     return places
 
 
@@ -75,13 +92,12 @@ def scholarship_amounts(field_size: int, prize_pool: float) -> list[float]:
 
 
 def payout_equity(tournament: dict, standings: list[dict], bowler_id: int) -> dict:
-    """Projected and guaranteed SMART award for a bowler.
-
-    Guaranteed assumes the bowler scores 0 from here on while every rival bowls a
-    perfect game (plus handicap) in each game they have left.
-    """
+    """Projected and guaranteed SMART award for a bowler."""
     amounts = scholarship_amounts(len(standings), tournament.get("smart_pool") or 0)
-    me = next(row for row in standings if row["id"] == bowler_id)
+    me = next((row for row in standings if row["id"] == bowler_id), None)
+    if not me:
+        return {"pool": 0, "paid_places": 0, "projected": 0.0, "guaranteed": 0.0, "worst_rank": 0}
+        
     floor = me["handicap_total"]
     worst_rank = 1 + sum(
         1
@@ -130,18 +146,26 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
     styles = getSampleStyleSheet()
 
     buffer = io.BytesIO()
-    document = SimpleDocTemplate(buffer, pagesize=letter, title=f"{tournament['name']} Certified Results")
+    doc_title = f"{tournament['name'] if tournament else 'Tournament'} Certified Results"
+    document = SimpleDocTemplate(buffer, pagesize=letter, title=doc_title)
+    
+    t_name = tournament["name"] if tournament else "Tournament"
+    t_center = tournament.get("host_center", "Center") if tournament else "Center"
+    t_format = tournament.get("squad_format", "Singles") if tournament else "Singles"
+    t_games = tournament.get("game_count", 3) if tournament else 3
+
     story = [
-        Paragraph(escape(tournament["name"]), styles["Title"]),
+        Paragraph(escape(t_name), styles["Title"]),
         Paragraph(
-            f"Host center: {escape(tournament['host_center'])} &nbsp;|&nbsp; "
-            f"{escape(tournament['squad_format'])} &nbsp;|&nbsp; {tournament['game_count']} games &nbsp;|&nbsp; "
+            f"Host center: {escape(t_center)} &nbsp;|&nbsp; "
+            f"{escape(t_format)} &nbsp;|&nbsp; {t_games} games &nbsp;|&nbsp; "
             f"{date.today().isoformat()}",
             styles["Normal"],
         ),
         Spacer(1, 14),
         Paragraph("Final Standings", styles["Heading2"]),
     ]
+    
     table_rows = [["Rank", "Bowler", "Scratch", "Hdcp", "Total", "Finish"]]
     for row in standings:
         table_rows.append(
@@ -167,30 +191,32 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
     )
     story.append(table)
 
-    if matches:
+    completed_matches = [m for m in matches if m.get("status") == "completed"]
+    if completed_matches:
         story += [Spacer(1, 14), Paragraph("Stepladder Finals", styles["Heading2"])]
-        for match in matches:
+        for match in completed_matches:
             story.append(
                 Paragraph(
-                    f"Round {match['round_number']}: {escape(match['name_a'])} {match['score_a']} vs "
-                    f"{escape(match['name_b'])} {match['score_b']} - winner {escape(match['winner_name'])}",
+                    f"Match {match.get('match_number')}: {escape(match.get('name_a', 'TBD'))} {match.get('score_low', 0)} vs "
+                    f"{escape(match.get('name_b', 'TBD'))} {match.get('score_high', 0)} - Winner: {escape(match.get('winner_name', 'TBD'))}",
                     styles["Normal"],
                 )
             )
+
     story += [
         Spacer(1, 28),
         Paragraph(
             f"Certified by: {escape(certified_by)} &nbsp;&nbsp; Date: {date.today().isoformat()}",
             styles["Normal"],
         ),
-        Paragraph("Tournament Director signature: ______________________________", styles["Normal"]),
+        Paragraph("Tournament Director signature: ____________________________", styles["Normal"]),
     ]
     document.build(story)
     return buffer.getvalue()
 
 
 def archive_snapshot(tournament_id: int) -> dict:
-    scores = query("SELECT * FROM bowler_scores WHERE tournament_id = ?", (tournament_id,))
+    scores = query("SELECT * FROM scores WHERE tournament_id = ?", (tournament_id,))
     snapshot = {
         "tournament": get_tournament(tournament_id),
         "bowlers": query("SELECT * FROM bowlers WHERE tournament_id = ?", (tournament_id,)),
