@@ -229,7 +229,6 @@ def render_active_squad() -> None:
         buf_scorer = _generate_qr_buffer(scorer_url)
         buf_portal = _generate_qr_buffer(portal_url)
 
-        # 4 columns: [pad, Scorer Card, Standings Card, pad] to keep cards compact and centered
         _, qr_col1, qr_col2, _ = st.columns([1, 2, 2, 1], gap="medium")
 
         with qr_col1:
@@ -246,9 +245,18 @@ def render_active_squad() -> None:
                     """,
                     unsafe_allow_html=True,
                 )
-                st.image(buf_scorer.getvalue(), width=160)
-                st.caption("Floor Assistant 10-Key Input")
-                st.markdown(f"<div style='margin-top:4px;'><a href='{scorer_url}' target='_blank'>Open Scorer Tab ↗</a></div>", unsafe_allow_html=True)
+                _, img_c1, _ = st.columns([1, 2, 1])
+                with img_c1:
+                    st.image(buf_scorer.getvalue(), width=160)
+                st.markdown(
+                    f"""
+                    <div style="text-align:center; font-size:12px; color:#94A3B8; margin-top:4px;">
+                        Floor Assistant 10-Key Input<br>
+                        <a href="{scorer_url}" target="_blank" style="display:inline-block; margin-top:6px;">Open Scorer Tab ↗</a>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
         with qr_col2:
             with st.container(border=True):
@@ -264,9 +272,18 @@ def render_active_squad() -> None:
                     """,
                     unsafe_allow_html=True,
                 )
-                st.image(buf_portal.getvalue(), width=160)
-                st.caption("Bowler Live Scoreboard")
-                st.markdown(f"<div style='margin-top:4px;'><a href='{portal_url}' target='_blank'>Open Portal Tab ↗</a></div>", unsafe_allow_html=True)
+                _, img_c2, _ = st.columns([1, 2, 1])
+                with img_c2:
+                    st.image(buf_portal.getvalue(), width=160)
+                st.markdown(
+                    f"""
+                    <div style="text-align:center; font-size:12px; color:#94A3B8; margin-top:4px;">
+                        Bowler Live Scoreboard<br>
+                        <a href="{portal_url}" target="_blank" style="display:inline-block; margin-top:6px;">Open Portal Tab ↗</a>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
     # =========================================================
     # 8-PERSON BRACKET & SIDE POT CONTROLS
