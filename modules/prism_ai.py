@@ -1,109 +1,87 @@
-"""Floating Prism A.I Tournament Assistant."""
+"""Prism A.I Operational Assistant & Dedicated USBC Rule Arbitrator."""
 
+import os
 import streamlit as st
-from modules.prism_ai import get_prism_ai_guidance
+
+USBC_SYSTEM_PROMPT = """
+You are the official USBC Rules & Operational Assistant for the Cecil Harford USBC (CHUSBC) 
+Tournament Control Center (PTCC). You assist Tournament Directors with:
+1. USBC Playing Rules:
+   - Rule 8 (Dead Ball situations, illegal pinfall, out of range pins)
+   - Rule 9 (Bowler delivering ball on the wrong lane or out of turn)
+   - Rule 10 (Foul detection, foul light failures, deliberate fouls)
+   - Rule 18 (Bowling ball surface alterations: no cleaning/sanding once competition begins)
+   - Rule 400 (Youth SMART scholarship compliance: no cash prizes to youth under any circumstances)
+2. Lane movements, handicap calculations (standard 90% of 220), and side pot balancing.
+
+Keep your answers authoritative, concise, objective, and directly grounded in the official USBC Playing Rules.
+"""
 
 
-def collect_view_state(current_view: str) -> dict:
-    """Collect lightweight operational context for the active screen."""
-    return {
-        "view": current_view,
-        "active_tournament_id": st.session_state.get("active_tournament_id"),
-        "intake_summary": st.session_state.get("intake_summary", {}),
-    }
+def _get_gemini_client():
+    """Retrieve Gemini client using api key from st.secrets or environment variable."""
+    api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return None
+    try:
+        from google import genai
+        return genai.Client(api_key=api_key)
+    except ImportError:
+        try:
+            import google.generativeai as legacy_genai
+            legacy_genai.configure(api_key=api_key)
+            return legacy_genai
+        except ImportError:
+            return None
 
 
-@st.dialog("🎳 Prism A.I — Desk Assistant", width="large")
-def _open_prism_dialog(current_view: str, view_state: dict | None = None) -> None:
-    """Modal popup dialog triggered by clicking the floating assistant button."""
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.markdown(
-            f"""
-            <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
-                <span style="background:#0F172A; border:1px solid #334155; border-radius:999px; color:#94A3B8; font-size:12px; padding:3px 12px;">
-                    Active Screen: <strong style="color:#F8FAFC;">{current_view}</strong>
-                </span>
-            </div>
-            """,
-            unsafe_allow_html=True,
+def get_prism_ai_guidance(view_state: dict, user_prompt: str | None = None) -> str:
+    """Generate operational guidance or arbitrate USBC tournament rules."""
+    view_name = view_state.get("view", "Tournament Desk")
+
+    if not user_prompt:
+        context_prompt = f"""
+The tournament director is currently viewing the '{view_name}' screen in the PTCC.
+Provide 2-3 brief, helpful operational tips or reminders relevant to this stage of tournament desk operations.
+Keep it strictly under 60 words and formatted cleanly with bullet points.
+"""
+    else:
+        context_prompt = f"""
+Context: Tournament Director is on the '{view_name}' screen.
+Question / Dispute: {user_prompt}
+
+Cite the applicable USBC rule number (e.g. Rule 8, Rule 9, Rule 18, Rule 400) and provide the definitive rulebook ruling.
+"""
+
+    client = _get_gemini_client()
+    if not client:
+        if user_prompt:
+            return (
+                "⚠️ USBC Rules Engine is offline (GEMINI_API_KEY not configured). "
+                "For common rulings: Rule 8 covers dead ball pinfall, Rule 9 covers wrong lane deliveries, "
+                "Rule 18 forbids ball surface adjustments during squad play, and Rule 400 governs SMART scholarships."
+            )
+        return (
+            f"• Ensure all entering averages and handicaps are audited for the {view_name} screen.\n"
+            f"• Verify lane pairs and bowler lineup orders before competition begins."
         )
-    with col2:
-        if st.button("🔄 Refresh", key="dialog_refresh_guidance", use_container_width=True):
-            st.session_state["prism_guidance_cache"] = None
-            st.rerun()
 
-    # Routine Operational Guidance Block
-    guidance_text = st.session_state.get("prism_guidance_cache")
-    if not guidance_text:
-        with st.spinner("Prism is analyzing desk operations..."):
-            guidance_text = get_prism_ai_guidance(view_state or {"view": current_view})
-            st.session_state["prism_guidance_cache"] = guidance_text
-
-    st.markdown(
-        f"""
-        <div style="background:#0F172A; border-left:4px solid #F59E0B; border-radius:8px; padding:12px 16px; color:#E2E8F0; font-size:14px; margin-bottom:16px;">
-            {guidance_text}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # Collapsible USBC Rule Arbitrator
-    with st.expander("⚖️ USBC Rule & Dispute Arbitrator (Official Rulebook Tool)", expanded=True):
-        st.caption("Ask questions regarding dead balls (Rule 8), wrong lanes (Rule 9), foul sensors (Rule 10), surface adjustments (Rule 18), or Rule 400 SMART compliance.")
-        rule_query = st.text_input(
-            "Enter tournament dispute or rule question:",
-            placeholder="e.g., Bowler delivered on the wrong lane...",
-            key="modal_rule_query",
-        )
-        if st.button("Consult USBC Rulebook", key="modal_rule_submit", use_container_width=True):
-            if rule_query.strip():
-                with st.spinner("Arbitrating via official USBC Rulebook..."):
-                    result = get_prism_ai_guidance(view_state or {"view": current_view}, user_prompt=rule_query)
-                    st.info(result)
-
-
-def render_prism_dock(current_view: str = "Active Squad Hub", view_state: dict | None = None) -> None:
-    """
-    Renders a floating bowling pin button anchored in the lower-left corner of the viewport.
-    """
-    st.markdown(
-        """
-        <style>
-        .ptcc-fab-container {
-            position: fixed !important;
-            bottom: 24px !important;
-            left: 24px !important;
-            z-index: 999999 !important;
-        }
-        .ptcc-fab-container button {
-            background: #1E293B !important;
-            border: 2px solid #F59E0B !important;
-            color: #F8FAFC !important;
-            border-radius: 9999px !important;
-            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5) !important;
-            padding: 8px 18px !important;
-            font-weight: 700 !important;
-            font-size: 14px !important;
-        }
-        .ptcc-fab-container button:hover {
-            background: #334155 !important;
-            border-color: #FCD34D !important;
-        }
-        @media (max-width: 640px) {
-            .ptcc-fab-container {
-                bottom: 16px !important;
-                left: 16px !important;
-            }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    with st.container():
-        st.markdown('<div class="ptcc-fab-container">', unsafe_allow_html=True)
-        if st.button("🎳 Prism A.I", key="prism_fab_trigger"):
-            _open_prism_dialog(current_view, view_state)
-        st.markdown('</div>', unsafe_allow_html=True)
+    try:
+        # Check if using the official google-genai client
+        if hasattr(client, "models"):
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=context_prompt,
+                config={"system_instruction": USBC_SYSTEM_PROMPT},
+            )
+            return response.text.strip()
+        else:
+            # Fallback to legacy google.generativeai
+            model = client.GenerativeModel(
+                model_name="gemini-1.5-flash",
+                system_instruction=USBC_SYSTEM_PROMPT,
+            )
+            response = model.generate_content(context_prompt)
+            return response.text.strip()
+    except Exception as exc:
+        return f"Operational guidance unavailable: {str(exc)}"
