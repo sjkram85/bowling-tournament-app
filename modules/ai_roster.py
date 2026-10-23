@@ -1,52 +1,60 @@
-"""AI Roster Ingestion Engine targeting gemini-3.8-flash with structured schema output."""
+"""AI Roster Ingestion Engine targeting gemini-3.8-flash with strict HTTP timeouts and zero-hang fallback."""
 
 import io
 import json
 import os
+import re
 import pandas as pd
-from pydantic import BaseModel, Field
 import streamlit as st
 from google import genai
 from google.genai import types
 
+# Official active model required by current API tier
 PRIMARY_MODEL = "gemini-3.8-flash"
 
 
-class BowlerSchema(BaseModel):
-    name: str = Field(description="Full name of the bowler")
-    usbc_id: str | None = Field(default=None, description="USBC sanction member ID")
-    entering_avg: int = Field(default=200, description="Entering book or tournament average")
-    handicap: int = Field(default=0, description="Handicap pins per game")
-    lane_assignment: int = Field(default=1, description="Assigned starting lane number")
-    email: str | None = Field(default=None, description="Email address for recaps")
-    is_youth: bool = Field(default=False, description="True if marked youth, junior, or SMART")
-    smart_account_id: str | None = Field(default=None, description="SMART scholarship account number")
-    paid_status: str = Field(default="paid", description="'paid' or 'unpaid'")
-
-
-class RosterSchema(BaseModel):
-    bowlers: list[BowlerSchema]
-
-
-def get_gemini_client():
+def get_gemini_client() -> genai.Client | None:
+    """Initialize GenAI client with strict 15-second timeout and no silent multi-minute backoff hangs."""
     api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
         return None
-    return genai.Client(api_key=api_key)
+    return genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(
+            timeout=15_000,  # 15,000 ms (15 seconds) hard ceiling
+            retry_options=types.HttpRetryOptions(
+                attempts=2,
+                initial_delay=1.0,
+                http_status_codes=[408, 429, 500, 502, 503, 504],
+            ),
+        ),
+    )
 
 
 def get_best_available_model(client: genai.Client = None) -> str:
+    """Return active model without blocking catalog enumeration."""
     return st.secrets.get("GEMINI_MODEL", PRIMARY_MODEL)
 
 
 EXTRACTION_PROMPT = (
-    "Extract all bowling competitors from the provided tournament roster data. "
-    "Follow standard USBC guidelines: if handicap is not specified, calculate as 90% of (220 - avg) (minimum 0). "
-    "Mark is_youth as true if the record contains SMART, youth, or junior tags."
+    "You are an expert tournament director intake assistant for the Cecil Harford USBC. "
+    "Extract all bowling competitors from the provided tournament roster data into a JSON array. "
+    "Each object in the JSON array must contain ONLY these keys:\n"
+    "- name: string (Bowler Full Name)\n"
+    "- usbc_id: string or null (USBC ID)\n"
+    "- entering_avg: integer (default 200)\n"
+    "- handicap: integer (90% of 220 minus entering_avg if not explicitly listed, min 0)\n"
+    "- lane_assignment: integer (starting lane number, default 1)\n"
+    "- email: string or null\n"
+    "- is_youth: boolean (true if Youth, Junior, Rule 400, or SMART is noted)\n"
+    "- smart_account_id: string or null (SMART ID number if present)\n"
+    "- paid_status: 'paid' or 'unpaid' (default 'paid')\n\n"
+    "Output raw valid JSON only."
 )
 
 
 def _extract_text_from_file(file_bytes: bytes, file_name: str) -> str | None:
+    """Convert spreadsheets, Word docs, CSVs, and text files into raw text for fast processing."""
     fn = file_name.lower()
     if fn.endswith((".xlsx", ".xls")):
         try:
@@ -88,13 +96,87 @@ def _extract_text_from_file(file_bytes: bytes, file_name: str) -> str | None:
     return None
 
 
+def _format_records(raw_text: str) -> list[dict]:
+    """Clean markdown fences and normalize JSON output to a list of bowler dicts."""
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1].rsplit("\n", 1)[0].strip()
+
+    records = json.loads(cleaned)
+    if isinstance(records, dict):
+        for key in ("bowlers", "roster", "competitors", "players", "data"):
+            if key in records and isinstance(records[key], list):
+                return records[key]
+        return [records]
+    return records if isinstance(records, list) else []
+
+
+def _fast_structured_text_parser(text: str) -> list[dict]:
+    """
+    High-speed local parser for structured line/CSV rosters.
+    Guarantees instant extraction if gemini-3.8-flash hits a 503 high-demand spike.
+    """
+    bowlers = []
+    for line in text.strip().splitlines():
+        line_clean = line.strip()
+        if not line_clean or line_clean.startswith("---"):
+            continue
+
+        lane_m = re.search(r"Lane\s*(\d+)", line_clean, re.IGNORECASE)
+        lane = int(lane_m.group(1)) if lane_m else 1
+
+        # Match name between "Lane X:" (if present) and "(" or "-" or ","
+        name_m = re.search(r"(?:Lane\s*\d+\s*[:\-]\s*)?([A-Za-z\s'\.\-]+?)(?:\s*[\(\-\|,]|$)", line_clean)
+        name = name_m.group(1).strip() if name_m else ""
+        if not name or name.lower() in ("lane", "name", "bowler"):
+            continue
+
+        usbc_m = re.search(r"USBC[:\s#]*([0-9\-]+)", line_clean, re.IGNORECASE)
+        usbc_id = usbc_m.group(1).strip() if usbc_m else ""
+
+        avg_m = re.search(r"Avg[:\s]*(\d+)", line_clean, re.IGNORECASE)
+        avg = int(avg_m.group(1)) if avg_m else 200
+
+        hdcp_m = re.search(r"HDCP[:\s]*(\d+)", line_clean, re.IGNORECASE)
+        hdcp = int(hdcp_m.group(1)) if hdcp_m else max(0, int((220 - avg) * 0.9))
+
+        email_m = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", line_clean)
+        email = email_m.group(0).strip() if email_m else ""
+
+        is_youth = bool(re.search(r"\b(youth|junior|smart|rule\s*400)\b", line_clean, re.IGNORECASE))
+
+        smart_m = re.search(r"SMART[:\s#]*([0-9A-Za-z\-]+)", line_clean, re.IGNORECASE)
+        smart_id = smart_m.group(1).strip() if smart_m else ""
+        if smart_id.lower() in ("email", "paid", "unpaid"):
+            smart_id = ""
+
+        paid = "unpaid" if re.search(r"\b(unpaid|owing|due)\b", line_clean, re.IGNORECASE) else "paid"
+
+        bowlers.append({
+            "name": name,
+            "usbc_id": usbc_id,
+            "entering_avg": avg,
+            "handicap": hdcp,
+            "lane_assignment": lane,
+            "email": email,
+            "is_youth": is_youth,
+            "smart_account_id": smart_id,
+            "paid_status": paid,
+        })
+    return bowlers
+
+
 def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
+    """Ingest uploaded document via gemini-3.8-flash with 15s timeout and local fallback."""
     client = get_gemini_client()
+    extracted_text = _extract_text_from_file(file_bytes, file_name)
+
     if not client:
-        raise ValueError("GEMINI_API_KEY is missing from Streamlit secrets or environment.")
+        if extracted_text:
+            return _fast_structured_text_parser(extracted_text)
+        raise ValueError("GEMINI_API_KEY is missing from Streamlit secrets.")
 
     model_name = get_best_available_model(client)
-    extracted_text = _extract_text_from_file(file_bytes, file_name)
 
     if extracted_text:
         contents = [EXTRACTION_PROMPT, f"--- DOCUMENT DATA ({file_name}) ---\n{extracted_text}"]
@@ -114,37 +196,58 @@ def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
 
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
-        response_schema=RosterSchema,
-        temperature=0.0,
+        temperature=0.1,
     )
 
-    response = client.models.generate_content(
-        model=model_name,
-        contents=contents,
-        config=config,
-    )
-    data = json.loads(response.text)
-    return data.get("bowlers", [])
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=config,
+        )
+        records = _format_records(response.text)
+        if records:
+            return records
+    except Exception as exc:
+        # If gemini-3.8-flash hits a 503 spike on text-extractable files, fall back seamlessly
+        if extracted_text:
+            fallback_records = _fast_structured_text_parser(extracted_text)
+            if fallback_records:
+                return fallback_records
+        raise RuntimeError(f"Model {model_name} error: {exc}")
+
+    return _fast_structured_text_parser(extracted_text) if extracted_text else []
 
 
 def parse_roster_text_with_gemini(raw_text_input: str) -> list[dict]:
+    """Ingest pasted text via gemini-3.8-flash with 15s timeout and instant fallback on 503 spikes."""
     client = get_gemini_client()
     if not client:
-        raise ValueError("GEMINI_API_KEY is missing from Streamlit secrets or environment.")
+        return _fast_structured_text_parser(raw_text_input)
 
     model_name = get_best_available_model(client)
     contents = [EXTRACTION_PROMPT, f"--- PASTED ROSTER TEXT ---\n{raw_text_input}"]
-    
+
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
-        response_schema=RosterSchema,
-        temperature=0.0,
+        temperature=0.1,
     )
 
-    response = client.models.generate_content(
-        model=model_name,
-        contents=contents,
-        config=config,
-    )
-    data = json.loads(response.text)
-    return data.get("bowlers", [])
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=config,
+        )
+        records = _format_records(response.text)
+        if records:
+            return records
+    except Exception:
+        # If gemini-3.8-flash throws 503 UNAVAILABLE or times out after 15s,
+        # immediately complete extraction locally so the UI never gets stuck at 85%.
+        fallback_records = _fast_structured_text_parser(raw_text_input)
+        if fallback_records:
+            return fallback_records
+        raise
+
+    return _fast_structured_text_parser(raw_text_input)
