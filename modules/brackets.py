@@ -186,3 +186,75 @@ def score_bracket_round(tournament_id: int, game_number: int) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def get_bracket_financial_ledger(tournament_id: int) -> dict:
+    """
+    Calculates penny-perfect bracket collections, payouts, youth SMART escrows,
+    and association admin fees for the tournament closeout ledger.
+    Standard 8-person bracket: $40 collected ($5/entry), $35 paid ($25 1st, $10 2nd), $5 admin fee.
+    """
+    init_bracket_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+
+        # Count total brackets
+        b_count_row = cur.execute(
+            "SELECT COUNT(*) FROM brackets WHERE tournament_id = ?",
+            (tournament_id,),
+        ).fetchone()
+        num_brackets = b_count_row[0] if b_count_row else 0
+
+        total_collected = float(num_brackets * 40.0)
+        admin_expenses = float(num_brackets * 5.0)
+
+        # Calculate actual payouts allocated
+        payouts_row = cur.execute(
+            """
+            SELECT 
+                COALESCE(SUM(be.payout_amount), 0.0) as total_payouts,
+                COALESCE(SUM(CASE WHEN b.is_youth = 1 THEN be.payout_amount ELSE 0.0 END), 0.0) as smart_payouts
+            FROM bracket_entries be
+            JOIN brackets br ON be.bracket_id = br.id
+            JOIN bowlers b ON be.bowler_id = b.id
+            WHERE br.tournament_id = ?
+            """,
+            (tournament_id,),
+        ).fetchone()
+
+        total_payouts = float(payouts_row["total_payouts"]) if payouts_row else 0.0
+        smart_payouts = float(payouts_row["smart_payouts"]) if payouts_row else 0.0
+
+        # Calculate side pots
+        pots_row = cur.execute(
+            """
+            SELECT 
+                COALESCE(SUM(total_collected), 0.0) as pot_collected,
+                COALESCE(SUM(payout_amount), 0.0) as pot_payouts
+            FROM side_pots
+            WHERE tournament_id = ?
+            """,
+            (tournament_id,),
+        ).fetchone()
+
+        pot_collected = float(pots_row["pot_collected"]) if pots_row else 0.0
+        pot_payouts = float(pots_row["pot_payouts"]) if pots_row else 0.0
+
+        grand_collected = total_collected + pot_collected
+        grand_payouts = total_payouts + pot_payouts
+
+        # Net balance should resolve to $0.00 when fully closed
+        expected_outlay = (num_brackets * 35.0) + pot_payouts
+        net_balance = round(total_payouts - expected_outlay, 2) if num_brackets > 0 else 0.0
+
+        return {
+            "num_brackets": num_brackets,
+            "total_collected": grand_collected,
+            "total_payouts": grand_payouts,
+            "admin_expenses": admin_expenses,
+            "smart_payouts": smart_payouts,
+            "net_balance": net_balance,
+        }
+    finally:
+        conn.close()
