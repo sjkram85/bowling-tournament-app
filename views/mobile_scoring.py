@@ -45,7 +45,7 @@ def _record_score(tournament_id: int, bowler_id: int, game_num: int, scratch: in
                 """,
                 (tournament_id, bowler_id, game_num, scratch, hdcp, total, verifier_name),
             )
-            log_desk_action(verifier_name, "floor_verifier", f"Entered Game {game_num} score {scratch} (Total {total}) for Bowler #{bowler_id}")
+        log_desk_action(verifier_name, "floor_verifier", f"Entered Game {game_num} score {scratch} (Total {total}) for Bowler #{bowler_id}")
     finally:
         conn.close()
 
@@ -85,13 +85,24 @@ def render_mobile_scoring() -> None:
     verifier_name = st.session_state.get("verifier_name", "Floor Verifier")
     st.caption(f"Authenticated as: **{verifier_name}** | Tournament: **{tourney['name']}**")
 
-    tab_manual, tab_camera = st.tabs(["🔢 10-Key Manual Input", "📷 AI Overhead Camera OCR"])
+    tab_manual, tab_camera = st.tabs(["🔢 10-Key Manual Input", "📸 AI Overhead Camera OCR"])
 
     # --- TAB 1: 10-KEY MANUAL PAD ---
     with tab_manual:
-        col_lane, col_game = st.columns(2)
-        lane = col_lane.number_input("Lane Number", min_value=1, max_value=40, value=1, step=1)
-        game = col_game.slider("Game Number", min_value=1, max_value=tourney["game_count"], value=1)
+        col_lane, col_game = st.columns([1, 2])
+        with col_lane:
+            lane = st.number_input("Lane Number", min_value=1, max_value=40, value=1, step=1)
+        with col_game:
+            # Segmented multi-choice buttons for mobile touch entry
+            game_options = list(range(1, tourney["game_count"] + 1))
+            game = st.radio(
+                "Game Number",
+                options=game_options,
+                format_func=lambda g: f"Game {g}",
+                horizontal=True,
+                index=0,
+                key="mobile_game_radio",
+            )
 
         bowlers = _get_lane_bowlers(tourney["id"], int(lane))
         if not bowlers:
