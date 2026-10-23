@@ -229,7 +229,9 @@ def render_active_squad() -> None:
         buf_scorer = _generate_qr_buffer(scorer_url)
         buf_portal = _generate_qr_buffer(portal_url)
 
-        qr_col1, qr_col2 = st.columns(2, gap="large")
+        # 4 columns: [pad, Scorer Card, Standings Card, pad] to keep cards compact and centered
+        _, qr_col1, qr_col2, _ = st.columns([1, 2, 2, 1], gap="medium")
+
         with qr_col1:
             with st.container(border=True):
                 st.markdown(
@@ -244,8 +246,9 @@ def render_active_squad() -> None:
                     """,
                     unsafe_allow_html=True,
                 )
-                st.image(buf_scorer.getvalue(), caption="Floor Assistant 10-Key Input", use_container_width=True)
-                st.markdown(f"<div style='text-align:center;'><a href='{scorer_url}' target='_blank'>Open Scorer Tab ↗</a></div>", unsafe_allow_html=True)
+                st.image(buf_scorer.getvalue(), width=160)
+                st.caption("Floor Assistant 10-Key Input")
+                st.markdown(f"<div style='margin-top:4px;'><a href='{scorer_url}' target='_blank'>Open Scorer Tab ↗</a></div>", unsafe_allow_html=True)
 
         with qr_col2:
             with st.container(border=True):
@@ -261,8 +264,9 @@ def render_active_squad() -> None:
                     """,
                     unsafe_allow_html=True,
                 )
-                st.image(buf_portal.getvalue(), caption="Bowler Live Scoreboard", use_container_width=True)
-                st.markdown(f"<div style='text-align:center;'><a href='{portal_url}' target='_blank'>Open Portal Tab ↗</a></div>", unsafe_allow_html=True)
+                st.image(buf_portal.getvalue(), width=160)
+                st.caption("Bowler Live Scoreboard")
+                st.markdown(f"<div style='margin-top:4px;'><a href='{portal_url}' target='_blank'>Open Portal Tab ↗</a></div>", unsafe_allow_html=True)
 
     # =========================================================
     # 8-PERSON BRACKET & SIDE POT CONTROLS
