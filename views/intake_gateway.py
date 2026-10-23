@@ -26,6 +26,7 @@ except Exception:
 from modules.auth import current_user
 from modules.constants import CENTERS, HOST_CENTERS
 from modules.db_state import get_connection, log_desk_action
+from modules import roster_import
 from modules.tournament_templates import CHUSBC_TEMPLATES, create_tournament_from_template, save_tournament_as_template
 
 # Pure SVG bowling ball with 3D gradient & finger holes
@@ -379,27 +380,23 @@ def render_intake_gateway() -> None:
         if intake_mode.startswith("📁"):
             st.caption(f"Upload your roster document or spreadsheet. Processed by **{active_model}**.")
             
-            template_df = pd.DataFrame(columns=["name", "usbc_id", "email", "entering_avg", "handicap", "lane_assignment", "is_youth", "smart_account_id", "paid_status"])
-            template_loc = pd.DataFrame([{
-                "name": "Jane Doe",
-                "usbc_id": "8412-12345",
-                "email": "jane@example.com",
-                "entering_avg": 210,
-                "handicap": 15,
-                "lane_assignment": 1,
-                "is_youth": 0,
-                "smart_account_id": "",
-                "paid_status": "paid"
-            }])
-            template_df = pd.concat([template_df, template_loc], ignore_index=True)
-            csv_template_data = template_df.to_csv(index=False)
-
-            st.download_button(
-                label="📥 Download Blank Roster Template (.csv)",
-                data=csv_template_data,
+            st.markdown(
+                "**Fastest:** download the template, fill in one row per bowler, and upload it. "
+                "Template files are read directly (no AI). Required columns: name, entering_avg, "
+                "lane_assignment, paid_status (paid/unpaid)."
+            )
+            col_t1, col_t2 = st.columns(2)
+            col_t1.download_button(
+                "📥 Download Roster Template (.xlsx)",
+                data=roster_import.template_xlsx(),
+                file_name="prism_roster_template.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            col_t2.download_button(
+                "📥 Download Roster Template (.csv)",
+                data=roster_import.template_csv(),
                 file_name="prism_roster_template.csv",
                 mime="text/csv",
-                help="Download this pre-formatted CSV template to ensure your spreadsheet uploads instantly without errors."
             )
 
             uploaded_file = st.file_uploader(
@@ -408,16 +405,51 @@ def render_intake_gateway() -> None:
                 key="ai_roster_uploader",
             )
             if uploaded_file is not None:
-                if st.button("🤖 Ingest File with Gemini", type="primary"):
+                file_bytes = uploaded_file.getvalue()
+                table = roster_import.read_table(file_bytes, uploaded_file.name)
+                use_ai = False
+                new_file = st.session_state.get("roster_src") != uploaded_file.file_id
+                if new_file:  # a different file was uploaded: drop any earlier preview
+                    st.session_state["parsed_ai_roster"] = []
+                    st.session_state["roster_src"] = uploaded_file.file_id
+                if table is not None and roster_import.matches_template(table.columns):
+                    st.success(f"✅ Template format recognized: {len(table)} row(s). Review them below.")
+                    if new_file:
+                        rows = roster_import.apply_mapping(table, roster_import.guess_mapping(table.columns))
+                        st.session_state["parsed_ai_roster"] = roster_import.validate_rows(rows)
+                elif table is not None:
+                    st.warning("This spreadsheet doesn't match the template. Match its columns to Prism fields below.")
+                    guess = roster_import.guess_mapping(table.columns)
+                    options = ["— not in file —"] + list(table.columns)
+                    mapping = {}
+                    map_cols = st.columns(3)
+                    for i, (key, label, required) in enumerate(roster_import.FIELDS):
+                        choice = map_cols[i % 3].selectbox(
+                            label + (" *" if required else ""),
+                            options,
+                            index=options.index(guess[key]) if guess[key] else 0,
+                            key=f"map_{key}",
+                        )
+                        mapping[key] = None if choice == options[0] else choice
+                    with st.expander("Show uploaded file"):
+                        st.dataframe(table, use_container_width=True, hide_index=True)
+                    col_m1, col_m2 = st.columns(2)
+                    if col_m1.button("➡️ Use These Columns", type="primary"):
+                        rows = roster_import.apply_mapping(table, mapping)
+                        st.session_state["parsed_ai_roster"] = roster_import.validate_rows(rows)
+                    use_ai = col_m2.button("🤖 Let Gemini Try Instead")
+                else:
+                    st.info("PDFs, photos, and text files are read with Gemini. Check every row in the review below.")
+                    use_ai = st.button("🤖 Ingest File with Gemini", type="primary")
+                if use_ai:
                     try:
-                        file_bytes = uploaded_file.getvalue()
                         extracted = _run_with_bowling_animation(
                             parse_roster_with_gemini, file_bytes, uploaded_file.name
                         )
                         if not extracted:
                             st.warning("No bowler records found in document.")
                         else:
-                            st.session_state["parsed_ai_roster"] = extracted
+                            st.session_state["parsed_ai_roster"] = roster_import.validate_rows(extracted)
                             st.success(f"Extracted {len(extracted)} bowler(s)!")
                     except Exception as e:
                         st.error(f"AI Extraction failed: {e}")
@@ -454,7 +486,7 @@ def render_intake_gateway() -> None:
                         if not extracted:
                             st.warning("No bowler records detected in pasted text.")
                         else:
-                            st.session_state["parsed_ai_roster"] = extracted
+                            st.session_state["parsed_ai_roster"] = roster_import.validate_rows(extracted)
                             st.success(f"Extracted {len(extracted)} bowler(s)!")
                     except Exception as e:
                         st.error(f"AI Parsing failed: {e}")
@@ -530,16 +562,35 @@ def render_intake_gateway() -> None:
                             conn.close()
 
         # SHARED REVIEW & COMMIT TABLE
-        if "parsed_ai_roster" in st.session_state and st.session_state["parsed_ai_roster"]:
+        if st.session_state.get("parsed_ai_roster"):
             st.markdown("---")
-            st.markdown("##### 📝 Review & Edit Extracted Roster Before Committing")
-            st.caption("You can edit cells, fix lane assignments, or delete rows directly in the grid below.")
+            st.markdown("##### 📝 Review Roster Before Saving")
+            st.caption("Fix any cell in the grid; problems are re-checked when you click Re-check. Nothing is saved until you click Save.")
             df_edit = pd.DataFrame(st.session_state["parsed_ai_roster"])
-            edited_df = st.data_editor(df_edit, num_rows="dynamic", use_container_width=True, key="ai_editor")
+            df_edit = df_edit[["errors"] + roster_import.FIELD_KEYS]
+            df_edit = df_edit.rename(columns={"errors": "problems"})
+            edited_df = st.data_editor(
+                df_edit, num_rows="dynamic", use_container_width=True, key="ai_editor",
+                disabled=["problems"],
+            )
+            checked = roster_import.validate_rows(edited_df.drop(columns=["problems"]).to_dict("records"))
+            bad = [i + 1 for i, r in enumerate(checked) if r["errors"]]
+            if bad:
+                st.error(f"{len(bad)} row(s) have problems (rows {', '.join(map(str, bad[:15]))}). Fix them or delete those rows before saving.")
+            else:
+                st.success(f"All {len(checked)} row(s) look good.")
 
-            col_sub1, col_sub2 = st.columns([2, 5])
+            col_sub1, col_sub2, col_sub3 = st.columns([2, 2, 3])
+            if col_sub2.button("🔄 Re-check", use_container_width=True):
+                st.session_state["parsed_ai_roster"] = checked
+                st.rerun()
+            if col_sub3.button("🗑️ Discard", use_container_width=True):
+                st.session_state["parsed_ai_roster"] = []
+                st.session_state.pop("roster_src", None)
+                st.rerun()
             with col_sub1:
-                if st.button("📥 Commit Roster to Squad", type="primary", use_container_width=True):
+                if st.button(f"📥 Save {len(checked)} Bowler(s) to Squad", type="primary",
+                             use_container_width=True, disabled=bool(bad) or not checked):
                     conn = get_connection()
                     inserted = 0
                     try:
@@ -550,10 +601,7 @@ def render_intake_gateway() -> None:
                             if reg_team: selected_events.append("Team")
                             if reg_all_events: selected_events.append("All-Events")
 
-                            for _, row in edited_df.iterrows():
-                                b_name = str(row.get("name", "")).strip()
-                                if not b_name or b_name.lower() == "nan":
-                                    continue
+                            for row in checked:
                                 cur = conn.execute(
                                     """
                                     INSERT INTO bowlers (
@@ -563,27 +611,21 @@ def render_intake_gateway() -> None:
                                     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                                     """,
                                     (
-                                        t_id,
-                                        b_name,
-                                        str(row.get("usbc_id") or "").strip(),
-                                        str(row.get("email") or "").strip(),
-                                        int(row.get("entering_avg") or 200),
-                                        int(row.get("handicap") or 0),
-                                        int(row.get("lane_assignment") or 1),
-                                        1 if row.get("is_youth") else 0,
-                                        str(row.get("smart_account_id") or "").strip(),
-                                        str(row.get("paid_status") or "paid"),
+                                        t_id, row["name"], row["usbc_id"], row["email"],
+                                        row["entering_avg"], row["handicap"] or 0, row["lane_assignment"],
+                                        1 if row["is_youth"] else 0, row["smart_account_id"], row["paid_status"],
                                     ),
                                 )
                                 b_db_id = cur.lastrowid
                                 for ev in selected_events:
                                     conn.execute(
                                         "INSERT OR IGNORE INTO bowler_events (bowler_id, tournament_id, event_type, paid_status) VALUES (?, ?, ?, ?)",
-                                        (b_db_id, t_id, ev, str(row.get("paid_status") or "paid"))
+                                        (b_db_id, t_id, ev, row["paid_status"])
                                     )
                                 inserted += 1
-                        log_desk_action(td_name, "td", f"AI batch-registered {inserted} bowlers across multi-event package for squad #{t_id}")
+                        log_desk_action(td_name, "td", f"Batch-registered {inserted} bowlers across multi-event package for squad #{t_id}")
                         st.session_state["parsed_ai_roster"] = []
+                        st.session_state.pop("roster_src", None)
                         st.success(f"Successfully registered {inserted} bowler(s) across multi-event package!")
                         st.rerun()
                     finally:
