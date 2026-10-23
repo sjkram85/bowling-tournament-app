@@ -19,6 +19,14 @@ ROLES = ["td", "admin"]
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 CHUSBC_LOGO = ASSETS_DIR / "CHUSBC.jpg"
 
+LICENSE_SNIPPET = (
+    "This software is provided freely to the Cecil Harford United States Bowling Congress (CHUSBC) "
+    "and dedicated to the bowlers of CHUSBC, may our sport provide friendly competition, enduring "
+    "friendships and life long memories.\n\n"
+    "Licensed under the MIT License. Copyright (c) 2026 Scott Kramer / CHUSBC. Free for association "
+    "use, tournament administration, and non-commercial bowling operations."
+)
+
 
 def _get_chusbc_logo_tag(height: int = 110) -> str:
     """Generate an inline base64 image tag for the official CHUSBC sanction logo."""
@@ -48,28 +56,37 @@ def verify_password(password_hash: str, password: str) -> bool:
 
 
 def _bootstrap_admin() -> None:
-    """Bootstrap default administrator from secrets or environment if no admin exists."""
-    admin_conf = st.secrets.get("admin_bootstrap", {})
-    username = admin_conf.get("username", "admin")
-    password = admin_conf.get("password", "AdminPass2026!")
-    display_name = admin_conf.get("display_name", "Scott Kramer")
-    email = admin_conf.get("email", "scott@chusbc.org")
-    affiliation = admin_conf.get("center_affiliation", "CHUSBC")
+    """Bootstrap default administrator in SQLite with Scott Kramer's credentials."""
+    username = "skramer"
+    password = "Gussierocks1"
+    display_name = "Scott Kramer"
+    email = "scottjk85@gmail.com"
+    affiliation = "CHUSBC"
 
     conn = get_connection()
     try:
         with conn:
             existing = conn.execute(
-                "SELECT id FROM staff_users WHERE role = 'admin' LIMIT 1"
+                "SELECT id FROM staff_users WHERE username = ?",
+                (username,),
             ).fetchone()
             if not existing:
                 conn.execute(
                     """
-                    INSERT OR IGNORE INTO staff_users 
+                    INSERT INTO staff_users 
                     (username, password_hash, display_name, email, center_affiliation, role, is_approved)
                     VALUES (?, ?, ?, ?, ?, 'admin', 1)
                     """,
                     (username, hash_password(password), display_name, email, affiliation),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE staff_users 
+                    SET password_hash = ?, display_name = ?, email = ?, center_affiliation = ?, role = 'admin', is_approved = 1 
+                    WHERE username = ?
+                    """,
+                    (hash_password(password), display_name, email, affiliation, username),
                 )
     finally:
         conn.close()
@@ -291,12 +308,17 @@ def render_login_screen() -> None:
 
         st.markdown(
             """
-            <div style="text-align: center; margin-top: 24px;">
-                <small style="color: #64748B;">Dedicated to the bowlers of CHUSBC.</small>
+            <div style="text-align: center; margin-top: 20px;">
+                <p style="color: #94A3B8; font-size: 12px; margin-bottom: 6px;">
+                    Dedicated to the bowlers of CHUSBC.
+                </p>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+        with st.expander("⚖️ Software License & Terms", expanded=False):
+            st.caption(LICENSE_SNIPPET)
 
 
 def require_login() -> dict | None:
