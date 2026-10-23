@@ -188,78 +188,99 @@ def render_intake_gateway() -> None:
         max_chars=4,
     )
 
-    # --- CONCOURSE CHECK-IN & FLOOR ACCESS STATION ---
+    # --- UNIFIED 3-PORTAL CONCOURSE ACCESS STATION ---
     st.markdown("---")
-    st.markdown("### 📲 Concourse Check-In & Floor Scorer Access Station")
-    st.caption("Display or share these QR codes with bowlers upon arrival and floor score assistants prior to launching the squad.")
+    st.markdown("### 📲 Concourse Check-In, Live Portal & Floor Scoring Station")
+    st.caption("Display or share these direct portals with bowlers and floor score verifiers prior to launching the squad.")
 
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
 
-    qr_col1, qr_col2 = st.columns(2, gap="large")
-
-    bowler_checkin_url = "https://chusbc-desk.streamlit.app/?mode=bowler"
+    checkin_url = "https://chusbc-desk.streamlit.app/?mode=bowler&action=checkin"
+    portal_url = "https://chusbc-desk.streamlit.app/?mode=bowler"
     scorer_url = "https://chusbc-desk.streamlit.app/?mode=score"
 
-    with qr_col1:
+    buf_checkin = _generate_qr_buffer(checkin_url)
+    buf_portal = _generate_qr_buffer(portal_url)
+    buf_scorer = _generate_qr_buffer(scorer_url)
+
+    col1, col2, col3 = st.columns(3, gap="medium")
+
+    with col1:
         with st.container(border=True):
             st.markdown(
                 """
-                <div style="text-align:center; padding-bottom:8px;">
+                <div style="text-align:center; min-height:110px;">
                     <span style="background:#064E3B; color:#6EE7B7; font-size:11px; font-weight:700; padding:3px 10px; border-radius:999px;">
-                        BOWLER ARRIVAL GATE
+                        ARRIVAL GATE
                     </span>
-                    <h4 style="color:#F8FAFC; margin:10px 0 4px 0;">🎳 Bowler Self Check-In</h4>
-                    <p style="color:#94A3B8; font-size:12px; margin-bottom:0;">Scan to confirm arrival, verify payment & get lane assignment</p>
+                    <h4 style="color:#F8FAFC; margin:10px 0 4px 0;">🎳 Bowler Check-In</h4>
+                    <p style="color:#94A3B8; font-size:12px; margin-bottom:0;">Verify paid status & unlock starting lane</p>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-            st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-            buf_b = _generate_qr_buffer(bowler_checkin_url)
-            st.image(buf_b.getvalue(), caption="Scan to Check In & Reveal Starting Lane", width=230)
-            st.markdown(f"[🔗 Open Bowler Check-In Directly]({bowler_checkin_url})")
+            st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+            st.image(buf_checkin.getvalue(), caption="Scan to Check In", use_container_width=True)
+            st.markdown(f"[🔗 Open Check-In]({checkin_url})")
 
-    with qr_col2:
+    with col2:
+        with st.container(border=True):
+            st.markdown(
+                """
+                <div style="text-align:center; min-height:110px;">
+                    <span style="background:#0284C7; color:#BAE6FD; font-size:11px; font-weight:700; padding:3px 10px; border-radius:999px;">
+                        LIVE TRACKER
+                    </span>
+                    <h4 style="color:#F8FAFC; margin:10px 0 4px 0;">📊 Bowler Portal</h4>
+                    <p style="color:#94A3B8; font-size:12px; margin-bottom:0;">Live standings, cut line & brackets</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+            st.image(buf_portal.getvalue(), caption="Scan for Live Standings", use_container_width=True)
+            st.markdown(f"[🔗 Open Bowler Portal]({portal_url})")
+
+    with col3:
         with st.container(border=True):
             st.markdown(
                 f"""
-                <div style="text-align:center; padding-bottom:8px;">
+                <div style="text-align:center; min-height:110px;">
                     <span style="background:#1E3A8A; color:#93C5FD; font-size:11px; font-weight:700; padding:3px 10px; border-radius:999px;">
-                        STAFF / FLOOR ONLY
+                        STAFF / VERIFIERS
                     </span>
-                    <h4 style="color:#F8FAFC; margin:10px 0 4px 0;">Floor Verifier Portal</h4>
-                    <p style="color:#10B981; font-weight:700; font-size:13px; margin-bottom:0;">🔑 Active PIN: {pin}</p>
+                    <h4 style="color:#F8FAFC; margin:10px 0 4px 0;">📱 Floor Scoring</h4>
+                    <p style="color:#10B981; font-weight:700; font-size:12px; margin-bottom:0;">🔑 Active PIN: {pin}</p>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-            st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
-            buf_s = _generate_qr_buffer(scorer_url)
-            st.image(buf_s.getvalue(), caption="Floor Assistant 10-Key Pad QR", width=230)
-            st.markdown(f"[🔗 Open Mobile Scorer Directly]({scorer_url})")
+            st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+            st.image(buf_scorer.getvalue(), caption="Floor 10-Key Pad", use_container_width=True)
+            st.markdown(f"[🔗 Open Scorer Pad]({scorer_url})")
 
     st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
 
     with st.expander("🖨️ Concourse Display / Printable Placard Mode", expanded=False):
         st.markdown(
             f"""
-            <div style="background:#0F172A; border:2px dashed #475569; border-radius:12px; padding:20px; text-align:center;">
+            <div style="background:#0F172A; border:2px dashed #475569; border-radius:12px; padding:24px; text-align:center;">
                 <h2 style="color:#F8FAFC; margin-bottom:4px;">CECIL HARFORD USBC TOURNAMENT ACCESS</h2>
-                <p style="color:#94A3B8; font-size:14px; margin-bottom:16px;">Scan either code below using your smartphone camera</p>
-                <div style="display:flex; justify-content:space-around; align-items:center; flex-wrap:wrap; gap:20px;">
-                    <div>
-                        <h4 style="color:#34D399;">1. BOWLER SELF CHECK-IN</h4>
-                        <p style="color:#CBD5E1; font-size:12px;">Confirm Entry, Verify Paid Status & Get Starting Lane</p>
-                    </div>
-                    <div>
-                        <h4 style="color:#38BDF8;">2. FLOOR SCORING PAD</h4>
-                        <p style="color:#CBD5E1; font-size:12px;">Authorized Verifiers Only (PIN: <strong>{pin}</strong>)</p>
-                    </div>
-                </div>
+                <p style="color:#94A3B8; font-size:14px; margin-bottom:20px;">Point your smartphone camera at the code for your role</p>
             </div>
             """,
             unsafe_allow_html=True,
         )
+        p_col1, p_col2, p_col3 = st.columns(3)
+        with p_col1:
+            st.markdown("<div style='text-align:center;'><strong style='color:#34D399;'>1. BOWLER CHECK-IN</strong><br><small style='color:#94A3B8;'>Confirm Arrival & Lane</small></div>", unsafe_allow_html=True)
+            st.image(buf_checkin.getvalue(), width=180)
+        with p_col2:
+            st.markdown("<div style='text-align:center;'><strong style='color:#38BDF8;'>2. LIVE STANDINGS</strong><br><small style='color:#94A3B8;'>Scores, Cut Line & Pots</small></div>", unsafe_allow_html=True)
+            st.image(buf_portal.getvalue(), width=180)
+        with p_col3:
+            st.markdown(f"<div style='text-align:center;'><strong style='color:#F59E0B;'>3. FLOOR SCORING</strong><br><small style='color:#94A3B8;'>PIN: <strong>{pin}</strong></small></div>", unsafe_allow_html=True)
+            st.image(buf_scorer.getvalue(), width=180)
 
     st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
 
