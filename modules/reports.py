@@ -108,7 +108,7 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
 
     buffer = io.BytesIO()
     doc_title = f"{tournament['name'] if tournament else 'Tournament'} — Official Certified Results"
-    
+
     # 0.5 in (36 pt) margins provide 540 pt usable width on 612 pt Letter
     doc = SimpleDocTemplate(
         buffer,
@@ -265,8 +265,6 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
     # 3. Main Standings Table with Game-by-Game Columns
     story.append(Paragraph("OFFICIAL QUALIFYING & FINAL STANDINGS", sec_heading))
 
-    # Dynamic column widths matching 540 pt printable page width
-    # Rank(30), Bowler(105), USBC#(50), Avg/Hdcp(55), G1(36), G2(36), G3(36), Total Scratch(48), Series Total(54), Prize(45), Routing(45)
     headers = [
         Paragraph("<b>Rank</b>", th_style),
         Paragraph("<b>Bowler Name</b>", th_style),
@@ -279,7 +277,7 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
         Paragraph("<b>Scratch</b>", th_style),
         Paragraph("<b>HDCP Total</b>", th_style),
         Paragraph("<b>Award</b>", th_style),
-        Paragraph("<b>Routing</b>", th_style),
+        Paragraph("<b>Disbursement</b>", th_style),
     ])
 
     table_data = [headers]
@@ -298,7 +296,8 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
         else:
             routing_txt = "—"
 
-        avg_hdcp_str = f"{b['entering_avg'] or '—'} / +{b['handicap']}"
+        hdcp_val = b["handicap"] or 0
+        avg_hdcp_str = f"{b['entering_avg'] or '—'} / +{hdcp_val}" if hdcp_val > 0 else f"{b['entering_avg'] or '—'} (Scratch)"
 
         row_cells = [
             Paragraph(f"<b>#{idx}</b>", td_center),
@@ -310,8 +309,8 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
         for g in range(1, game_count + 1):
             score_val = g_scores.get(g, 0)
             if score_val == 300:
-                honor_scores.append(f"★ <b>{b['name']}</b> bowled a <b>300 Game</b> in Game {g}!")
-                row_cells.append(Paragraph(f"<b>{score_val}</b>", td_center))
+                honor_scores.append(f"<b>{b['name']}</b> bowled an official <b>300 Game</b> in Game {g}!")
+                row_cells.append(Paragraph(f"<font color='#065F46'><b>{score_val}</b></font>", td_center))
             else:
                 row_cells.append(Paragraph(str(score_val) if score_val > 0 else "—", td_center))
 
@@ -323,11 +322,12 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
         ])
         table_data.append(row_cells)
 
-    col_widths = [32, 108, 48, 56] + [36] * game_count + [48, 54, 46, 42]
-    # Adjust last column slightly if 3 games to fit exact 540 pt
-    scale_diff = 540 - sum(col_widths)
-    if scale_diff != 0:
-        col_widths[1] += scale_diff
+    # 540 pt printable width distribution:
+    # Rank(30), Bowler(106), USBC(44), Avg/HDCP(60), G1(32), G2(32), G3(32), Scratch(46), Total(54), Award(50), Disbursement(54)
+    col_widths = [30, 106, 44, 60] + [32] * game_count + [46, 54, 50, 54]
+    diff = 540 - sum(col_widths)
+    if diff != 0:
+        col_widths[1] += diff
 
     standings_table = Table(table_data, colWidths=col_widths, repeatRows=1)
     standings_table.setStyle(
@@ -342,18 +342,19 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
         )
     )
     story.append(standings_table)
-    story.append(Spacer(1, 12))
+    story.append(Spacer(1, 14))
 
-    # 4. Honor Scores Callout (if 300s or 800 series occurred)
+    # 4. Honor Scores Callout (ASCII-safe for ReportLab Helvetica)
     if honor_scores:
         story.append(Paragraph("TOURNAMENT HONOR AWARDS", sec_heading))
         for h in honor_scores:
             story.append(
                 Paragraph(
-                    f"<font color='#065F46'><b>🏆 USBC RECOGNITION:</b> {h}</font>",
-                    ParagraphStyle("Honor", parent=meta_style, alignment=0),
+                    f"&bull;&nbsp;&nbsp;<b>USBC RECOGNITION:</b> {h}",
+                    ParagraphStyle("Honor", parent=meta_style, textColor=colors.HexColor("#065F46"), alignment=0),
                 )
             )
+            story.append(Spacer(1, 2))
         story.append(Spacer(1, 10))
 
     # 5. Stepladder Finals Summary (if any matches completed)
