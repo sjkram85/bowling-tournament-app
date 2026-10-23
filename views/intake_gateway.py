@@ -19,7 +19,7 @@ try:
     AI_MODULE_LOADED = True
 except Exception:
     AI_MODULE_LOADED = False
-    get_best_available_model = lambda client=None: "gemini-2.5-flash"
+    get_best_available_model = lambda client=None: "gemini-3.8-flash"
     get_gemini_client = lambda: None
     parse_roster_text_with_gemini = lambda text: []
     parse_roster_with_gemini = lambda b, fn: []
@@ -47,24 +47,25 @@ def _generate_qr_base64(url: str) -> str:
 
 def _run_with_bowling_animation(task_func, *args):
     """
-    Executes an AI task in the background while rendering a live bowling ball
-    animation and an advancing percentage progress bar (1-100%).
+    Executes an AI task in the background while rendering a visual bowling lane,
+    a ball rolling down the boards toward a 10-pin rack, and an advancing 1-100% gauge.
     """
     anim_box = st.empty()
     progress_bar = st.progress(0)
 
     stages = [
-        (10, "🎳 ... Setting lane conditions & initializing Gemini ..."),
-        (28, "🎳 ... Bowling ball on the approach ... reading roster ..."),
-        (46, "🎳 ... Mid-lane roll ... identifying bowler names & USBC IDs ..."),
-        (68, "🎳 ... Hitting the hook phase ... calculating averages & handicaps ..."),
-        (88, "🎳 ... Entering the pocket ... structuring Rule 400 SMART tags ..."),
+        (10, "🎳 Setting lane oil pattern & initializing Gemini 3.8 Flash..."),
+        (30, "🎳 Bowler on the approach... reading roster names & USBC IDs..."),
+        (55, "🎳 Mid-lane roll... parsing entering averages & handicaps..."),
+        (75, "🎳 Ball hooking toward the pocket... auditing Rule 400 SMART tags..."),
+        (90, "🎳 Entering the 1-3 pocket... structuring roster tables..."),
     ]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(task_func, *args)
         current_pct = 1
 
+        # Animate the roll down the lane smoothly up to 92%
         while not future.done():
             if current_pct < 92:
                 increment = 3 if current_pct < 40 else (2 if current_pct < 75 else 1)
@@ -75,18 +76,41 @@ def _run_with_bowling_animation(task_func, *args):
                 if current_pct >= threshold:
                     stage_text = desc
 
-            pins_gap = max(0, 30 - int(current_pct * 0.3))
-            ball_trail = "=" * int(current_pct * 0.3)
-            track_graphic = f"`|{ball_trail}🎳{' ' * pins_gap}🎳🎳🎳🎳|`"
+            # Calculate ball position (capped before hitting pins until done)
+            ball_pos = min(82, int(current_pct * 0.85))
 
             anim_box.markdown(
                 f"""
-                <div style="background:#0F172A; border:1px solid #1E293B; border-radius:8px; padding:12px 16px; margin-bottom:8px;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                        <span style="color:#38BDF8; font-weight:600; font-size:13px;">{stage_text}</span>
-                        <span style="color:#F8FAFC; font-family:monospace; font-weight:700; font-size:14px;">{current_pct}%</span>
+                <div style="background:#0F172A; border:1px solid #1E293B; border-radius:10px; padding:16px 20px; margin-bottom:12px; box-shadow:0 4px 12px rgba(0,0,0,0.3);">
+                    <!-- Stage Status Header -->
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                        <span style="color:#38BDF8; font-weight:600; font-size:14px; letter-spacing:0.2px;">{stage_text}</span>
+                        <span style="color:#F8FAFC; font-family:monospace; font-weight:700; font-size:16px; background:#1E293B; padding:2px 8px; border-radius:4px;">{current_pct}%</span>
                     </div>
-                    <div style="font-size:12px; margin-top:2px;">{track_graphic}</div>
+
+                    <!-- Bowling Lane Graphic Track -->
+                    <div style="position:relative; width:100%; height:54px; background:linear-gradient(180deg, #78350F 0%, #B45309 40%, #78350F 100%); border-radius:6px; border:2px solid #92400E; overflow:hidden; display:flex; align-items:center;">
+                        <!-- Foul Line -->
+                        <div style="position:absolute; left:20px; top:0; bottom:0; width:4px; background:#EF4444; box-shadow:0 0 6px #EF4444; z-index:2;"></div>
+                        
+                        <!-- Range Finder Arrow Markers -->
+                        <div style="position:absolute; left:25%; color:rgba(0,0,0,0.25); font-size:18px; line-height:1; pointer-events:none;">▲</div>
+                        <div style="position:absolute; left:45%; color:rgba(0,0,0,0.25); font-size:18px; line-height:1; pointer-events:none;">▲</div>
+                        <div style="position:absolute; left:65%; color:rgba(0,0,0,0.25); font-size:18px; line-height:1; pointer-events:none;">▲</div>
+
+                        <!-- Rolling Ball -->
+                        <div style="position:absolute; left:{ball_pos}%; font-size:28px; line-height:1; transition:left 0.12s linear; filter:drop-shadow(0 4px 6px rgba(0,0,0,0.6)); z-index:3;">
+                            🎳
+                        </div>
+
+                        <!-- 10-Pin Full Rack in Pocket -->
+                        <div style="position:absolute; right:16px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px; z-index:2;">
+                            <div style="display:flex; gap:3px; font-size:9px; line-height:1;"><span>⚪</span><span>⚪</span><span>⚪</span><span>⚪</span></div>
+                            <div style="display:flex; gap:4px; font-size:9px; line-height:1;"><span>⚪</span><span>⚪</span><span>⚪</span></div>
+                            <div style="display:flex; gap:5px; font-size:9px; line-height:1;"><span>⚪</span><span>⚪</span></div>
+                            <div style="font-size:9px; line-height:1;"><span>⚪</span></div>
+                        </div>
+                    </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -94,26 +118,35 @@ def _run_with_bowling_animation(task_func, *args):
             progress_bar.progress(current_pct)
             time.sleep(0.12)
 
+        # Await the Gemini result
         try:
-            result = future.result(timeout=35)
+            result = future.result(timeout=45)
         except Exception as exc:
             anim_box.empty()
             progress_bar.empty()
             raise RuntimeError(f"Gemini API request failed: {exc}")
 
+        # STRIKE / 100% COMPLETE STATE
         anim_box.markdown(
             """
-            <div style="background:#064E3B; border:1px solid #059669; border-radius:8px; padding:12px 16px; margin-bottom:8px;">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span style="color:#6EE7B7; font-weight:700; font-size:14px;">💥 STRIKE! 10 in the Pit — Roster extracted cleanly.</span>
-                    <span style="color:#F8FAFC; font-family:monospace; font-weight:700; font-size:14px;">100%</span>
+            <div style="background:#064E3B; border:1px solid #059669; border-radius:10px; padding:16px 20px; margin-bottom:12px; box-shadow:0 4px 12px rgba(6,78,59,0.3);">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                    <span style="color:#6EE7B7; font-weight:700; font-size:15px; letter-spacing:0.3px;">
+                        💥 STRIKE! 10 in the Pit — Roster Extracted & Ready for Review!
+                    </span>
+                    <span style="color:#F8FAFC; font-family:monospace; font-weight:700; font-size:16px; background:#047857; padding:2px 8px; border-radius:4px;">100%</span>
+                </div>
+                <div style="position:relative; width:100%; height:54px; background:linear-gradient(180deg, #78350F 0%, #B45309 40%, #78350F 100%); border-radius:6px; border:2px solid #059669; display:flex; align-items:center; justify-content:flex-end; padding-right:24px;">
+                    <div style="color:#FEF08A; font-weight:900; font-size:18px; letter-spacing:1px; text-shadow:0 2px 4px rgba(0,0,0,0.8);">
+                        🎳 💥 💨 ALL 10 DOWN!
+                    </div>
                 </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
         progress_bar.progress(100)
-        time.sleep(0.5)
+        time.sleep(0.6)
 
         anim_box.empty()
         progress_bar.empty()
@@ -225,7 +258,7 @@ def render_intake_gateway() -> None:
     # --- TAB 2: ADD COMPETITORS (3-WAY CHOICE) ---
     with tab_entry:
         client = get_gemini_client() if AI_MODULE_LOADED else None
-        active_model = get_best_available_model(client) if client else "gemini-2.5-flash"
+        active_model = get_best_available_model(client) if client else "gemini-3.8-flash"
 
         intake_mode = st.radio(
             "Select Intake Method:",
