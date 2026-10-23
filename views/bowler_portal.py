@@ -289,16 +289,16 @@ ORDER BY grand_total DESC, total_scratch DESC"""
         table_rows_html = []
         for rank, r in enumerate(rows, start=1):
             if rank == 1:
-                badge_html = "<span style='background:#F59E0B; color:#451A03; font-weight:900; padding:3px 8px; border-radius:6px; font-size:12px;'>🥇 1ST</span>"
+                badge_html = "<span style='background:#F59E0B; color:#451A03; font-weight:800; padding:4px 8px; border-radius:6px; font-size:12px; display:inline-flex; align-items:center; justify-content:center; gap:4px; white-space:nowrap;'>🥇 1st</span>"
                 row_bg = "background: rgba(245, 158, 11, 0.08);"
             elif rank == 2:
-                badge_html = "<span style='background:#94A3B8; color:#0F172A; font-weight:900; padding:3px 8px; border-radius:6px; font-size:12px;'>🥈 2ND</span>"
+                badge_html = "<span style='background:#94A3B8; color:#0F172A; font-weight:800; padding:4px 8px; border-radius:6px; font-size:12px; display:inline-flex; align-items:center; justify-content:center; gap:4px; white-space:nowrap;'>🥈 2nd</span>"
                 row_bg = "background: rgba(148, 163, 184, 0.06);"
             elif rank == 3:
-                badge_html = "<span style='background:#D97706; color:#451A03; font-weight:900; padding:3px 8px; border-radius:6px; font-size:12px;'>🥉 3RD</span>"
+                badge_html = "<span style='background:#D97706; color:#451A03; font-weight:800; padding:4px 8px; border-radius:6px; font-size:12px; display:inline-flex; align-items:center; justify-content:center; gap:4px; white-space:nowrap;'>🥉 3rd</span>"
                 row_bg = "background: rgba(217, 119, 6, 0.06);"
             else:
-                badge_html = f"<span style='color:#94A3B8; font-weight:800; font-size:13px;'>#{rank}</span>"
+                badge_html = f"<span style='color:#94A3B8; font-weight:800; font-size:13px; display:inline-block; min-width:48px; text-align:center;'>#{rank}</span>"
                 row_bg = ""
 
             diff_to_leader = r["grand_total"] - leader["grand_total"]
@@ -307,7 +307,7 @@ ORDER BY grand_total DESC, total_scratch DESC"""
 
             row_markup = (
                 f"<tr style='border-bottom: 1px solid #1E293B; {row_bg}'>"
-                f"<td style='padding: 12px 14px; text-align: center;'>{badge_html}</td>"
+                f"<td style='padding: 12px 14px; text-align: center; white-space: nowrap;'>{badge_html}</td>"
                 f"<td style='padding: 12px 14px;'><div style='font-weight: 700; color: #F8FAFC; font-size: 14px;'>{r['name']}</div>"
                 f"<small style='color: #64748B;'>Lane {r['lane_assignment']} &bull; HDCP +{r['handicap']}</small></td>"
                 f"<td style='padding: 12px 14px; text-align: center; color: #CBD5E1; font-weight: 600;'>{r['games_bowled']}</td>"
@@ -324,7 +324,7 @@ ORDER BY grand_total DESC, total_scratch DESC"""
             "<table style='width: 100%; border-collapse: collapse; text-align: left; font-family: sans-serif;'>"
             "<thead>"
             "<tr style='background: #1E293B; border-bottom: 2px solid #334155; color: #94A3B8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;'>"
-            "<th style='padding: 10px 14px; text-align: center; width: 70px;'>Rank</th>"
+            "<th style='padding: 10px 14px; text-align: center; width: 90px; min-width: 85px;'>Rank</th>"
             "<th style='padding: 10px 14px;'>Bowler</th>"
             "<th style='padding: 10px 14px; text-align: center; width: 80px;'>Games</th>"
             "<th style='padding: 10px 14px; text-align: right; width: 90px;'>Scratch</th>"
