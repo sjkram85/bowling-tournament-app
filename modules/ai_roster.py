@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 from google import genai
 from google.genai import types
+from modules.settings import get_secret
 
 # Use gemini-3.8-flash as the primary engine
 PRIMARY_MODEL = "gemini-3.8-flash"
@@ -15,7 +16,7 @@ PRIMARY_MODEL = "gemini-3.8-flash"
 
 def get_gemini_client() -> genai.Client | None:
     """Initialize GenAI client with strict 15-second timeout and no silent multi-minute backoff hangs."""
-    api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    api_key = get_secret("GEMINI_API_KEY")
     if not api_key:
         return None
     return genai.Client(
@@ -33,7 +34,7 @@ def get_gemini_client() -> genai.Client | None:
 
 def get_best_available_model(client: genai.Client = None) -> str:
     """Return active model without blocking catalog enumeration."""
-    return st.secrets.get("GEMINI_MODEL", PRIMARY_MODEL)
+    return get_secret("GEMINI_MODEL", PRIMARY_MODEL)
 
 
 EXTRACTION_PROMPT = (

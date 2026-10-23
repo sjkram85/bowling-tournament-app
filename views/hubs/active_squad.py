@@ -11,11 +11,12 @@ from modules.brackets import generate_eight_person_brackets, score_bracket_round
 from modules.constants import CENTERS
 from modules.db_state import get_connection, log_desk_action
 from views.hubs.finals_close import render_finals_close
+from modules.settings import get_secret
 
 
 def _get_base_url() -> str:
     """Dynamically determine current host environment base URL."""
-    return st.secrets.get("APP_BASE_URL", "https://chusbc-desk.streamlit.app")
+    return get_secret("APP_BASE_URL", "https://chusbc-desk.streamlit.app")
 
 
 def _generate_qr_base64(url: str) -> str:

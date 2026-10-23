@@ -5,6 +5,7 @@ import json
 import os
 import streamlit as st
 from PIL import Image
+from modules.settings import get_secret, ai_available, AI_OFF_MESSAGE
 
 try:
     from google import genai
@@ -19,17 +20,10 @@ def extract_scores_from_overhead_photo(image_bytes: bytes) -> dict:
     Submits a photo of a bowling overhead screen to Gemini Vision to parse bowler pinfall.
     Returns structured JSON containing names, scratch total, and frame scores.
     """
-    api_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY")
+    api_key = get_secret("GEMINI_API_KEY")
     if not api_key or not GENAI_AVAILABLE:
-        # Graceful fallback simulation if API key is not yet set in secrets
-        return {
-            "status": "warning",
-            "message": "GEMINI_API_KEY not configured in secrets. Vision transcription in offline simulated mode.",
-            "extracted_data": [
-                {"name": "Bowler 1", "game_score": 214, "confidence": "simulated"},
-                {"name": "Bowler 2", "game_score": 189, "confidence": "simulated"},
-            ],
-        }
+        # Never invent scores: report that A.I. is off instead.
+        return {"status": "error", "message": AI_OFF_MESSAGE, "extracted_data": []}
 
     try:
         client = genai.Client(api_key=api_key)

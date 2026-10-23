@@ -28,6 +28,7 @@ from modules.constants import CENTERS, HOST_CENTERS
 from modules.db_state import get_connection, log_desk_action
 from modules import roster_import
 from modules.tournament_templates import CHUSBC_TEMPLATES, create_tournament_from_template, save_tournament_as_template
+from modules.settings import get_secret, ai_available, AI_OFF_MESSAGE
 
 # Pure SVG bowling ball with 3D gradient & finger holes
 BOWLING_BALL_SVG = (
@@ -64,7 +65,7 @@ PIN_DOT = (
 
 def _get_base_url() -> str:
     """Dynamically determine current host environment base URL."""
-    return st.secrets.get("APP_BASE_URL", "https://chusbc-desk.streamlit.app")
+    return get_secret("APP_BASE_URL", "https://chusbc-desk.streamlit.app")
 
 
 def _generate_qr_base64(url: str) -> str:
@@ -437,10 +438,13 @@ def render_intake_gateway() -> None:
                     if col_m1.button("➡️ Use These Columns", type="primary"):
                         rows = roster_import.apply_mapping(table, mapping)
                         st.session_state["parsed_ai_roster"] = roster_import.validate_rows(rows)
-                    use_ai = col_m2.button("🤖 Let Gemini Try Instead")
+                    use_ai = col_m2.button("🤖 Let Gemini Try Instead", disabled=not ai_available(), help=None if ai_available() else AI_OFF_MESSAGE)
                 else:
-                    st.info("PDFs, photos, and text files are read with Gemini. Check every row in the review below.")
-                    use_ai = st.button("🤖 Ingest File with Gemini", type="primary")
+                    if ai_available():
+                        st.info("PDFs, photos, and text files are read with Gemini. Check every row in the review below.")
+                    else:
+                        st.warning(AI_OFF_MESSAGE + " Please upload an Excel or CSV file instead (use the template above).")
+                    use_ai = st.button("🤖 Ingest File with Gemini", type="primary", disabled=not ai_available())
                 if use_ai:
                     try:
                         extracted = _run_with_bowling_animation(
@@ -475,7 +479,9 @@ def render_intake_gateway() -> None:
                 placeholder="Lane 1: Marcus Vance (USBC 8412-10921, Avg 218) - Paid\nLane 1: Tyler Jenkins (USBC 8412-44102, Avg 192) - Paid",
                 height=180,
             )
-            if st.button("🤖 Ingest Pasted Text with Gemini", type="primary"):
+            if not ai_available():
+                st.caption("Prism A.I. is off, so pasted text is read by the built-in reader. Follow the format above exactly.")
+            if st.button("🤖 Ingest Pasted Text with Gemini" if ai_available() else "📋 Read Pasted Text", type="primary"):
                 if not pasted_text.strip():
                     st.warning("Please paste some text before clicking Ingest.")
                 else:
