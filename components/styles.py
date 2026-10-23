@@ -4,7 +4,7 @@ import streamlit as st
 
 
 def apply_clean_theme() -> None:
-    """Inject core layout, Slate palette, responsive anti-dimming, and custom animations."""
+    """Inject core layout, Slate palette, responsive anti-dimming, and bowling lane animation."""
     st.markdown(
         """
         <style>
@@ -27,7 +27,7 @@ def apply_clean_theme() -> None:
         }
 
         /* =========================================================
-           THEMATIC ROLLING BOWLING BALL & PIN LOADING ANIMATION
+           REALISTIC MINI BOWLING LANE LOADER
            ========================================================= */
         .bowling-loading-container {
             display: flex;
@@ -35,71 +35,108 @@ def apply_clean_theme() -> None:
             gap: 12px;
             padding: 10px 14px;
             background: #0F172A;
-            border: 1px dashed #334155;
-            border-radius: 6px;
+            border: 1px solid #1E293B;
+            border-left: 3px solid #F59E0B;
+            border-radius: 8px;
             margin: 10px 0;
         }
 
-        .bowling-lane-micro {
+        .bowling-lane-stage {
             position: relative;
-            width: 44px;
-            height: 20px;
+            width: 72px;
+            height: 28px;
+            background: linear-gradient(180deg, #3E2723 0%, #5D4037 25%, #4E342E 100%);
+            border-radius: 4px;
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.6);
             overflow: hidden;
             display: flex;
             align-items: center;
         }
 
-        .bowling-ball-rolling {
-            font-size: 14px;
+        /* Lane guide board lines */
+        .bowling-lane-stage::after {
+            content: "";
             position: absolute;
             left: 0;
-            animation: roll-and-bounce 1.2s infinite ease-in-out;
-            transform-origin: center;
+            right: 0;
+            top: 50%;
+            height: 1px;
+            background: rgba(255, 255, 255, 0.08);
         }
 
-        .pins-target {
-            font-size: 14px;
+        /* Bowling Ball */
+        .bowling-ball-svg {
             position: absolute;
-            right: 2px;
-            animation: pin-shake 1.2s infinite ease-in-out;
+            left: 4px;
+            width: 16px;
+            height: 16px;
+            animation: roll-down-lane 1.4s infinite ease-in;
+            z-index: 2;
+        }
+
+        /* Bowling Pin Triangle */
+        .pins-cluster-svg {
+            position: absolute;
+            right: 5px;
+            width: 14px;
+            height: 20px;
+            animation: pin-impact 1.4s infinite ease-in;
+            z-index: 1;
         }
 
         .loading-text-glow {
-            color: #F59E0B;
-            font-size: 13px;
-            font-weight: 700;
-            letter-spacing: 0.5px;
-            animation: pulse-text 1.5s infinite ease-in-out;
+            color: #F8FAFC;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
         }
 
-        @keyframes roll-and-bounce {
+        @keyframes roll-down-lane {
             0% {
-                left: 0%;
+                left: 2px;
                 transform: rotate(0deg);
+                opacity: 0.3;
             }
-            50% {
-                left: 65%;
-                transform: rotate(360deg);
+            15% {
+                opacity: 1;
+            }
+            70% {
+                left: 48px;
+                transform: rotate(540deg);
+                opacity: 1;
+            }
+            75% {
+                left: 52px;
+                transform: rotate(620deg);
+                opacity: 0;
             }
             100% {
-                left: 0%;
+                left: 2px;
                 transform: rotate(0deg);
+                opacity: 0;
             }
         }
 
-        @keyframes pin-shake {
-            0%, 40%, 60%, 100% { transform: translate(0, 0) rotate(0deg); }
-            45% { transform: translate(1px, -1px) rotate(3deg); }
-            50% { transform: translate(-1px, 1px) rotate(-3deg); }
-            55% { transform: translate(0px, -1px) rotate(1deg); }
+        @keyframes pin-impact {
+            0%, 68% {
+                transform: translate(0, 0) rotate(0deg) scale(1);
+                opacity: 1;
+            }
+            73% {
+                transform: translate(2px, -3px) rotate(18deg) scale(0.95);
+                filter: brightness(1.4);
+            }
+            82% {
+                transform: translate(5px, 2px) rotate(42deg) scale(0.85);
+                opacity: 0.3;
+            }
+            92%, 100% {
+                transform: translate(0, 0) rotate(0deg) scale(1);
+                opacity: 1;
+            }
         }
 
-        @keyframes pulse-text {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.6; }
-        }
-
-        /* Hide the native streamlit loader in operations to prevent double loading icons */
+        /* Suppress native streamlit circle loader */
         [data-testid="stLoading"] {
             display: none !important;
         }

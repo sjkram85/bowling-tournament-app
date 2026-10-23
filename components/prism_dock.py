@@ -5,14 +5,36 @@ import streamlit as st
 from modules.prism_ai import get_prism_ai_guidance
 
 
-def _rolling_ball_loader(label: str = "Analyzing...") -> None:
-    """Display an inline animated rolling bowling ball heading toward pins."""
+def _rolling_ball_loader(label: str = "Analyzing operations...") -> None:
+    """Display an inline animated rolling bowling ball heading toward pins using clean vector SVGs."""
+    ball_svg = (
+        '<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">'
+        '<circle cx="16" cy="16" r="15" fill="#1E293B" stroke="#0EA5E9" stroke-width="2"/>'
+        '<circle cx="12" cy="11" r="2.2" fill="#F8FAFC"/>'
+        '<circle cx="18" cy="10" r="2.2" fill="#F8FAFC"/>'
+        '<circle cx="16" cy="16" r="2.2" fill="#F8FAFC"/>'
+        '</svg>'
+    )
+    pins_svg = (
+        '<svg viewBox="0 0 28 36" fill="none" xmlns="http://www.w3.org/2000/svg">'
+        # Headpin
+        '<path d="M14 2C12 2 11 4 11 6C11 8 12 9 12 11C11.5 13 10 15 10 18C10 20 12 21 14 21C16 21 18 20 18 18C18 15 16.5 13 16 11C16 9 17 8 17 6C17 4 16 2 14 2Z" fill="#F8FAFC"/>'
+        '<rect x="11.5" y="6.5" width="5" height="1.5" fill="#EF4444"/>'
+        # Left Pin
+        '<path d="M6 10C4.5 10 4 11.5 4 13C4 14.5 4.5 15.5 4.5 17C4 18.5 3 20 3 22.5C3 24 4.5 25 6 25C7.5 25 9 24 9 22.5C9 20 8 18.5 7.5 17C7.5 15.5 8 14.5 8 13C8 11.5 7.5 10 6 10Z" fill="#E2E8F0"/>'
+        '<rect x="4.5" y="13.5" width="3.5" height="1.2" fill="#EF4444"/>'
+        # Right Pin
+        '<path d="M22 10C20.5 10 20 11.5 20 13C20 14.5 20.5 15.5 20.5 17C20 18.5 19 20 19 22.5C19 24 20.5 25 22 25C23.5 25 25 24 25 22.5C25 20 24 18.5 23.5 17C23.5 15.5 24 14.5 24 13C24 11.5 23.5 10 22 10Z" fill="#E2E8F0"/>'
+        '<rect x="20.5" y="13.5" width="3.5" height="1.2" fill="#EF4444"/>'
+        '</svg>'
+    )
+
     st.markdown(
         f"""
         <div class="bowling-loading-container">
-            <div class="bowling-lane-micro">
-                <span class="bowling-ball-rolling">🎳</span>
-                <span class="pins-target">░</span>
+            <div class="bowling-lane-stage">
+                <div class="bowling-ball-svg">{ball_svg}</div>
+                <div class="pins-cluster-svg">{pins_svg}</div>
             </div>
             <div class="loading-text-glow">{label}</div>
         </div>
@@ -36,7 +58,7 @@ def _stream_response(full_text: str):
             """,
             unsafe_allow_html=True,
         )
-        time.sleep(0.012)  # Adjusts speed of instant streaming cascade
+        time.sleep(0.01)
     placeholder.markdown(
         f"""
         <div style="background:#1E293B; border-left:3px solid #38BDF8; border-radius:6px; padding:8px 10px; color:#E2E8F0; font-size:12px; margin-bottom:10px; line-height:1.4;">
@@ -62,7 +84,6 @@ def render_prism_dock(current_view: str = "Active Squad Hub", view_state: dict |
     1. Prism A.I Co-Pilot (tied to the active operational screen).
     2. USBC Rule Arbitrator (dedicated tournament rule disputes).
     """
-    # Enforce anti-dimming directly within dock rendering
     st.markdown(
         """
         <style>
@@ -115,7 +136,6 @@ def render_prism_dock(current_view: str = "Active Squad Hub", view_state: dict |
                 st.session_state[f"guidance_{current_view}"] = None
                 st.rerun()
 
-        # On-demand or cached screen guidance
         cache_key = f"guidance_{current_view}"
         guidance_text = st.session_state.get(cache_key)
 
@@ -144,7 +164,7 @@ def render_prism_dock(current_view: str = "Active Squad Hub", view_state: dict |
         )
         if st.button("Ask Assistant", key="copilot_submit", use_container_width=True):
             if td_query.strip():
-                _rolling_ball_loader("Delivering query...")
+                _rolling_ball_loader("Delivering ball...")
                 answer = get_prism_ai_guidance(state, user_prompt=td_query)
                 _stream_response(answer)
 
