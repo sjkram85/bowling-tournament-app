@@ -1,6 +1,8 @@
 """Authentication, user sessions, role-based access control, and registration."""
 
+import base64
 import os
+from pathlib import Path
 import sqlite3
 import streamlit as st
 from argon2 import PasswordHasher
@@ -13,6 +15,23 @@ ph = PasswordHasher()
 # Public constants required by staff account management
 MIN_PASSWORD_LENGTH = 8
 ROLES = ["td", "admin"]
+
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+CHUSBC_LOGO = ASSETS_DIR / "CHUSBC.jpg"
+
+
+def _get_chusbc_logo_tag(height: int = 70) -> str:
+    """Generate an inline base64 image tag for the official CHUSBC sanction logo."""
+    if CHUSBC_LOGO.is_file():
+        data = base64.b64encode(CHUSBC_LOGO.read_bytes()).decode()
+        return (
+            f'<div style="text-align: center; margin-bottom: 12px;">'
+            f'<img src="data:image/jpeg;base64,{data}" '
+            f'style="height:{height}px; width:auto; border-radius:6px; background:#FFFFFF; padding:4px; box-shadow:0 2px 8px rgba(0,0,0,0.4);" '
+            f'alt="USBC Cecil Harford Association">'
+            f'</div>'
+        )
+    return '<div style="font-size: 36px; text-align: center; margin-bottom: 8px;">🎳</div>'
 
 
 def hash_password(password: str) -> str:
@@ -203,18 +222,18 @@ def logout() -> None:
 
 
 def render_login_screen() -> None:
-    """Render a compact, centered card layout for staff login and registration."""
+    """Render a compact, centered card layout for staff login and registration with official sanction branding."""
     _bootstrap_admin()
 
-    # Center the login card horizontally within wide-layout viewport
     _, center_col, _ = st.columns([1.2, 1.6, 1.2])
 
     with center_col:
+        logo_markup = _get_chusbc_logo_tag(height=72)
         st.markdown(
-            """
-            <div style="text-align: center; margin-bottom: 24px; padding-top: 20px;">
-                <div style="font-size: 32px; margin-bottom: 8px;">🎳</div>
-                <h2 style="color: #F8FAFC; margin: 4px 0; font-size: 24px; font-weight: 800;">
+            f"""
+            <div style="text-align: center; margin-bottom: 20px; padding-top: 10px;">
+                {logo_markup}
+                <h2 style="color: #F8FAFC; margin: 4px 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px;">
                     Prism Tournament Control Center
                 </h2>
                 <p style="color: #94A3B8; font-size: 13px; margin: 0;">
@@ -272,7 +291,7 @@ def render_login_screen() -> None:
 
         st.markdown(
             """
-            <div style="text-align: center; margin-top: 28px;">
+            <div style="text-align: center; margin-top: 24px;">
                 <small style="color: #64748B;">Dedicated to the bowlers of CHUSBC.</small>
             </div>
             """,
