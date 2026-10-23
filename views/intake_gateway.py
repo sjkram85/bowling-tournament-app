@@ -193,7 +193,10 @@ def render_intake_gateway() -> None:
     st.markdown("### 📲 Concourse Check-In & Floor Scorer Access Station")
     st.caption("Display or share these QR codes with bowlers upon arrival and floor score assistants prior to launching the squad.")
 
-    qr_col1, qr_col2 = st.columns(2)
+    # Added top spacing before station columns
+    st.markdown("<div style='margin-top: 14px;'></div>", unsafe_allow_html=True)
+
+    qr_col1, qr_col2 = st.columns(2, gap="medium")
 
     bowler_checkin_url = "https://chusbc-desk.streamlit.app/?mode=bowler"
     scorer_url = "https://chusbc-desk.streamlit.app/?mode=score"
@@ -201,36 +204,43 @@ def render_intake_gateway() -> None:
     with qr_col1:
         st.markdown(
             """
-            <div style="background:#1E293B; border:1px solid #10B981; border-radius:10px; padding:12px; text-align:center;">
-                <span style="background:#064E3B; color:#6EE7B7; font-size:11px; font-weight:700; padding:2px 8px; border-radius:999px;">
+            <div style="background:#1E293B; border:1px solid #10B981; border-radius:12px; padding:16px; text-align:center; min-height:140px;">
+                <span style="background:#064E3B; color:#6EE7B7; font-size:11px; font-weight:700; padding:3px 10px; border-radius:999px;">
                     BOWLER ARRIVAL GATE
                 </span>
-                <h4 style="color:#F8FAFC; margin:6px 0 4px 0;">🎳 Bowler Self Check-In</h4>
-                <p style="color:#94A3B8; font-size:12px; margin-bottom:8px;">Scan to confirm arrival, verify payment & get lane assignment</p>
+                <h4 style="color:#F8FAFC; margin:8px 0 4px 0;">🎳 Bowler Self Check-In</h4>
+                <p style="color:#94A3B8; font-size:12px; margin-bottom:0;">Scan to confirm arrival, verify payment & get lane assignment</p>
             </div>
             """,
             unsafe_allow_html=True,
         )
+        # Margin buffer between card and QR code
+        st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
         buf_b = _generate_qr_buffer(bowler_checkin_url)
-        st.image(buf_b.getvalue(), caption="Scan to Check In & Reveal Starting Lane", width=220)
+        st.image(buf_b.getvalue(), caption="Scan to Check In & Reveal Starting Lane", width=230)
         st.markdown(f"[🔗 Open Bowler Check-In Directly]({bowler_checkin_url})")
 
     with qr_col2:
         st.markdown(
             f"""
-            <div style="background:#1E293B; border:1px solid #334155; border-radius:10px; padding:12px; text-align:center;">
-                <span style="background:#1E3A8A; color:#93C5FD; font-size:11px; font-weight:700; padding:2px 8px; border-radius:999px;">
+            <div style="background:#1E293B; border:1px solid #334155; border-radius:12px; padding:16px; text-align:center; min-height:140px;">
+                <span style="background:#1E3A8A; color:#93C5FD; font-size:11px; font-weight:700; padding:3px 10px; border-radius:999px;">
                     STAFF / FLOOR ONLY
                 </span>
-                <h4 style="color:#F8FAFC; margin:6px 0 4px 0;">Floor Verifier Portal</h4>
-                <p style="color:#10B981; font-weight:700; font-size:13px; margin-bottom:8px;">🔑 Active PIN: {pin}</p>
+                <h4 style="color:#F8FAFC; margin:8px 0 4px 0;">Floor Verifier Portal</h4>
+                <p style="color:#10B981; font-weight:700; font-size:13px; margin-bottom:0;">🔑 Active PIN: {pin}</p>
             </div>
             """,
             unsafe_allow_html=True,
         )
+        # Margin buffer between card and QR code
+        st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
         buf_s = _generate_qr_buffer(scorer_url)
-        st.image(buf_s.getvalue(), caption="Floor Assistant 10-Key Pad QR", width=220)
+        st.image(buf_s.getvalue(), caption="Floor Assistant 10-Key Pad QR", width=230)
         st.markdown(f"[🔗 Open Mobile Scorer Directly]({scorer_url})")
+
+    # Generous margin before the concourse print placard
+    st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
 
     with st.expander("🖨️ Concourse Display / Printable Placard Mode", expanded=False):
         st.markdown(
@@ -253,7 +263,7 @@ def render_intake_gateway() -> None:
             unsafe_allow_html=True,
         )
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
 
     if st.button("Start Squad", type="primary", width="stretch"):
         valid = edited[edited["Bowler Name"].fillna("").astype(str).str.strip() != ""]
