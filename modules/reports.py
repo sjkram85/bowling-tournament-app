@@ -97,7 +97,7 @@ def build_smart_scholarship_csv(tournament_id: int, prize_pool: float) -> str:
 
 
 def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
-    """Generates an executive-grade, broadcast-standard certified tournament results sheet with official logos."""
+    """Generates an executive-grade, broadcast-standard certified tournament results sheet with CHUSBC branding."""
     tournament = get_tournament(tournament_id)
     bowler_records = _get_full_bowler_records(tournament_id)
     scores_by_bowler = _get_detailed_tournament_scores(tournament_id)
@@ -128,8 +128,8 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
         "CertTitle",
         parent=base_styles["Heading1"],
         fontName="Helvetica-Bold",
-        fontSize=17,
-        leading=21,
+        fontSize=18,
+        leading=22,
         textColor=colors.HexColor("#0F172A"),
         alignment=1,
     )
@@ -138,8 +138,8 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
         "AssocStyle",
         parent=base_styles["Normal"],
         fontName="Helvetica-Bold",
-        fontSize=9.5,
-        leading=12,
+        fontSize=10,
+        leading=13,
         textColor=colors.HexColor("#1E3A8A"),
         alignment=1,
     )
@@ -203,24 +203,15 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
 
     story = []
 
-    # 1. Header with Flanking Logos
+    # 1. Header with Official Cecil Harford USBC Emblem
     tourney_name = tournament["name"] if tournament else "Tournament Results"
-    
+
     logo_left = None
     if CHUSBC_LOGO_PATH.is_file():
         try:
-            logo_left = RLImage(str(CHUSBC_LOGO_PATH), width=50, height=50)
+            logo_left = RLImage(str(CHUSBC_LOGO_PATH), width=58, height=58)
         except Exception:
             logo_left = None
-
-    # Host center logo check
-    logo_right = None
-    center_logo_filename = center_info.get("logo_file")
-    if center_logo_filename and (ASSETS_DIR / center_logo_filename).is_file():
-        try:
-            logo_right = RLImage(str(ASSETS_DIR / center_logo_filename), width=50, height=50)
-        except Exception:
-            logo_right = None
 
     center_text_flowables = [
         Paragraph("CECIL HARFORD UNITED STATES BOWLING CONGRESS", assoc_style),
@@ -229,7 +220,7 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
         Spacer(1, 3),
         Paragraph(
             f"<b>Official Certified Standing Sheet</b> &nbsp;|&nbsp; "
-            f"Host Center: <b>{escape(center_name)}</b> &nbsp;|&nbsp; "
+            f"Host Center: <b>{escape(center_name)}</b> ({escape(center_address)}) &nbsp;|&nbsp; "
             f"Format: <b>{tournament.get('squad_format', 'Singles')} ({game_count} Games)</b>",
             meta_style,
         ),
@@ -238,17 +229,15 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
     header_row = [
         logo_left or "",
         center_text_flowables,
-        logo_right or "",
     ]
 
-    t_header = Table([header_row], colWidths=[60, 420, 60])
+    t_header = Table([header_row], colWidths=[70, 470])
     t_header.setStyle(
         TableStyle(
             [
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("ALIGN", (0, 0), (0, 0), "CENTER"),
                 ("ALIGN", (1, 0), (1, 0), "CENTER"),
-                ("ALIGN", (2, 0), (2, 0), "CENTER"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 0),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 0),
                 ("TOPPADDING", (0, 0), (-1, -1), 0),
