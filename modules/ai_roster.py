@@ -1,8 +1,11 @@
-"""AI Roster Ingestion Engine with dynamic model auto-discovery."""
+"""AI Roster Ingestion Engine with dynamic model discovery and multi-format document support."""
 
+import csv
+import io
 import json
 import os
 import re
+import pandas as pd
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -16,102 +19,150 @@ def get_gemini_client():
 
 
 def get_best_available_model(client: genai.Client) -> str:
-    """Queries the Gemini API for online models and picks the latest active Flash model."""
-    # 1. Allow explicit override via secrets if specified
+    """Queries online models from the API and selects the newest active Flash model."""
     override = st.secrets.get("GEMINI_MODEL")
     if override:
         return override
 
-    # 2. Dynamic discovery via client.models.list()
     try:
-        available_models = []
+        candidates = []
         for m in client.models.list():
-            name = getattr(m, "name", "") or getattr(m, "id", "")
-            # Clean model prefix (e.g. "models/gemini-..." -> "gemini-...")
-            cleaned_name = name.split("/")[-1] if "/" in name else name
+            raw_name = getattr(m, "name", "") or getattr(m, "id", "")
+            name = raw_name.split("/")[-1] if "/" in raw_name else raw_name
 
-            # Only look for multimodal Flash models suitable for content generation
-            if "flash" in cleaned_name.lower():
+            # Look for flash models capable of generating content
+            if "flash" in name.lower():
                 supported = getattr(m, "supported_actions", []) or getattr(m, "supported_generation_methods", [])
                 if not supported or "generateContent" in supported:
-                    available_models.append(cleaned_name)
+                    candidates.append(name)
 
-        if available_models:
-            # Sort version numbers descending to pick the newest online release
-            def extract_version_key(model_str: str):
-                nums = re.findall(r"(\d+(?:\.\d+)?)", model_str)
+        if candidates:
+            # Sort version numbers descending (e.g. 3.8 > 3.5 > 2.5 > 2.0)
+            def version_sort_key(s: str):
+                nums = re.findall(r"(\d+(?:\.\d+)?)", s)
                 return [float(n) for n in nums] if nums else [0.0]
 
-            available_models.sort(key=extract_version_key, reverse=True)
-            return available_models[0]
+            candidates.sort(key=version_sort_key, reverse=True)
+            return candidates[0]
     except Exception:
         pass
 
-    # 3. Clean fallback
+    # Standard fallback if listing fails
     return "gemini-2.5-flash"
 
 
+def _extract_text_from_file(file_bytes: bytes, file_name: str) -> str | None:
+    """Extract raw text or table contents from Word, Excel, CSV, or Text files."""
+    fn = file_name.lower()
+    
+    # Excel Sheets
+    if fn.endswith((".xlsx", ".xls")):
+        try:
+            excel_file = io.BytesIO(file_bytes)
+            xls = pd.ExcelFile(excel_file)
+            sheets_text = []
+            for sheet in xls.sheet_names:
+                df = pd.read_excel(xls, sheet_name=sheet)
+                sheets_text.append(f"--- Sheet: {sheet} ---\n" + df.to_csv(index=False))
+            return "\n\n".join(sheets_text)
+        except Exception:
+            return None
+
+    # Word Documents (.docx)
+    if fn.endswith(".docx"):
+        try:
+            from docx import Document
+            doc = Document(io.BytesIO(file_bytes))
+            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+            table_rows = []
+            for t in doc.tables:
+                for row in t.rows:
+                    table_rows.append(" | ".join(cell.text.strip() for cell in row.cells))
+            return "\n".join(paragraphs + table_rows)
+        except Exception:
+            return None
+
+    # CSV Files
+    if fn.endswith(".csv"):
+        try:
+            return file_bytes.decode("utf-8-sig", errors="replace")
+        except Exception:
+            return None
+
+    # Text Files
+    if fn.endswith(".txt"):
+        try:
+            return file_bytes.decode("utf-8", errors="replace")
+        except Exception:
+            return None
+
+    return None
+
+
 def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
-    """Passes an uploaded roster document to the dynamically discovered online Gemini model."""
+    """Extracts structured bowler roster records from Word, Excel, PDF, CSV, or Images."""
     client = get_gemini_client()
     if not client:
         raise ValueError(
             "GEMINI_API_KEY is missing. Please add GEMINI_API_KEY to your Streamlit secrets or environment variables."
         )
 
-    # Dynamically select the newest online model
-    active_model = get_best_available_model(client)
+    model_name = get_best_available_model(client)
 
-    # Determine MIME type based on file extension
-    fn_lower = file_name.lower()
-    if fn_lower.endswith(".pdf"):
-        mime = "application/pdf"
-    elif fn_lower.endswith(".xlsx"):
-        mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    elif fn_lower.endswith(".xls"):
-        mime = "application/vnd.ms-excel"
-    elif fn_lower.endswith(".docx"):
-        mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    elif fn_lower.endswith(".csv"):
-        mime = "text/csv"
-    elif fn_lower.endswith(".png"):
-        mime = "image/png"
-    elif fn_lower.endswith((".jpg", ".jpeg")):
-        mime = "image/jpeg"
-    else:
-        mime = "text/plain"
-
-    prompt = (
+    extraction_prompt = (
         "You are an expert tournament director intake assistant for the Cecil Harford USBC. "
-        "Extract all bowling competitors from the attached document. "
-        "For each bowler found, extract:\n"
+        "Extract all bowling competitors from the provided tournament roster document. "
+        "For every bowler found, extract the following fields strictly:\n"
         "- name: Bowler Full Name (required string)\n"
         "- usbc_id: USBC Member ID (string or null)\n"
         "- entering_avg: Entering average (integer, default 200 if not listed)\n"
         "- handicap: Entering handicap (integer, default calculated as 90% of (220 - avg) if not listed, min 0)\n"
         "- lane_assignment: Starting lane number (integer, default 1 if not listed)\n"
         "- email: Bowler email address (string or null)\n"
-        "- is_youth: Boolean true if labeled youth, junior, Rule 400, or has SMART account, else false\n"
+        "- is_youth: Boolean true if explicitly labeled youth, junior, Rule 400, or has a SMART account, else false\n"
         "- smart_account_id: SMART scholarship ID (string or null)\n"
-        "- paid_status: 'paid' or 'unpaid' (default 'paid' unless noted as unpaid or owing)\n\n"
-        "Return ONLY a valid JSON array of objects without markdown formatting or code blocks. Example:\n"
-        '[{"name": "John Doe", "usbc_id": "1234-5678", "entering_avg": 210, "handicap": 9, '
-        '"lane_assignment": 3, "email": "johndoe@example.com", "is_youth": false, "smart_account_id": null, "paid_status": "paid"}]'
+        "- paid_status: 'paid' or 'unpaid' (default 'paid' unless noted as unpaid, owing, or balance due)\n\n"
+        "Return a JSON array of objects conforming to this schema."
     )
 
-    part = types.Part.from_bytes(data=file_bytes, mime_type=mime)
+    extracted_text = _extract_text_from_file(file_bytes, file_name)
+
+    if extracted_text:
+        # Pass structured text
+        contents = [extraction_prompt, f"--- DOCUMENT DATA ({file_name}) ---\n{extracted_text}"]
+    else:
+        # Multimodal pass for PDFs and Images
+        fn_lower = file_name.lower()
+        if fn_lower.endswith(".pdf"):
+            mime = "application/pdf"
+        elif fn_lower.endswith(".png"):
+            mime = "image/png"
+        elif fn_lower.endswith((".jpg", ".jpeg")):
+            mime = "image/jpeg"
+        else:
+            mime = "application/octet-stream"
+
+        part = types.Part.from_bytes(data=file_bytes, mime_type=mime)
+        contents = [extraction_prompt, part]
+
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        temperature=0.1,
+    )
 
     response = client.models.generate_content(
-        model=active_model,
-        contents=[prompt, part],
+        model=model_name,
+        contents=contents,
+        config=config,
     )
 
     raw_text = response.text.strip()
-    if raw_text.startswith("```"):
-        raw_text = raw_text.split("\n", 1)[1].rsplit("\n", 1)[0].strip()
-
     records = json.loads(raw_text)
-    if isinstance(records, dict) and "bowlers" in records:
-        records = records["bowlers"]
+    if isinstance(records, dict):
+        # Look for wrapped keys like {"bowlers": [...]} or {"roster": [...]}
+        for key in ("bowlers", "roster", "competitors", "players"):
+            if key in records and isinstance(records[key], list):
+                return records[key]
+        return [records]
 
     return records
