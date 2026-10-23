@@ -1,11 +1,13 @@
 """Database connection and schema management for PTCC SQLite backend."""
 
 import os
+import shutil
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 DB_FILE = Path(os.environ.get("PTCC_DB_PATH", "prism_operational.db"))
+BACKUP_DIR = Path("backups")
 
 
 def get_connection() -> sqlite3.Connection:
@@ -19,11 +21,9 @@ def get_connection() -> sqlite3.Connection:
 def _migrate_columns(conn: sqlite3.Connection) -> None:
     """Safely apply non-destructive schema migrations."""
     cursor = conn.cursor()
-    
-    # Audit bowler table columns
     cursor.execute("PRAGMA table_info(bowlers)")
     existing_cols = {row["name"] for row in cursor.fetchall()}
-    
+
     if "checked_in" not in existing_cols:
         cursor.execute("ALTER TABLE bowlers ADD COLUMN checked_in INTEGER DEFAULT 0")
     if "checked_in_at" not in existing_cols:
@@ -127,3 +127,39 @@ def log_desk_action(user_name: str, role: str, action_description: str) -> None:
             )
     finally:
         conn.close()
+
+
+def checkpoint_db(label: str = "manual") -> Path:
+    """Create a point-in-time timestamped backup copy of the database file."""
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    sanitized_label = "".join(c for c in label if c.isalnum() or c in ("-", "_")).strip() or "checkpoint"
+    dest_path = BACKUP_DIR / f"prism_{timestamp}_{sanitized_label}.db"
+    
+    # Flush database to disk before copying
+    if DB_FILE.exists():
+        conn = get_connection()
+        try:
+            conn.execute("PRAGMA wal_checkpoint(FULL)")
+        except sqlite3.OperationalError:
+            pass
+        finally:
+            conn.close()
+        shutil.copy2(DB_FILE, dest_path)
+    return dest_path
+
+
+def revert_to_checkpoint(checkpoint_path: Path | str) -> bool:
+    """Restore database from a given checkpoint file."""
+    src = Path(checkpoint_path)
+    if not src.exists():
+        return False
+    shutil.copy2(src, DB_FILE)
+    return True
+
+
+def list_checkpoints() -> list[Path]:
+    """List all available database checkpoint files sorted newest first."""
+    if not BACKUP_DIR.exists():
+        return []
+    return sorted(BACKUP_DIR.glob("prism_*.db"), key=os.path.getmtime, reverse=True)
