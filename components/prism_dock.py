@@ -15,13 +15,29 @@ def collect_view_state(current_view: str) -> dict:
 
 def render_prism_dock(current_view: str = "Active Squad Hub", view_state: dict | None = None) -> None:
     """
-    Renders two distinct non-blocking tools in the sidebar:
-    1. Prism A.I Operational Co-Pilot (tied to the current screen context).
-    2. USBC Rule & Dispute Arbitrator (dedicated reference tool).
+    Renders two non-blocking tools in the sidebar without dimming the canvas.
+    1. Prism A.I Co-Pilot (tied to the active operational screen).
+    2. USBC Rule Arbitrator (dedicated tournament rule disputes).
     """
-    st.sidebar.markdown(
+    # Enforce anti-dimming directly within dock rendering
+    st.markdown(
         """
         <style>
+        div[data-testid="stAppViewContainer"],
+        div[data-testid="stMain"],
+        div[data-testid="stSidebar"],
+        section[data-testid="stSidebar"] ~ section,
+        div[data-testid="stVerticalBlock"],
+        .stApp {
+            opacity: 1 !important;
+            filter: none !important;
+            transition: none !important;
+        }
+        div[data-testid="stMain"] > div {
+            opacity: 1 !important;
+        }
+
+        /* Sidebar tool styling */
         div[data-testid="stSidebar"] div.stExpander {
             border: 1px solid #334155 !important;
             border-radius: 8px !important;
@@ -53,24 +69,28 @@ def render_prism_dock(current_view: str = "Active Squad Hub", view_state: dict |
             st.caption(f"Active: **{current_view}**")
         with col_refresh:
             if st.button("🔄", key="copilot_refresh", help="Refresh desk context"):
-                st.session_state["copilot_guidance_cache"] = None
+                st.session_state[f"guidance_{current_view}"] = None
                 st.rerun()
 
-        # Dynamic screen guidance
-        guidance_text = st.session_state.get("copilot_guidance_cache")
-        if not guidance_text:
-            with st.spinner("Prism checking desk state..."):
-                guidance_text = get_prism_ai_guidance(state)
-                st.session_state["copilot_guidance_cache"] = guidance_text
+        # On-demand or cached screen guidance
+        cache_key = f"guidance_{current_view}"
+        guidance_text = st.session_state.get(cache_key)
 
-        st.markdown(
-            f"""
-            <div style="background:#1E293B; border-left:3px solid #38BDF8; border-radius:6px; padding:8px 10px; color:#E2E8F0; font-size:12px; margin-bottom:10px; line-height:1.4;">
-                {guidance_text}
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        if not guidance_text:
+            if st.button("💡 Analyze This Screen", key=f"btn_analyze_{current_view}", use_container_width=True):
+                with st.spinner("Analyzing operations..."):
+                    guidance_text = get_prism_ai_guidance(state)
+                    st.session_state[cache_key] = guidance_text
+                    st.rerun()
+        else:
+            st.markdown(
+                f"""
+                <div style="background:#1E293B; border-left:3px solid #38BDF8; border-radius:6px; padding:8px 10px; color:#E2E8F0; font-size:12px; margin-bottom:10px; line-height:1.4;">
+                    {guidance_text}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         st.markdown("<p style='font-size:11px; font-weight:600; color:#94A3B8; margin-bottom:4px;'>Ask Prism about this screen:</p>", unsafe_allow_html=True)
         td_query = st.text_input(
@@ -81,7 +101,7 @@ def render_prism_dock(current_view: str = "Active Squad Hub", view_state: dict |
         )
         if st.button("Ask Assistant", key="copilot_submit", use_container_width=True):
             if td_query.strip():
-                with st.spinner("Analyzing operational state..."):
+                with st.spinner("Analyzing..."):
                     answer = get_prism_ai_guidance(state, user_prompt=td_query)
                     st.info(answer)
 
