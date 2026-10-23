@@ -1,211 +1,71 @@
-"""Database connection management, schema initialization, checkpointing, and audit logging."""
+"""Database connection management, schema initialization, and audit logging."""
 
 import os
-from pathlib import Path
 import sqlite3
-import streamlit as st
+from datetime import datetime
+from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "tournament.db"
+DB_FILE = Path(__file__).resolve().parent.parent / "ptcc_data.db"
 
 
 def get_connection() -> sqlite3.Connection:
-    """Return a connection to the SQLite tournament database with row factory enabled."""
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    """Return an active connection with Row row_factory and WAL mode enabled."""
+    conn = sqlite3.connect(str(DB_FILE), check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
 def checkpoint_db() -> None:
-    """Forces SQLite WAL journal checkpoint to ensure changes are flushed cleanly to disk."""
+    """Flush SQLite WAL journal to disk."""
     conn = get_connection()
     try:
-        conn.execute("PRAGMA wal_checkpoint(FULL);")
-    except Exception:
-        pass
+        conn.execute("PRAGMA wal_checkpoint(FULL)")
     finally:
         conn.close()
 
 
-def init_db() -> None:
-    """Initialize core tables, audit log, multi-event package tracking, and schema dependencies."""
+def ensure_tournament_config_columns() -> None:
+    """Ensure tournaments table contains dynamic rules, fees, and handicap configuration columns."""
     conn = get_connection()
     try:
         with conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS audit_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    user_name TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    action_description TEXT NOT NULL
-                );
+            cursor = conn.execute("PRAGMA table_info(tournaments)")
+            cols = [col[1] for col in cursor.fetchall()]
 
-                CREATE TABLE IF NOT EXISTS staff_users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    display_name TEXT NOT NULL,
-                    email TEXT DEFAULT '',
-                    center_affiliation TEXT DEFAULT 'CHUSBC',
-                    role TEXT NOT NULL DEFAULT 'td',
-                    is_approved INTEGER DEFAULT 1,
-                    is_active INTEGER DEFAULT 1,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-
-                CREATE TABLE IF NOT EXISTS tournaments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    host_center TEXT NOT NULL,
-                    squad_format TEXT NOT NULL DEFAULT 'Singles',
-                    game_count INTEGER NOT NULL DEFAULT 3,
-                    pin_verifier TEXT NOT NULL DEFAULT '6199',
-                    status TEXT NOT NULL DEFAULT 'active',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    closed_at TIMESTAMP
-                );
-
-                CREATE TABLE IF NOT EXISTS bowlers (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tournament_id INTEGER NOT NULL,
-                    name TEXT NOT NULL,
-                    usbc_id TEXT,
-                    email TEXT,
-                    entering_avg INTEGER DEFAULT 200,
-                    handicap INTEGER DEFAULT 0,
-                    lane_assignment INTEGER DEFAULT 1,
-                    lineup_position INTEGER DEFAULT 1,
-                    is_pacer INTEGER DEFAULT 0,
-                    is_youth INTEGER DEFAULT 0,
-                    smart_account_id TEXT,
-                    paid_status TEXT DEFAULT 'paid',
-                    checked_in INTEGER DEFAULT 0,
-                    checked_in_at TIMESTAMP,
-                    mystery_doubles_opt_in INTEGER DEFAULT 0,
-                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS bowler_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    bowler_id INTEGER NOT NULL,
-                    tournament_id INTEGER NOT NULL,
-                    event_type TEXT NOT NULL,
-                    event_fee REAL DEFAULT 25.0,
-                    paid_status TEXT DEFAULT 'paid',
-                    FOREIGN KEY(bowler_id) REFERENCES bowlers(id) ON DELETE CASCADE,
-                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
-                    UNIQUE(bowler_id, event_type)
-                );
-
-                CREATE TABLE IF NOT EXISTS scores (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tournament_id INTEGER NOT NULL,
-                    bowler_id INTEGER NOT NULL,
-                    game_number INTEGER NOT NULL,
-                    scratch_score INTEGER NOT NULL DEFAULT 0,
-                    hdcp_score INTEGER NOT NULL DEFAULT 0,
-                    total_score INTEGER NOT NULL DEFAULT 0,
-                    verified INTEGER DEFAULT 0,
-                    verified_by TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
-                    FOREIGN KEY(bowler_id) REFERENCES bowlers(id) ON DELETE CASCADE,
-                    UNIQUE(tournament_id, bowler_id, game_number)
-                );
-
-                CREATE TABLE IF NOT EXISTS brackets (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tournament_id INTEGER NOT NULL,
-                    bracket_number INTEGER NOT NULL,
-                    bracket_type TEXT NOT NULL DEFAULT 'handicap',
-                    status TEXT NOT NULL DEFAULT 'active',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS bracket_entries (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    bracket_id INTEGER NOT NULL,
-                    bowler_id INTEGER NOT NULL,
-                    seed_position INTEGER NOT NULL,
-                    r1_score INTEGER,
-                    r2_score INTEGER,
-                    r3_score INTEGER,
-                    r1_advances INTEGER DEFAULT 0,
-                    r2_advances INTEGER DEFAULT 0,
-                    r3_advances INTEGER DEFAULT 0,
-                    payout_amount REAL DEFAULT 0.0,
-                    FOREIGN KEY(bracket_id) REFERENCES brackets(id) ON DELETE CASCADE,
-                    FOREIGN KEY(bowler_id) REFERENCES bowlers(id) ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS side_pots (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tournament_id INTEGER NOT NULL,
-                    pot_type TEXT NOT NULL,
-                    game_number INTEGER,
-                    entry_fee REAL NOT NULL DEFAULT 5.0,
-                    total_collected REAL NOT NULL DEFAULT 0.0,
-                    payout_amount REAL NOT NULL DEFAULT 0.0,
-                    winner_bowler_id INTEGER,
-                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS tournament_archives (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tournament_id INTEGER NOT NULL,
-                    archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    archived_by TEXT NOT NULL,
-                    snapshot_json TEXT NOT NULL,
-                    certified_pdf BLOB NOT NULL,
-                    smart_csv TEXT NOT NULL,
-                    bls_bits_csv TEXT,
-                    bls_autoscoring_dat TEXT,
-                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
-                );
-                """
-            )
-
-        # Auto-migrate columns if tables existed from an earlier schema version
-        staff_cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_users);").fetchall()]
-        if "email" not in staff_cols:
-            conn.execute("ALTER TABLE staff_users ADD COLUMN email TEXT DEFAULT '';")
-        if "is_approved" not in staff_cols:
-            conn.execute("ALTER TABLE staff_users ADD COLUMN is_approved INTEGER DEFAULT 1;")
-        if "center_affiliation" not in staff_cols:
-            conn.execute("ALTER TABLE staff_users ADD COLUMN center_affiliation TEXT DEFAULT 'CHUSBC';")
-        if "is_active" not in staff_cols:
-            conn.execute("ALTER TABLE staff_users ADD COLUMN is_active INTEGER DEFAULT 1;")
-
-        score_cols = [r[1] for r in conn.execute("PRAGMA table_info(scores);").fetchall()]
-        if "hdcp_score" not in score_cols:
-            conn.execute("ALTER TABLE scores ADD COLUMN hdcp_score INTEGER DEFAULT 0;")
-
+            col_defs = [
+                ("handicap_base", "INTEGER DEFAULT 220"),
+                ("handicap_pct", "INTEGER DEFAULT 90"),
+                ("handicap_max", "INTEGER DEFAULT 300"),
+                ("entry_fee", "REAL DEFAULT 35.0"),
+                ("prize_fee", "REAL DEFAULT 20.0"),
+                ("lineage_fee", "REAL DEFAULT 12.0"),
+                ("expense_fee", "REAL DEFAULT 3.0"),
+            ]
+            for col_name, col_type in col_defs:
+                if col_name not in cols:
+                    conn.execute(f"ALTER TABLE tournaments ADD COLUMN {col_name} {col_type}")
     finally:
         conn.close()
 
 
-def log_desk_action(user_name: str, role: str, action_description: str) -> None:
-    """Record an operational action to the immutable audit log."""
+def log_desk_action(operator_name: str, role: str, action_description: str) -> None:
+    """Write an immutable audit entry for any desk action or state change."""
     conn = get_connection()
     try:
         with conn:
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS audit_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    user_name TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    action_description TEXT NOT NULL
-                )
-                """
+                INSERT INTO audit_logs (timestamp, operator_name, role, action_description)
+                VALUES (?, ?, ?, ?)
+                """,
+                (datetime.now().isoformat(), operator_name, role, action_description),
             )
-            conn.execute(
-                "INSERT INTO audit_log (user_name, role, action_description) VALUES (?, ?, ?)",
-                (user_name, role, action_description),
-            )
+        checkpoint_db()
     finally:
         conn.close()
+
+
+# Ensure tables and config columns exist at module import
+ensure_tournament_config_columns()
