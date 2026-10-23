@@ -76,6 +76,14 @@ def create_brackets_for_tournament(tournament_id: int, bracket_type: str = "hand
     finally:
         conn.close()
 
+# Alias matching active_squad.py expected function name
+def generate_eight_person_brackets(tournament_id: int) -> int:
+    return create_brackets_for_tournament(tournament_id)
+
+def score_bracket_round(bracket_id: int, round_number: int) -> None:
+    """Placeholder for scoring a specific bracket round."""
+    pass
+
 def get_bracket_financial_ledger(tournament_id: int) -> dict:
     """Compute total collected funds and payout liability for brackets and side pots."""
     init_bracket_tables()
