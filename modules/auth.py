@@ -9,7 +9,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from modules.constants import CENTERS
 from modules.db_state import get_connection, log_desk_action
-from modules.mailer import send_admin_registration_alert
+from modules.mailer import send_admin_registration_alert, send_applicant_approval_notice
 
 ph = PasswordHasher()
 
@@ -156,7 +156,6 @@ def create_staff_user(
     finally:
         conn.close()
 
-    # Log action outside transaction scope to prevent database lockups
     log_desk_action(
         "Admin",
         "admin",
@@ -205,14 +204,12 @@ def register_staff_user(
     finally:
         conn.close()
 
-    # Log audit entry after transaction commit
     log_desk_action(
         display_name.strip(),
         "applicant",
         f"New staff access request submitted for affiliation: {center_affiliation}",
     )
 
-    # Dispatch email notification to chusbc.tournaments@gmail.com
     applicant_payload = {
         "display_name": display_name.strip(),
         "username": username.strip(),
@@ -226,6 +223,159 @@ def register_staff_user(
         pass
 
     return True, "Access request submitted successfully! An administrator will review and activate your account."
+
+
+def approve_user(user_id: int, admin_name: str) -> str | None:
+    """Approve a pending staff user access request."""
+    conn = get_connection()
+    user_info = None
+    try:
+        with conn:
+            user_info = conn.execute(
+                "SELECT username, email, display_name FROM staff_users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+            if not user_info:
+                return "User record not found."
+            conn.execute("UPDATE staff_users SET is_approved = 1 WHERE id = ?", (user_id,))
+    except Exception as exc:
+        return f"Approval failed: {str(exc)}"
+    finally:
+        conn.close()
+
+    log_desk_action(
+        admin_name,
+        "admin",
+        f"Approved staff access request for '{user_info['username']}'",
+    )
+    if user_info["email"]:
+        try:
+            send_applicant_approval_notice(user_info["email"], user_info["display_name"])
+        except Exception:
+            pass
+    return None
+
+
+def delete_user(user_id: int, admin_id: int, admin_name: str) -> str | None:
+    """Delete a staff user or reject a pending request."""
+    if user_id == admin_id:
+        return "You cannot delete your own active administrator account."
+
+    conn = get_connection()
+    target_username = ""
+    try:
+        with conn:
+            row = conn.execute(
+                "SELECT username FROM staff_users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+            if not row:
+                return "User not found."
+            target_username = row["username"]
+            conn.execute("DELETE FROM staff_users WHERE id = ?", (user_id,))
+    except Exception as exc:
+        return f"Deletion failed: {str(exc)}"
+    finally:
+        conn.close()
+
+    log_desk_action(
+        admin_name,
+        "admin",
+        f"Deleted staff user '{target_username}' (ID: {user_id})",
+    )
+    return None
+
+
+def reset_password(user_id: int, new_password: str, admin_name: str) -> str | None:
+    """Reset a staff user's password."""
+    if len(new_password) < MIN_PASSWORD_LENGTH:
+        return f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+
+    conn = get_connection()
+    target_username = ""
+    try:
+        with conn:
+            row = conn.execute(
+                "SELECT username FROM staff_users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+            if not row:
+                return "User not found."
+            target_username = row["username"]
+            conn.execute(
+                "UPDATE staff_users SET password_hash = ? WHERE id = ?",
+                (hash_password(new_password), user_id),
+            )
+    except Exception as exc:
+        return f"Password reset failed: {str(exc)}"
+    finally:
+        conn.close()
+
+    log_desk_action(
+        admin_name,
+        "admin",
+        f"Reset password for staff user '{target_username}'",
+    )
+    return None
+
+
+def set_role(user_id: int, new_role: str, admin_name: str) -> str | None:
+    """Update role for a staff user."""
+    if new_role not in ROLES:
+        return f"Invalid role: {new_role}"
+
+    conn = get_connection()
+    target_username = ""
+    try:
+        with conn:
+            row = conn.execute(
+                "SELECT username FROM staff_users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+            if not row:
+                return "User not found."
+            target_username = row["username"]
+            conn.execute(
+                "UPDATE staff_users SET role = ? WHERE id = ?",
+                (new_role, user_id),
+            )
+    except Exception as exc:
+        return f"Role update failed: {str(exc)}"
+    finally:
+        conn.close()
+
+    log_desk_action(
+        admin_name,
+        "admin",
+        f"Updated role to '{new_role}' for staff user '{target_username}'",
+    )
+    return None
+
+
+def change_own_password(user_id: int, current_password: str, new_password: str) -> str | None:
+    """Allow logged in staff member to change their own password."""
+    if len(new_password) < MIN_PASSWORD_LENGTH:
+        return f"New password must be at least {MIN_PASSWORD_LENGTH} characters."
+
+    conn = get_connection()
+    try:
+        with conn:
+            user = conn.execute(
+                "SELECT password_hash, username FROM staff_users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+            if not user or not verify_password(user["password_hash"], current_password):
+                return "Current password does not match."
+            conn.execute(
+                "UPDATE staff_users SET password_hash = ? WHERE id = ?",
+                (hash_password(new_password), user_id),
+            )
+    except Exception as exc:
+        return f"Password change failed: {str(exc)}"
+    finally:
+        conn.close()
+
+    return None
 
 
 def current_user() -> dict | None:
