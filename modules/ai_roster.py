@@ -1,4 +1,4 @@
-"""AI Roster Ingestion Engine with timeout-safe model selection and structured JSON parsing."""
+"""AI Roster Ingestion Engine targeting gemini-3.8-flash with structured JSON parsing."""
 
 import io
 import json
@@ -9,6 +9,8 @@ import streamlit as st
 from google import genai
 from google.genai import types
 
+TARGET_MODEL = "gemini-3.8-flash"
+
 
 def get_gemini_client():
     api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
@@ -18,13 +20,11 @@ def get_gemini_client():
 
 
 def get_best_available_model(client: genai.Client) -> str:
-    """Fast, safe model resolution with zero-hang fallback."""
-    # 1. Direct explicit override in secrets
+    """Fast model resolution defaulting to gemini-3.8-flash."""
     override = st.secrets.get("GEMINI_MODEL")
     if override:
         return override
 
-    # 2. Try fast query with short execution, fallback immediately if slow
     try:
         candidates = []
         for m in client.models.list():
@@ -43,8 +43,7 @@ def get_best_available_model(client: genai.Client) -> str:
     except Exception:
         pass
 
-    # Reliable default
-    return "gemini-2.5-flash"
+    return TARGET_MODEL
 
 
 EXTRACTION_PROMPT = (
@@ -145,13 +144,12 @@ def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
         contents = [EXTRACTION_PROMPT, part]
 
     config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1)
-    
-    # Try preferred model; if it fails or isn't enabled on this key, fallback cleanly
+
     try:
         response = client.models.generate_content(model=model_name, contents=contents, config=config)
     except Exception:
-        response = client.models.generate_content(model="gemini-2.5-flash", contents=contents, config=config)
-        
+        response = client.models.generate_content(model=TARGET_MODEL, contents=contents, config=config)
+
     return _format_records(response.text)
 
 
@@ -167,6 +165,6 @@ def parse_roster_text_with_gemini(raw_text_input: str) -> list[dict]:
     try:
         response = client.models.generate_content(model=model_name, contents=contents, config=config)
     except Exception:
-        response = client.models.generate_content(model="gemini-2.5-flash", contents=contents, config=config)
+        response = client.models.generate_content(model=TARGET_MODEL, contents=contents, config=config)
 
     return _format_records(response.text)
