@@ -1,9 +1,8 @@
-"""AI Roster Ingestion Engine targeting gemini-3.8-flash with structured JSON parsing."""
+"""AI Roster Ingestion Engine targeting gemini-3.8-flash directly with zero-hang model resolution."""
 
 import io
 import json
 import os
-import re
 import pandas as pd
 import streamlit as st
 from google import genai
@@ -19,31 +18,9 @@ def get_gemini_client():
     return genai.Client(api_key=api_key)
 
 
-def get_best_available_model(client: genai.Client) -> str:
-    """Fast model resolution defaulting to gemini-3.8-flash."""
-    override = st.secrets.get("GEMINI_MODEL")
-    if override:
-        return override
-
-    try:
-        candidates = []
-        for m in client.models.list():
-            raw_name = getattr(m, "name", "") or getattr(m, "id", "")
-            name = raw_name.split("/")[-1] if "/" in raw_name else raw_name
-            if "flash" in name.lower():
-                supported = getattr(m, "supported_actions", []) or getattr(m, "supported_generation_methods", [])
-                if not supported or "generateContent" in supported:
-                    candidates.append(name)
-        if candidates:
-            def version_sort_key(s: str):
-                nums = re.findall(r"(\d+(?:\.\d+)?)", s)
-                return [float(n) for n in nums] if nums else [0.0]
-            candidates.sort(key=version_sort_key, reverse=True)
-            return candidates[0]
-    except Exception:
-        pass
-
-    return TARGET_MODEL
+def get_best_available_model(client: genai.Client = None) -> str:
+    """Fast model name resolution without blocking API catalog queries."""
+    return st.secrets.get("GEMINI_MODEL", TARGET_MODEL)
 
 
 EXTRACTION_PROMPT = (
@@ -144,12 +121,7 @@ def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
         contents = [EXTRACTION_PROMPT, part]
 
     config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1)
-
-    try:
-        response = client.models.generate_content(model=model_name, contents=contents, config=config)
-    except Exception:
-        response = client.models.generate_content(model=TARGET_MODEL, contents=contents, config=config)
-
+    response = client.models.generate_content(model=model_name, contents=contents, config=config)
     return _format_records(response.text)
 
 
@@ -162,9 +134,5 @@ def parse_roster_text_with_gemini(raw_text_input: str) -> list[dict]:
     contents = [EXTRACTION_PROMPT, f"--- PASTED ROSTER TEXT ---\n{raw_text_input}"]
     config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1)
 
-    try:
-        response = client.models.generate_content(model=model_name, contents=contents, config=config)
-    except Exception:
-        response = client.models.generate_content(model=TARGET_MODEL, contents=contents, config=config)
-
+    response = client.models.generate_content(model=model_name, contents=contents, config=config)
     return _format_records(response.text)
