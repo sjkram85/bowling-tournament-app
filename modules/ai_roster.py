@@ -9,7 +9,7 @@ import streamlit as st
 from google import genai
 from google.genai import types
 
-# Official active model required by current API tier
+# Use gemini-3.8-flash as the primary engine
 PRIMARY_MODEL = "gemini-3.8-flash"
 
 
@@ -114,7 +114,7 @@ def _format_records(raw_text: str) -> list[dict]:
 def _fast_structured_text_parser(text: str) -> list[dict]:
     """
     High-speed local parser for structured line/CSV rosters.
-    Guarantees instant extraction if gemini-3.8-flash hits a 503 high-demand spike.
+    Guarantees instant extraction if Gemini hits a high-demand spike.
     """
     bowlers = []
     for line in text.strip().splitlines():
@@ -125,7 +125,6 @@ def _fast_structured_text_parser(text: str) -> list[dict]:
         lane_m = re.search(r"Lane\s*(\d+)", line_clean, re.IGNORECASE)
         lane = int(lane_m.group(1)) if lane_m else 1
 
-        # Match name between "Lane X:" (if present) and "(" or "-" or ","
         name_m = re.search(r"(?:Lane\s*\d+\s*[:\-]\s*)?([A-Za-z\s'\.\-]+?)(?:\s*[\(\-\|,]|$)", line_clean)
         name = name_m.group(1).strip() if name_m else ""
         if not name or name.lower() in ("lane", "name", "bowler"):
@@ -167,7 +166,7 @@ def _fast_structured_text_parser(text: str) -> list[dict]:
 
 
 def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
-    """Ingest uploaded document via gemini-3.8-flash with 15s timeout and local fallback."""
+    """Ingest uploaded document via Gemini with 15s timeout and local fallback."""
     client = get_gemini_client()
     extracted_text = _extract_text_from_file(file_bytes, file_name)
 
@@ -209,7 +208,6 @@ def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
         if records:
             return records
     except Exception as exc:
-        # If gemini-3.8-flash hits a 503 spike on text-extractable files, fall back seamlessly
         if extracted_text:
             fallback_records = _fast_structured_text_parser(extracted_text)
             if fallback_records:
@@ -220,7 +218,7 @@ def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
 
 
 def parse_roster_text_with_gemini(raw_text_input: str) -> list[dict]:
-    """Ingest pasted text via gemini-3.8-flash with 15s timeout and instant fallback on 503 spikes."""
+    """Ingest pasted text via Gemini with 15s timeout and instant fallback on errors."""
     client = get_gemini_client()
     if not client:
         return _fast_structured_text_parser(raw_text_input)
@@ -243,8 +241,6 @@ def parse_roster_text_with_gemini(raw_text_input: str) -> list[dict]:
         if records:
             return records
     except Exception:
-        # If gemini-3.8-flash throws 503 UNAVAILABLE or times out after 15s,
-        # immediately complete extraction locally so the UI never gets stuck at 85%.
         fallback_records = _fast_structured_text_parser(raw_text_input)
         if fallback_records:
             return fallback_records
