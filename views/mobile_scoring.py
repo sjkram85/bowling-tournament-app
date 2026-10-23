@@ -1,155 +1,135 @@
-"""Mobile scoring view, reached with ?mode=score."""
-
-import hmac
+"""Floor assistant 10-key mobile scoring pad and AI Overhead OCR photo ingest."""
 
 import streamlit as st
-
-from modules.db_state import get_connection, init_db
-from modules.prism_ai import extract_scores_from_photo
-from modules.standings import commit_scores, get_tournament, lane_count, lane_for_game, pair_of_lane
-
-MAX_PIN_ATTEMPTS = 5
-
-# Streamlit text inputs can't set inputmode directly, so patch them in the parent page.
-_DIALPAD_JS = """
-<script>
-const apply = () => window.parent.document
-  .querySelectorAll('input[aria-label^="Score"]')
-  .forEach(el => { el.setAttribute('inputmode', 'numeric'); el.setAttribute('pattern', '[0-9]*'); });
-apply();
-new MutationObserver(apply).observe(window.parent.document.body, {childList: true, subtree: true});
-</script>
-"""
+from components.styles import inject_styles
+from modules.db_state import get_connection, log_desk_action
+from modules.ocr_engine import extract_scores_from_overhead_photo
 
 
-def _query(sql: str, params: tuple = ()) -> list[dict]:
-    connection = get_connection()
+def _get_active_tournament_for_scoring() -> dict | None:
+    conn = get_connection()
     try:
-        return [dict(row) for row in connection.execute(sql, params).fetchall()]
+        row = conn.execute("SELECT * FROM tournaments WHERE status = 'active' ORDER BY id DESC LIMIT 1").fetchone()
+        return dict(row) if row else None
     finally:
-        connection.close()
+        conn.close()
 
 
-def _expected_pin(tournament_id: int) -> str:
-    row = _query("SELECT pin_verifier FROM tournaments WHERE id = ?", (tournament_id,))
-    return str((row[0]["pin_verifier"] if row else None) or st.secrets.get("SCORING_PIN", ""))
+def _get_lane_bowlers(tournament_id: int, lane: int) -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, name, handicap, is_pacer FROM bowlers WHERE tournament_id = ? AND lane_assignment = ? ORDER BY lineup_position",
+            (tournament_id, lane),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
-def _pin_gate(tournament_id: int) -> str | None:
-    """Return the verifier name once this tournament's PIN and a name are accepted."""
-    unlocked = st.session_state.setdefault("score_unlocked", {})
-    if tournament_id in unlocked:
-        return unlocked[tournament_id]
-
-    expected = _expected_pin(tournament_id)
-    if not expected:
-        st.error("No scoring PIN is set for this tournament.")
-        return None
-
-    with st.form("score_login"):
-        verifier = st.text_input("Verifier name")
-        pin = st.text_input("4-digit PIN", type="password", max_chars=4)
-        submitted = st.form_submit_button("Unlock", width="stretch")
-    if submitted:
-        attempts = st.session_state.get("score_pin_attempts", 0)
-        if attempts >= MAX_PIN_ATTEMPTS:
-            st.error("Too many attempts. Reload the page to try again.")
-        elif not verifier.strip():
-            st.error("Enter your verifier name.")
-        elif len(pin) == 4 and pin.isdigit() and hmac.compare_digest(pin, expected):
-            unlocked[tournament_id] = verifier.strip()
-            st.rerun()
-        else:
-            st.session_state["score_pin_attempts"] = attempts + 1
-            st.error("Invalid PIN.")
-    return None
-
-
-def _pair_label(pair: int) -> str:
-    return f"Pair {pair} (lanes {2 * pair - 1}-{2 * pair})"
+def _record_score(tournament_id: int, bowler_id: int, game_num: int, scratch: int, hdcp: int, verifier_name: str) -> None:
+    conn = get_connection()
+    total = scratch + hdcp
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO scores (tournament_id, bowler_id, game_number, scratch_score, hdcp_score, total_score, recorded_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(bowler_id, game_number) DO UPDATE SET
+                    scratch_score = excluded.scratch_score,
+                    hdcp_score = excluded.hdcp_score,
+                    total_score = excluded.total_score,
+                    recorded_by = excluded.recorded_by,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (tournament_id, bowler_id, game_num, scratch, hdcp, total, verifier_name),
+            )
+            log_desk_action(verifier_name, "floor_verifier", f"Entered Game {game_num} score {scratch} (Total {total}) for Bowler #{bowler_id}")
+    finally:
+        conn.close()
 
 
 def render_mobile_scoring() -> None:
-    init_db()
-    st.title("Score Entry")
-
-    tournaments = _query("SELECT id, name, game_count FROM tournaments WHERE status = 'active' ORDER BY id DESC")
-    if not tournaments:
-        st.info("No active tournaments.")
-        return
-    tournament = st.selectbox("Tournament", tournaments, format_func=lambda t: t["name"])
-
-    verifier = _pin_gate(tournament["id"])
-    if not verifier:
-        return
-    st.caption(f"Verifier: {verifier}")
-
-    game_number = (
-        st.slider("Game", 1, tournament["game_count"], 1) if tournament["game_count"] > 1 else 1
+    inject_styles()
+    st.markdown(
+        """
+        <div style="background: linear-gradient(135deg, #1E3A8A 0%, #0F172A 100%); border: 1px solid #3B82F6; border-radius: 12px; padding: 16px; text-align: center; margin-bottom: 16px;">
+            <h3 style="color: #F8FAFC; margin: 0 0 4px 0;">📱 Floor Scoring Pad</h3>
+            <p style="color: #93C5FD; font-size: 12px; margin: 0;">Verified 10-Key Score Entry & Overhead Camera Snap</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    bowlers = _query(
-        "SELECT id, name, lane_assignment FROM bowlers WHERE tournament_id = ? ORDER BY lane_assignment, name",
-        (tournament["id"],),
-    )
-    if not bowlers:
-        st.info("No bowlers in this tournament.")
+    tourney = _get_active_tournament_for_scoring()
+    if not tourney:
+        st.warning("No active tournament available for scoring.")
         return
 
-    # Lane rotation: each bowler's pair for the selected game.
-    lanes = lane_count(get_tournament(tournament["id"]) or {}, bowlers)
-    by_pair: dict[int, list[dict]] = {}
-    for bowler in bowlers:
-        if bowler["lane_assignment"]:
-            pair = pair_of_lane(lane_for_game(bowler["lane_assignment"], game_number, lanes))
-            by_pair.setdefault(pair, []).append(bowler)
-    if not by_pair:
-        st.info("No bowlers have lane assignments.")
+    # PIN Authentication
+    if not st.session_state.get("scorer_authenticated"):
+        with st.container(border=True):
+            st.subheader("Floor Assistant Access")
+            verifier = st.text_input("Your Name / Identifier", placeholder="e.g. Mike R.")
+            entered_pin = st.text_input("4-Digit Scoring PIN", type="password", max_chars=4)
+            if st.button("Unlock Scoring Pad", type="primary", use_container_width=True):
+                if entered_pin == tourney["pin_verifier"] and verifier.strip():
+                    st.session_state["scorer_authenticated"] = True
+                    st.session_state["verifier_name"] = verifier.strip()
+                    st.rerun()
+                else:
+                    st.error("Invalid PIN or missing Verifier Name.")
         return
-    pair = st.selectbox("Lane pair", sorted(by_pair), format_func=_pair_label)
-    pair_bowlers = by_pair[pair]
 
-    existing = {
-        r["bowler_id"]: r["scratch_score"]
-        for r in _query(
-            "SELECT bowler_id, scratch_score FROM bowler_scores WHERE tournament_id = ? AND game_number = ?",
-            (tournament["id"], game_number),
-        )
-    }
-    key = lambda b: f"score_{tournament['id']}_{game_number}_{b['id']}"
-    for b in pair_bowlers:
-        st.session_state.setdefault(key(b), str(existing[b["id"]]) if b["id"] in existing else "")
+    verifier_name = st.session_state.get("verifier_name", "Floor Verifier")
+    st.caption(f"Authenticated as: **{verifier_name}** | Tournament: **{tourney['name']}**")
 
-    photo = st.camera_input("Snap a photo of the overhead scoring monitor (optional)")
-    if photo is not None and st.button("Read scores from photo", width="stretch"):
-        with st.spinner("Reading photo..."):
-            found = extract_scores_from_photo(photo.getvalue(), [b["name"] for b in pair_bowlers])
-        for b in pair_bowlers:
-            if b["name"] in found:
-                st.session_state[key(b)] = str(found[b["name"]])
-        st.info(f"Filled {len(found)} scores. Review before submitting.")
+    tab_manual, tab_camera = st.tabs(["🔢 10-Key Manual Input", "📷 AI Overhead Camera OCR"])
 
-    entries = {}
-    for b in pair_bowlers:
-        entries[b["id"]] = st.text_input(
-            f"Score – {b['name']}", key=key(b), max_chars=3, placeholder="0-300"
-        )
-    st.iframe(_DIALPAD_JS, height=1)
+    # --- TAB 1: 10-KEY MANUAL PAD ---
+    with tab_manual:
+        col_lane, col_game = st.columns(2)
+        lane = col_lane.number_input("Lane Number", min_value=1, max_value=40, value=1, step=1)
+        game = col_game.slider("Game Number", min_value=1, max_value=tourney["game_count"], value=1)
 
-    if st.button("Verify & Submit Scores", type="primary", width="stretch"):
-        scores, errors = {}, []
-        for b in pair_bowlers:
-            raw = entries[b["id"]].strip()
-            if not raw:
-                continue
-            if not raw.isdigit() or int(raw) > 300:
-                errors.append(f"{b['name']}: '{raw}' is not a valid score (0-300).")
-            else:
-                scores[b["id"]] = int(raw)
-        if errors:
-            st.error("\n\n".join(errors))
-        elif not scores:
-            st.warning("Enter at least one score.")
+        bowlers = _get_lane_bowlers(tourney["id"], int(lane))
+        if not bowlers:
+            st.info(f"No bowlers assigned to Lane {lane}.")
         else:
-            commit_scores(tournament["id"], game_number, scores, verifier, "verifier")
-            st.success(f"Submitted {len(scores)} scores for game {game_number}, verified by {verifier}.")
+            with st.form(f"score_form_lane_{lane}_gm_{game}"):
+                for b in bowlers:
+                    pacer_tag = " (PACER)" if b["is_pacer"] else ""
+                    st.markdown(f"**{b['name']}**{pacer_tag} — HDCP: `+{b['handicap']}`")
+                    st.number_input(
+                        f"Scratch Score for {b['name']}",
+                        min_value=0,
+                        max_value=300,
+                        value=0,
+                        step=1,
+                        key=f"scratch_{b['id']}_g{game}",
+                    )
+                submitted = st.form_submit_button("Submit Lane Scores", type="primary", use_container_width=True)
+                if submitted:
+                    for b in bowlers:
+                        val = st.session_state.get(f"scratch_{b['id']}_g{game}", 0)
+                        if val > 0:
+                            _record_score(tourney["id"], b["id"], game, val, b["handicap"], verifier_name)
+                    st.success(f"Scores for Lane {lane} Game {game} recorded!")
+
+    # --- TAB 2: AI OVERHEAD OCR CAMERA SNAP ---
+    with tab_camera:
+        st.subheader("Overhead Monitor Photo Ingest")
+        st.caption("Take a photo of the lane monitor. Prism A.I will read the scores and queue them for verification.")
+
+        uploaded_img = st.camera_input("Snap Monitor Screen")
+        if uploaded_img is not None:
+            if st.button("Transcribe Monitor via Gemini Vision", type="primary", use_container_width=True):
+                with st.spinner("Prism A.I Vision reading overhead frames..."):
+                    result = extract_scores_from_overhead_photo(uploaded_img.getvalue())
+                    if result["status"] == "error":
+                        st.error(result["message"])
+                    else:
+                        st.success("Scores Extracted Successfully!")
+                        for item in result["extracted_data"]:
+                            st.write(f"🎳 **{item.get('name')}**: Score **{item.get('game_score')}**")

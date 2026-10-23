@@ -1,10 +1,11 @@
-"""Public Bowler Self-Service Portal & Concourse Arrival Check-In Gate."""
+"""Public Bowler Self-Service Portal, Concourse Arrival Gate & 'My Action' Bracket Tracker."""
 
 from datetime import datetime
 import pandas as pd
 import streamlit as st
 
 from components.styles import inject_styles
+from modules.brackets import init_bracket_tables
 from modules.db_state import get_connection, log_desk_action
 
 
@@ -44,7 +45,7 @@ def _confirm_check_in(bowler_id: int, bowler_name: str) -> bool:
                 (now_str, bowler_id),
             )
             if cursor.rowcount > 0:
-                log_desk_action(bowler_name, "bowler", f"Bowler confirmed self check-in via mobile portal")
+                log_desk_action(bowler_name, "bowler", "Bowler confirmed self check-in via mobile portal")
                 return True
         return False
     finally:
@@ -86,7 +87,6 @@ def _render_checkin_flow(active_tourneys: list[dict]) -> None:
 
     if selected_name != "-- Select Your Name --":
         record = next(b for b in bowlers if b["name"] == selected_name)
-        
         is_paid = record["paid_status"] == "paid"
         is_checked = bool(record["checked_in"])
 
@@ -105,7 +105,6 @@ def _render_checkin_flow(active_tourneys: list[dict]) -> None:
 
             st.markdown("---")
 
-            # Check-in Logic Handling
             if not is_paid:
                 st.error("⚠️ Entry fee balance required before starting lane can be assigned. Please step up to the tournament desk cash window.")
             elif is_checked:
@@ -127,6 +126,78 @@ def _render_checkin_flow(active_tourneys: list[dict]) -> None:
                         st.rerun()
 
 
+def _render_my_action_tab(tournament_id: int) -> None:
+    """Personalized Alive-In Bracket Tracker for bowlers."""
+    init_bracket_tables()
+    st.subheader("🎯 My Action — Live Bracket & Pot Status")
+    bowlers = _get_tournament_bowlers(tournament_id)
+    if not bowlers:
+        st.info("No active bowlers found.")
+        return
+
+    selected_bowler_name = st.selectbox("Select Your Name to View Action", ["-- Select Name --"] + [b["name"] for b in bowlers])
+    if selected_bowler_name == "-- Select Name --":
+        st.caption("Select your name to check active brackets, match-up status, and guaranteed equity.")
+        return
+
+    bowler = next(b for b in bowlers if b["name"] == selected_bowler_name)
+    b_id = bowler["id"]
+
+    conn = get_connection()
+    try:
+        entries = conn.execute(
+            """
+            SELECT be.*, br.bracket_number, br.bracket_type, br.status as bracket_status
+            FROM bracket_entries be
+            JOIN brackets br ON be.bracket_id = br.id
+            WHERE be.bowler_id = ? AND br.tournament_id = ?
+            """,
+            (b_id, tournament_id),
+        ).fetchall()
+
+        if not entries:
+            st.info(f"{bowler['name']} is not entered in any brackets for this squad.")
+            return
+
+        total_brackets = len(entries)
+        alive_count = 0
+        total_payout = sum(e["payout_amount"] for e in entries)
+
+        for e in entries:
+            # Check alive status based on rounds
+            if e["r3_advances"] == 1 or e["r2_advances"] == 1 or (e["r1_advances"] == 1 and e["r2_score"] is None) or (e["r1_score"] is None):
+                alive_count += 1
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.metric("Bracket Status", f"{alive_count} of {total_brackets} Alive", delta=f"{alive_count} Active")
+        with c2:
+            st.metric("Guaranteed Earnings", f"${total_payout:.2f}", delta="SMART" if bowler["is_youth"] else "Cash")
+
+        st.markdown("---")
+        st.markdown("#### Individual Bracket Cards")
+        for e in entries:
+            with st.container(border=True):
+                col_info, col_status = st.columns([3, 1])
+                with col_info:
+                    st.markdown(f"**Bracket #{e['bracket_number']}** ({e['bracket_type'].upper()}) — Seed #{e['seed_position']}")
+                    scores_str = f"R1: **{e['r1_score'] or '-'}** | R2: **{e['r2_score'] or '-'}** | R3: **{e['r3_score'] or '-'}**"
+                    st.caption(scores_str)
+                with col_status:
+                    if e["payout_amount"] > 0:
+                        st.success(f"🏆 Won ${e['payout_amount']:.0f}")
+                    elif e["r1_score"] is not None and e["r1_advances"] == 0:
+                        st.error("Eliminated (R1)")
+                    elif e["r2_score"] is not None and e["r2_advances"] == 0:
+                        st.error("Eliminated (R2)")
+                    elif e["r3_score"] is not None and e["r3_advances"] == 0:
+                        st.info("2nd Place")
+                    else:
+                        st.markdown("<span style='background:#064E3B; color:#6EE7B7; padding:4px 8px; border-radius:4px; font-weight:700;'>🟢 ALIVE</span>", unsafe_allow_html=True)
+    finally:
+        conn.close()
+
+
 def _render_standings_flow(active_tourneys: list[dict]) -> None:
     """Public live standings & cut-line leaderboard."""
     st.title("🎳 Live Bowler Portal & Standings")
@@ -140,7 +211,6 @@ def _render_standings_flow(active_tourneys: list[dict]) -> None:
 
     conn = get_connection()
     try:
-        # Pull cumulative scores
         query = """
             SELECT b.id, b.name, b.lane_assignment, b.handicap,
                    COUNT(s.game_number) as games_bowled,
@@ -183,9 +253,13 @@ def render_bowler_portal() -> None:
     if action == "checkin":
         _render_checkin_flow(active_tourneys)
     else:
-        # Tabbed view for general portal
-        tab_standings, tab_checkin = st.tabs(["📊 Live Standings & Cut Line", "✅ Concourse Check-In"])
+        tab_standings, tab_my_action, tab_checkin = st.tabs(["📊 Live Standings", "🎯 My Action (Brackets)", "✅ Check-In"])
         with tab_standings:
             _render_standings_flow(active_tourneys)
+        with tab_my_action:
+            if active_tourneys:
+                _render_my_action_tab(active_tourneys[0]["id"])
+            else:
+                st.info("No active tournament available.")
         with tab_checkin:
             _render_checkin_flow(active_tourneys)
