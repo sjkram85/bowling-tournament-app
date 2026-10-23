@@ -10,6 +10,10 @@ from modules.db_state import get_connection, log_desk_action
 
 ph = PasswordHasher()
 
+# Public constants required by staff account management
+MIN_PASSWORD_LENGTH = 8
+ROLES = ["td", "admin"]
+
 
 def hash_password(password: str) -> str:
     """Hash a plaintext password using Argon2id."""
@@ -74,6 +78,59 @@ def authenticate(username: str, password: str) -> dict | None:
         conn.close()
 
 
+def create_staff_user(
+    username: str,
+    password: str,
+    display_name: str,
+    email: str = "",
+    center_affiliation: str = "CHUSBC",
+    role: str = "td",
+    is_approved: int = 1,
+) -> tuple[bool, str]:
+    """Create a staff user directly (used by admin console in staff_accounts.py)."""
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return False, f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+    if role not in ROLES:
+        return False, f"Invalid role: {role}."
+
+    conn = get_connection()
+    try:
+        with conn:
+            existing = conn.execute(
+                "SELECT id FROM staff_users WHERE username = ?",
+                (username.strip(),),
+            ).fetchone()
+            if existing:
+                return False, "Username is already taken."
+
+            conn.execute(
+                """
+                INSERT INTO staff_users 
+                (username, password_hash, display_name, email, center_affiliation, role, is_approved)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    username.strip(),
+                    hash_password(password),
+                    display_name.strip(),
+                    email.strip(),
+                    center_affiliation,
+                    role,
+                    int(is_approved),
+                ),
+            )
+            log_desk_action(
+                "Admin",
+                "admin",
+                f"Created staff account '{username.strip()}' with role '{role}'",
+            )
+        return True, "Staff account created successfully."
+    except Exception as exc:
+        return False, f"Account creation failed: {str(exc)}"
+    finally:
+        conn.close()
+
+
 def register_staff_user(
     username: str,
     password: str,
@@ -82,6 +139,9 @@ def register_staff_user(
     center_affiliation: str,
 ) -> tuple[bool, str]:
     """Register a new staff account pending administrator approval."""
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return False, f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+
     conn = get_connection()
     try:
         with conn:
