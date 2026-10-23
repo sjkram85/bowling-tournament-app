@@ -109,6 +109,105 @@ def _calculate_lane_movement(starting_lane: int, current_game: int, total_lanes:
     return new_lane
 
 
+@st.fragment(run_every="8s")
+def _render_live_scoring_matrix(t_id: int, active_game: int, total_lanes: int, bowlers: list[dict], td_name: str) -> None:
+    """Auto-polling fragment executing every 8 seconds to reflect floor submissions in real time."""
+    scores_map = _get_game_scores(t_id, active_game)
+
+    # =========================================================
+    # BIRDS-EYE HEATMAP MATRIX
+    # =========================================================
+    col_title, col_pulse = st.columns([3, 1])
+    with col_title:
+        st.markdown("### 🗺️ Birds-Eye Heatmap: Active Lane Scoring Status")
+    with col_pulse:
+        st.markdown(
+            "<div style='text-align: right; padding-top: 10px;'><span style='color: #10B981; font-weight: 700; font-size: 11px;'>● LIVE AUTO-POLLING (8s)</span></div>",
+            unsafe_allow_html=True,
+        )
+
+    st.caption("Displays score reporting progress across active lanes for the selected game.")
+    lane_status_cols = st.columns(6)
+
+    assigned_lanes = sorted(list({b["lane_assignment"] for b in bowlers}))
+    for i, lane_num in enumerate(assigned_lanes):
+        lane_bowlers = [b for b in bowlers if b["lane_assignment"] == lane_num]
+        reported_count = sum(1 for b in lane_bowlers if b["id"] in scores_map)
+        all_reported = (reported_count == len(lane_bowlers)) and len(lane_bowlers) > 0
+
+        bg_color = "#064E3B" if all_reported else "#78350F" if reported_count > 0 else "#1E293B"
+        border_color = "#10B981" if all_reported else "#F59E0B" if reported_count > 0 else "#334155"
+        label = "COMPLETED" if all_reported else f"{reported_count}/{len(lane_bowlers)} ENTERED" if reported_count > 0 else "PENDING"
+
+        col = lane_status_cols[i % 6]
+        with col:
+            st.markdown(
+                f"""
+                <div style="background:{bg_color}; border:1px solid {border_color}; border-radius:6px; padding:6px; text-align:center; margin-bottom:8px;">
+                    <strong style="color:#F8FAFC; font-size:12px;">Lane {lane_num}</strong><br>
+                    <span style="font-size:10px; color:#E2E8F0; font-weight:700;">{label}</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("---")
+
+    # =========================================================
+    # DUAL-ROLE DIRECT TD DESK SCORE ENTRY TABLE
+    # =========================================================
+    st.subheader(f"Direct Desk Score Entry — Game {active_game}")
+    st.caption("Enter scratch scores directly from physical recap sheets or review mobile verifier inputs.")
+
+    triage_rows = []
+    for b in bowlers:
+        b_id = b["id"]
+        sc = scores_map.get(b_id, {})
+        current_lane = _calculate_lane_movement(b["lane_assignment"], active_game, total_lanes)
+        pacer_str = " (PACER)" if b["is_pacer"] else ""
+        triage_rows.append({
+            "Bowler ID": b_id,
+            "Bowler Name": f"{b['name']}{pacer_str}",
+            "Start Lane": b["lane_assignment"],
+            "Current Lane": current_lane,
+            "Entering Avg": b["entering_avg"],
+            "HDCP": b["handicap"],
+            "Scratch": sc.get("scratch_score", 0),
+            "Total Score": sc.get("total_score", 0),
+            "Verifier": sc.get("recorded_by", "Pending"),
+        })
+
+    df_scores = pd.DataFrame(triage_rows)
+    edited_scores = st.data_editor(
+        df_scores,
+        hide_index=True,
+        use_container_width=True,
+        key=f"editor_scores_g{active_game}",
+        disabled=["Bowler ID", "Bowler Name", "Start Lane", "Current Lane", "Entering Avg", "HDCP", "Total Score", "Verifier"],
+        column_config={
+            "Scratch": st.column_config.NumberColumn(
+                "Scratch Score",
+                min_value=0,
+                max_value=300,
+                step=1,
+                required=True,
+            )
+        },
+    )
+
+    if st.button(f"💾 Save Desk Score Adjustments for Game {active_game}", type="primary", use_container_width=True):
+        count_updated = 0
+        for row in edited_scores.itertuples():
+            b_id = row._1  # Bowler ID
+            scratch = int(row.Scratch)
+            hdcp = int(row.HDCP)
+            if scratch > 0:
+                _save_score(t_id, b_id, active_game, scratch, hdcp, td_name)
+                count_updated += 1
+        st.success(f"Successfully recorded and audited {count_updated} scores for Game {active_game}!")
+        st.rerun()
+
+
 def render_active_squad() -> None:
     st.title("🎳 Active Squad Hub")
 
@@ -294,92 +393,7 @@ def render_active_squad() -> None:
                 score_bracket_round(t_id, game_round=active_game)
                 st.success(f"Advanced brackets using Game {active_game} scores!")
 
-    scores_map = _get_game_scores(t_id, active_game)
-
-    # =========================================================
-    # BIRDS-EYE HEATMAP MATRIX
-    # =========================================================
-    st.markdown("### 🗺️ Birds-Eye Heatmap: Active Lane Scoring Status")
-    st.caption("Displays score reporting progress across active lanes for the selected game.")
-    lane_status_cols = st.columns(6)
-
-    assigned_lanes = sorted(list({b["lane_assignment"] for b in bowlers}))
-    for i, lane_num in enumerate(assigned_lanes):
-        lane_bowlers = [b for b in bowlers if b["lane_assignment"] == lane_num]
-        reported_count = sum(1 for b in lane_bowlers if b["id"] in scores_map)
-        all_reported = (reported_count == len(lane_bowlers)) and len(lane_bowlers) > 0
-
-        bg_color = "#064E3B" if all_reported else "#78350F" if reported_count > 0 else "#1E293B"
-        border_color = "#10B981" if all_reported else "#F59E0B" if reported_count > 0 else "#334155"
-        label = "COMPLETED" if all_reported else f"{reported_count}/{len(lane_bowlers)} ENTERED" if reported_count > 0 else "PENDING"
-
-        col = lane_status_cols[i % 6]
-        with col:
-            st.markdown(
-                f"""
-                <div style="background:{bg_color}; border:1px solid {border_color}; border-radius:6px; padding:6px; text-align:center; margin-bottom:8px;">
-                    <strong style="color:#F8FAFC; font-size:12px;">Lane {lane_num}</strong><br>
-                    <span style="font-size:10px; color:#E2E8F0; font-weight:700;">{label}</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-    st.markdown("---")
-
-    # =========================================================
-    # DUAL-ROLE DIRECT TD DESK SCORE ENTRY TABLE
-    # =========================================================
-    st.subheader(f"Direct Desk Score Entry — Game {active_game}")
-    st.caption("Enter scratch scores directly from physical recap sheets or review mobile verifier inputs.")
-
+    # Pass live render into auto-polling fragment
     user = current_user() or {}
     td_name = user.get("display_name", "Tournament Director")
-
-    triage_rows = []
-    for b in bowlers:
-        b_id = b["id"]
-        sc = scores_map.get(b_id, {})
-        current_lane = _calculate_lane_movement(b["lane_assignment"], active_game, total_lanes)
-        pacer_str = " (PACER)" if b["is_pacer"] else ""
-        triage_rows.append({
-            "Bowler ID": b_id,
-            "Bowler Name": f"{b['name']}{pacer_str}",
-            "Start Lane": b["lane_assignment"],
-            "Current Lane": current_lane,
-            "Entering Avg": b["entering_avg"],
-            "HDCP": b["handicap"],
-            "Scratch": sc.get("scratch_score", 0),
-            "Total Score": sc.get("total_score", 0),
-            "Verifier": sc.get("recorded_by", "Pending"),
-        })
-
-    df_scores = pd.DataFrame(triage_rows)
-    edited_scores = st.data_editor(
-        df_scores,
-        hide_index=True,
-        use_container_width=True,
-        key=f"editor_scores_g{active_game}",
-        disabled=["Bowler ID", "Bowler Name", "Start Lane", "Current Lane", "Entering Avg", "HDCP", "Total Score", "Verifier"],
-        column_config={
-            "Scratch": st.column_config.NumberColumn(
-                "Scratch Score",
-                min_value=0,
-                max_value=300,
-                step=1,
-                required=True,
-            )
-        },
-    )
-
-    if st.button(f"💾 Save Desk Score Adjustments for Game {active_game}", type="primary", use_container_width=True):
-        count_updated = 0
-        for row in edited_scores.itertuples():
-            b_id = row._1  # Bowler ID
-            scratch = int(row.Scratch)
-            hdcp = int(row.HDCP)
-            if scratch > 0:
-                _save_score(t_id, b_id, active_game, scratch, hdcp, td_name)
-                count_updated += 1
-        st.success(f"Successfully recorded and audited {count_updated} scores for Game {active_game}!")
-        st.rerun()
+    _render_live_scoring_matrix(t_id, active_game, total_lanes, bowlers, td_name)
