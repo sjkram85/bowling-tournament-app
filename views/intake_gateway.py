@@ -26,7 +26,7 @@ except Exception:
 from modules.auth import current_user
 from modules.constants import CENTERS, HOST_CENTERS
 from modules.db_state import get_connection, log_desk_action
-from modules.tournament_templates import CHUSBC_TEMPLATES, create_tournament_from_template
+from modules.tournament_templates import CHUSBC_TEMPLATES, create_tournament_from_template, save_tournament_as_template
 
 # Pure SVG bowling ball with 3D gradient & finger holes
 BOWLING_BALL_SVG = (
@@ -269,6 +269,18 @@ def render_intake_gateway() -> None:
                 st.rerun()
             finally:
                 conn.close()
+
+    # Save active tournament as template expander
+    with st.expander("📌 Save Active Squad as Reusable Template"):
+        new_tmpl_title = st.text_input("Template Display Name", value=f"{active_tourney['name']} Template")
+        if st.button("💾 Save to Master Template Library", type="secondary"):
+            if not new_tmpl_title.strip():
+                st.error("Please enter a valid template name.")
+            else:
+                save_tournament_as_template(t_id, new_tmpl_title.strip())
+                log_desk_action(td_name, "td", f"Saved active tournament #{t_id} as template '{new_tmpl_title}'")
+                st.success(f"Successfully saved '{new_tmpl_title}' to the CHUSBC Template Library!")
+                st.rerun()
 
     tab_roster, tab_entry, tab_concourse = st.tabs(
         ["📋 Squad Roster (Fully Editable)", "➕ Add Competitors (AI & Manual)", "📱 Concourse Access Badges"]
