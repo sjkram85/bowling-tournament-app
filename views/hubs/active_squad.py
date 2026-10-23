@@ -10,6 +10,7 @@ from modules.auth import current_user
 from modules.brackets import generate_eight_person_brackets, score_bracket_round
 from modules.constants import CENTERS
 from modules.db_state import get_connection, log_desk_action
+from views.hubs.finals_close import render_finals_close
 
 
 def _get_base_url() -> str:
@@ -252,7 +253,7 @@ def _render_live_scoring_matrix(t_id: int, active_game: int, total_lanes: int, b
                 unsafe_allow_html=True,
             )
             if st.button("🏆 Advance to Finals Closeout & Payouts ➔", type="primary", use_container_width=True):
-                st.switch_page("views/hubs/finals_close.py")
+                st.switch_page(st.Page(render_finals_close, url_path="finals"))
 
 
 def render_active_squad() -> None:

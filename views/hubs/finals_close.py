@@ -28,15 +28,15 @@ def _get_final_standings(tournament_id: int) -> list[dict]:
     conn = get_connection()
     try:
         query = """
-            SELECT b.id, b.name, b.usbc_id, b.is_youth, b.smart_account_id,
-                   COUNT(s.game_number) as games_bowled,
-                   COALESCE(SUM(s.scratch_score), 0) as total_scratch,
-                   COALESCE(SUM(s.total_score), 0) as grand_total
-            FROM bowlers b
-            LEFT JOIN scores s ON b.id = s.bowler_id
-            WHERE b.tournament_id = ? AND b.is_pacer = 0
-            GROUP BY b.id
-            ORDER BY grand_total DESC, total_scratch DESC
+        SELECT b.id, b.name, b.usbc_id, b.is_youth, b.smart_account_id,
+               COUNT(s.game_number) as games_bowled,
+               COALESCE(SUM(s.scratch_score), 0) as total_scratch,
+               COALESCE(SUM(s.total_score), 0) as grand_total
+        FROM bowlers b
+        LEFT JOIN scores s ON b.id = s.bowler_id
+        WHERE b.tournament_id = ? AND b.is_pacer = 0
+        GROUP BY b.id
+        ORDER BY grand_total DESC, total_scratch DESC
         """
         rows = conn.execute(query, (tournament_id,)).fetchall()
         return [dict(r) for r in rows]
@@ -53,7 +53,17 @@ def render_finals_close() -> None:
         return
 
     tourney_map = {f"{t['name']} (#{t['id']}) - {t['status'].upper()}": t for t in tournaments}
-    selected_label = st.selectbox("Select Tournament", list(tourney_map.keys()))
+    
+    # Pre-select active tournament ID if set in session state
+    default_index = 0
+    active_t_id = st.session_state.get("active_tournament_id")
+    if active_t_id:
+        for idx, (label, t_obj) in enumerate(tourney_map.items()):
+            if t_obj["id"] == active_t_id:
+                default_index = idx
+                break
+
+    selected_label = st.selectbox("Select Tournament", list(tourney_map.keys()), index=default_index)
     tourney = tourney_map[selected_label]
     t_id = tourney["id"]
 
