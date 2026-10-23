@@ -52,3 +52,19 @@ def create_tournament_from_template(template_key: str, host_center: str, pin: st
             return cur.lastrowid
     finally:
         conn.close()
+
+def save_tournament_as_template(tournament_id: int, custom_template_name: str) -> None:
+    """Capture an existing active tournament's configuration and store it as a reusable template."""
+    conn = get_connection()
+    try:
+        tourney = conn.execute("SELECT * FROM tournaments WHERE id = ?", (tournament_id,)).fetchone()
+        if tourney:
+            CHUSBC_TEMPLATES[custom_template_name] = {
+                "name": tourney["name"],
+                "squad_format": tourney["squad_format"],
+                "game_count": tourney["game_count"],
+                "default_fee": 25.0,
+                "description": f"Custom saved template from Tournament #{tournament_id} ({tourney['host_center']})."
+            }
+    finally:
+        conn.close()
