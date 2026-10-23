@@ -105,6 +105,7 @@ def init_db() -> None:
                     bowler_id INTEGER NOT NULL,
                     game_number INTEGER NOT NULL,
                     scratch_score INTEGER NOT NULL DEFAULT 0,
+                    hdcp_score INTEGER NOT NULL DEFAULT 0,
                     total_score INTEGER NOT NULL DEFAULT 0,
                     verified INTEGER DEFAULT 0,
                     verified_by TEXT,
@@ -167,16 +168,20 @@ def init_db() -> None:
                 """
             )
 
-        # Auto-migrate columns if table existed from an earlier schema version
-        existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_users);").fetchall()]
-        if "email" not in existing_cols:
+        # Auto-migrate columns if tables existed from an earlier schema version
+        staff_cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_users);").fetchall()]
+        if "email" not in staff_cols:
             conn.execute("ALTER TABLE staff_users ADD COLUMN email TEXT DEFAULT '';")
-        if "is_approved" not in existing_cols:
+        if "is_approved" not in staff_cols:
             conn.execute("ALTER TABLE staff_users ADD COLUMN is_approved INTEGER DEFAULT 1;")
-        if "center_affiliation" not in existing_cols:
+        if "center_affiliation" not in staff_cols:
             conn.execute("ALTER TABLE staff_users ADD COLUMN center_affiliation TEXT DEFAULT 'CHUSBC';")
-        if "is_active" not in existing_cols:
+        if "is_active" not in staff_cols:
             conn.execute("ALTER TABLE staff_users ADD COLUMN is_active INTEGER DEFAULT 1;")
+
+        score_cols = [r[1] for r in conn.execute("PRAGMA table_info(scores);").fetchall()]
+        if "hdcp_score" not in score_cols:
+            conn.execute("ALTER TABLE scores ADD COLUMN hdcp_score INTEGER DEFAULT 0;")
 
     finally:
         conn.close()
