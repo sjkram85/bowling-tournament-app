@@ -41,6 +41,20 @@ def _get_lane_bowlers(tournament_id: int, lane: int) -> list[dict]:
         conn.close()
 
 
+def _get_existing_lane_scores(tournament_id: int, game_num: int) -> dict[int, dict]:
+    """Retrieve any existing recorded scores for this game."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT bowler_id, scratch_score, hdcp_score, total_score, recorded_by FROM scores "
+            "WHERE tournament_id = ? AND game_number = ?",
+            (tournament_id, game_num),
+        ).fetchall()
+        return {r["bowler_id"]: dict(r) for r in rows}
+    finally:
+        conn.close()
+
+
 def _record_score(tournament_id: int, bowler_id: int, game_num: int, scratch: int, hdcp: int, verifier_name: str) -> None:
     conn = get_connection()
     total = scratch + hdcp
@@ -151,28 +165,44 @@ def render_mobile_scoring() -> None:
             )
 
         bowlers = _get_lane_bowlers(tourney["id"], int(lane))
+        existing_scores = _get_existing_lane_scores(tourney["id"], game)
+
         if not bowlers:
             st.info(f"No bowlers assigned to Lane {lane}.")
         else:
             with st.form(f"score_form_lane_{lane}_gm_{game}"):
+                all_recorded = True
                 for b in bowlers:
                     pacer_tag = " (PACER)" if b["is_pacer"] else ""
+                    b_id = b["id"]
+                    prev_score = existing_scores.get(b_id, {})
+                    default_scratch = prev_score.get("scratch_score", 0)
+
+                    if default_scratch == 0:
+                        all_recorded = False
+
                     st.markdown(f"**{b['name']}**{pacer_tag} — HDCP: `+{b['handicap']}`")
+                    if default_scratch > 0:
+                        st.caption(f"✅ Current Score: **{default_scratch}** (HDCP Total: **{prev_score.get('total_score')}**) &middot; By: {prev_score.get('recorded_by', 'Desk')}")
+
                     st.number_input(
                         f"Scratch Score for {b['name']}",
                         min_value=0,
                         max_value=300,
-                        value=0,
+                        value=default_scratch,
                         step=1,
-                        key=f"scratch_{b['id']}_g{game}",
+                        key=f"scratch_{b_id}_g{game}",
                     )
-                submitted = st.form_submit_button(f"Submit Lane {lane} Game {game} Scores", type="primary", use_container_width=True)
+
+                btn_label = f"Update Lane {lane} Game {game} Scores" if all_recorded else f"Submit Lane {lane} Game {game} Scores"
+                submitted = st.form_submit_button(btn_label, type="primary", use_container_width=True)
                 if submitted:
                     for b in bowlers:
                         val = st.session_state.get(f"scratch_{b['id']}_g{game}", 0)
                         if val > 0:
                             _record_score(tourney["id"], b["id"], game, val, b["handicap"], verifier_name)
                     st.success(f"Scores for Lane {lane} Game {game} recorded!")
+                    st.rerun()
 
     # --- TAB 2: AI OVERHEAD OCR CAMERA SNAP ---
     with tab_camera:
