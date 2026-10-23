@@ -1,16 +1,31 @@
-"""AI Roster Ingestion Engine targeting gemini-3.8-flash with auto-retry and 503 fallback."""
+"""AI Roster Ingestion Engine targeting gemini-3.8-flash with structured schema output."""
 
 import io
 import json
 import os
-import time
 import pandas as pd
+from pydantic import BaseModel, Field
 import streamlit as st
 from google import genai
 from google.genai import types
 
 PRIMARY_MODEL = "gemini-3.8-flash"
-FALLBACK_MODEL = "gemini-2.5-flash"
+
+
+class BowlerSchema(BaseModel):
+    name: str = Field(description="Full name of the bowler")
+    usbc_id: str | None = Field(default=None, description="USBC sanction member ID")
+    entering_avg: int = Field(default=200, description="Entering book or tournament average")
+    handicap: int = Field(default=0, description="Handicap pins per game")
+    lane_assignment: int = Field(default=1, description="Assigned starting lane number")
+    email: str | None = Field(default=None, description="Email address for recaps")
+    is_youth: bool = Field(default=False, description="True if marked youth, junior, or SMART")
+    smart_account_id: str | None = Field(default=None, description="SMART scholarship account number")
+    paid_status: str = Field(default="paid", description="'paid' or 'unpaid'")
+
+
+class RosterSchema(BaseModel):
+    bowlers: list[BowlerSchema]
 
 
 def get_gemini_client():
@@ -25,19 +40,9 @@ def get_best_available_model(client: genai.Client = None) -> str:
 
 
 EXTRACTION_PROMPT = (
-    "You are an expert tournament director intake assistant for the Cecil Harford USBC. "
     "Extract all bowling competitors from the provided tournament roster data. "
-    "For every bowler found, extract the following fields strictly:\n"
-    "- name: Bowler Full Name (required string)\n"
-    "- usbc_id: USBC Member ID (string or null)\n"
-    "- entering_avg: Entering average (integer, default 200 if not listed)\n"
-    "- handicap: Entering handicap (integer, default calculated as 90% of (220 - avg) if not listed, min 0)\n"
-    "- lane_assignment: Starting lane number (integer, default 1 if not listed)\n"
-    "- email: Bowler email address (string or null)\n"
-    "- is_youth: Boolean true if explicitly labeled youth, junior, Rule 400, or has a SMART account, else false\n"
-    "- smart_account_id: SMART scholarship ID (string or null)\n"
-    "- paid_status: 'paid' or 'unpaid' (default 'paid' unless noted as unpaid, owing, or balance due)\n\n"
-    "Return ONLY a clean JSON array of objects conforming to this schema."
+    "Follow standard USBC guidelines: if handicap is not specified, calculate as 90% of (220 - avg) (minimum 0). "
+    "Mark is_youth as true if the record contains SMART, youth, or junior tags."
 )
 
 
@@ -83,41 +88,6 @@ def _extract_text_from_file(file_bytes: bytes, file_name: str) -> str | None:
     return None
 
 
-def _format_records(raw_text: str) -> list[dict]:
-    cleaned = raw_text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[1].rsplit("\n", 1)[0].strip()
-
-    records = json.loads(cleaned)
-    if isinstance(records, dict):
-        for key in ("bowlers", "roster", "competitors", "players"):
-            if key in records and isinstance(records[key], list):
-                return records[key]
-        return [records]
-    return records
-
-
-def _call_gemini_with_retry(client: genai.Client, model: str, contents, config) -> str:
-    """Invokes generate_content with retry on 503 spikes."""
-    models_to_try = [model, PRIMARY_MODEL, FALLBACK_MODEL]
-    last_exc = None
-
-    for mod in dict.fromkeys(models_to_try):
-        for attempt in range(2):
-            try:
-                response = client.models.generate_content(model=mod, contents=contents, config=config)
-                return response.text
-            except Exception as e:
-                err_str = str(e)
-                last_exc = e
-                if "503" in err_str or "UNAVAILABLE" in err_str or "demand" in err_str:
-                    time.sleep(1.5)
-                    continue
-                break
-
-    raise last_exc
-
-
 def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
     client = get_gemini_client()
     if not client:
@@ -142,9 +112,19 @@ def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
         part = types.Part.from_bytes(data=file_bytes, mime_type=mime)
         contents = [EXTRACTION_PROMPT, part]
 
-    config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1)
-    text = _call_gemini_with_retry(client, model_name, contents, config)
-    return _format_records(text)
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=RosterSchema,
+        temperature=0.0,
+    )
+
+    response = client.models.generate_content(
+        model=model_name,
+        contents=contents,
+        config=config,
+    )
+    data = json.loads(response.text)
+    return data.get("bowlers", [])
 
 
 def parse_roster_text_with_gemini(raw_text_input: str) -> list[dict]:
@@ -154,7 +134,17 @@ def parse_roster_text_with_gemini(raw_text_input: str) -> list[dict]:
 
     model_name = get_best_available_model(client)
     contents = [EXTRACTION_PROMPT, f"--- PASTED ROSTER TEXT ---\n{raw_text_input}"]
-    config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1)
+    
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=RosterSchema,
+        temperature=0.0,
+    )
 
-    text = _call_gemini_with_retry(client, model_name, contents, config)
-    return _format_records(text)
+    response = client.models.generate_content(
+        model=model_name,
+        contents=contents,
+        config=config,
+    )
+    data = json.loads(response.text)
+    return data.get("bowlers", [])
