@@ -1,14 +1,16 @@
-"""AI Roster Ingestion Engine targeting gemini-3.8-flash directly with zero-hang model resolution."""
+"""AI Roster Ingestion Engine targeting gemini-3.8-flash with auto-retry and 503 fallback."""
 
 import io
 import json
 import os
+import time
 import pandas as pd
 import streamlit as st
 from google import genai
 from google.genai import types
 
-TARGET_MODEL = "gemini-3.8-flash"
+PRIMARY_MODEL = "gemini-3.8-flash"
+FALLBACK_MODEL = "gemini-2.5-flash"
 
 
 def get_gemini_client():
@@ -19,8 +21,7 @@ def get_gemini_client():
 
 
 def get_best_available_model(client: genai.Client = None) -> str:
-    """Fast model name resolution without blocking API catalog queries."""
-    return st.secrets.get("GEMINI_MODEL", TARGET_MODEL)
+    return st.secrets.get("GEMINI_MODEL", PRIMARY_MODEL)
 
 
 EXTRACTION_PROMPT = (
@@ -96,6 +97,27 @@ def _format_records(raw_text: str) -> list[dict]:
     return records
 
 
+def _call_gemini_with_retry(client: genai.Client, model: str, contents, config) -> str:
+    """Invokes generate_content with retry on 503 spikes."""
+    models_to_try = [model, PRIMARY_MODEL, FALLBACK_MODEL]
+    last_exc = None
+
+    for mod in dict.fromkeys(models_to_try):
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(model=mod, contents=contents, config=config)
+                return response.text
+            except Exception as e:
+                err_str = str(e)
+                last_exc = e
+                if "503" in err_str or "UNAVAILABLE" in err_str or "demand" in err_str:
+                    time.sleep(1.5)
+                    continue
+                break
+
+    raise last_exc
+
+
 def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
     client = get_gemini_client()
     if not client:
@@ -121,8 +143,8 @@ def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
         contents = [EXTRACTION_PROMPT, part]
 
     config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1)
-    response = client.models.generate_content(model=model_name, contents=contents, config=config)
-    return _format_records(response.text)
+    text = _call_gemini_with_retry(client, model_name, contents, config)
+    return _format_records(text)
 
 
 def parse_roster_text_with_gemini(raw_text_input: str) -> list[dict]:
@@ -134,5 +156,5 @@ def parse_roster_text_with_gemini(raw_text_input: str) -> list[dict]:
     contents = [EXTRACTION_PROMPT, f"--- PASTED ROSTER TEXT ---\n{raw_text_input}"]
     config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1)
 
-    response = client.models.generate_content(model=model_name, contents=contents, config=config)
-    return _format_records(response.text)
+    text = _call_gemini_with_retry(client, model_name, contents, config)
+    return _format_records(text)
