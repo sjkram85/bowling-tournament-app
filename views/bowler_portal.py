@@ -36,20 +36,27 @@ def _get_tournament_bowlers(tournament_id: int) -> list[dict]:
 
 
 def _confirm_check_in(bowler_id: int, bowler_name: str) -> bool:
+    """Updates bowler check-in state and records audit log without nested transaction deadlocks."""
     conn = get_connection()
     now_str = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
+    updated = False
     try:
         with conn:
             cursor = conn.execute(
                 "UPDATE bowlers SET checked_in = 1, checked_in_at = ? WHERE id = ?",
                 (now_str, bowler_id),
             )
-            if cursor.rowcount > 0:
-                log_desk_action(bowler_name, "bowler", "Bowler confirmed self check-in via mobile portal")
-                return True
-        return False
+            updated = cursor.rowcount > 0
     finally:
         conn.close()
+
+    if updated:
+        try:
+            log_desk_action(bowler_name, "bowler", "Bowler confirmed self check-in via mobile portal")
+        except Exception:
+            pass
+        return True
+    return False
 
 
 def _render_checkin_flow(active_tourneys: list[dict]) -> None:
@@ -164,7 +171,6 @@ def _render_my_action_tab(tournament_id: int) -> None:
         total_payout = sum(e["payout_amount"] for e in entries)
 
         for e in entries:
-            # Check alive status based on rounds
             if e["r3_advances"] == 1 or e["r2_advances"] == 1 or (e["r1_advances"] == 1 and e["r2_score"] is None) or (e["r1_score"] is None):
                 alive_count += 1
 
@@ -211,18 +217,18 @@ def _render_standings_flow(active_tourneys: list[dict]) -> None:
 
     conn = get_connection()
     try:
-        query = """
-            SELECT b.id, b.name, b.lane_assignment, b.handicap,
-                   COUNT(s.game_number) as games_bowled,
-                   COALESCE(SUM(s.scratch_score), 0) as total_scratch,
-                   COALESCE(SUM(s.total_score), 0) as grand_total
-            FROM bowlers b
-            LEFT JOIN scores s ON b.id = s.bowler_id
-            WHERE b.tournament_id = ? AND b.is_pacer = 0
-            GROUP BY b.id
-            ORDER BY grand_total DESC, total_scratch DESC
+        sql = """
+        SELECT b.id, b.name, b.lane_assignment, b.handicap,
+               COUNT(s.game_number) as games_bowled,
+               COALESCE(SUM(s.scratch_score), 0) as total_scratch,
+               COALESCE(SUM(s.total_score), 0) as grand_total
+        FROM bowlers b
+        LEFT JOIN scores s ON b.id = s.bowler_id
+        WHERE b.tournament_id = ? AND b.is_pacer = 0
+        GROUP BY b.id
+        ORDER BY grand_total DESC, total_scratch DESC
         """
-        rows = conn.execute(query, (tourney["id"],)).fetchall()
+        rows = conn.execute(sql, (tourney["id"],)).fetchall()
         if not rows or rows[0]["games_bowled"] == 0:
             st.info("Tournament is in check-in phase. Scores will appear once competition commences.")
             return
@@ -237,7 +243,7 @@ def _render_standings_flow(active_tourneys: list[dict]) -> None:
                 "Scratch": r["total_scratch"],
                 "HDCP Total": r["grand_total"],
             })
-        
+
         df = pd.DataFrame(data)
         st.dataframe(df, hide_index=True, use_container_width=True)
     finally:
