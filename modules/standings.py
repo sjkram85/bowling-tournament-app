@@ -44,18 +44,21 @@ def commit_scores(
     tournament_id: int, game_number: int, scores: dict[int, int], verified_by: str, role: str
 ) -> None:
     """Upsert scratch scores for one game, stamped with who verified them and when."""
-    verified_at = now_iso()
     connection = get_connection()
     try:
         with connection:
             for bowler_id, score in scores.items():
                 connection.execute(
-                    "INSERT INTO bowler_scores (bowler_id, tournament_id, game_number, scratch_score, "
-                    "verified_by, verified_at) VALUES (?, ?, ?, ?, ?, ?) "
-                    "ON CONFLICT (bowler_id, game_number) DO UPDATE SET "
-                    "scratch_score = excluded.scratch_score, verified_by = excluded.verified_by, "
-                    "verified_at = excluded.verified_at",
-                    (bowler_id, tournament_id, game_number, score, verified_by, verified_at),
+                    """
+                    INSERT INTO scores (tournament_id, bowler_id, game_number, scratch_score, hdcp_score, total_score, recorded_by)
+                    VALUES (?, ?, ?, ?, 0, ?, ?)
+                    ON CONFLICT (bowler_id, game_number) DO UPDATE SET
+                        scratch_score = excluded.scratch_score,
+                        total_score = excluded.scratch_score,
+                        recorded_by = excluded.recorded_by,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (tournament_id, bowler_id, game_number, score, score, verified_by),
                 )
             connection.execute(
                 "INSERT INTO audit_log (user_name, role, action_description) VALUES (?, ?, ?)",
@@ -102,19 +105,23 @@ def compute_standings(tournament_id: int) -> list[dict]:
     )
     scores: dict[int, dict[int, int]] = {}
     for row in query(
-        "SELECT bowler_id, game_number, scratch_score FROM bowler_scores WHERE tournament_id = ?",
+        "SELECT bowler_id, game_number, scratch_score FROM scores WHERE tournament_id = ?",
         (tournament_id,),
     ):
         scores.setdefault(row["bowler_id"], {})[row["game_number"]] = row["scratch_score"]
-    roll_offs = {
-        row["bowler_id"]: row["roll_off_total"]
+
+    roll_offs: dict[int, int] = {}
+    try:
         for row in query(
             "SELECT bowler_id, roll_off_total FROM tiebreak_roll_offs WHERE tournament_id = ? ORDER BY id",
             (tournament_id,),
-        )
-    }
+        ):
+            roll_offs[row["bowler_id"]] = row["roll_off_total"]
+    except Exception:
+        roll_offs = {}
 
-    roll_first = tournament["tiebreak_type"] == TIEBREAK_ROLL_OFF
+    tiebreak_type = tournament.get("tiebreak_type", TIEBREAK_FINAL_GAME)
+    roll_first = tiebreak_type == TIEBREAK_ROLL_OFF
     rows = []
     for bowler in bowlers:
         games = scores.get(bowler["id"], {})
@@ -183,7 +190,7 @@ def squad_pairs(tournament_id: int, game_number: int) -> list[dict]:
     scores = {
         row["bowler_id"]: row["scratch_score"]
         for row in query(
-            "SELECT bowler_id, scratch_score FROM bowler_scores WHERE tournament_id = ? AND game_number = ?",
+            "SELECT bowler_id, scratch_score FROM scores WHERE tournament_id = ? AND game_number = ?",
             (tournament_id, game_number),
         )
     }
@@ -208,7 +215,7 @@ def current_game(tournament_id: int, game_count: int) -> int:
     counts = {
         row["game_number"]: row["n"]
         for row in query(
-            "SELECT game_number, COUNT(*) AS n FROM bowler_scores WHERE tournament_id = ? GROUP BY game_number",
+            "SELECT game_number, COUNT(*) AS n FROM scores WHERE tournament_id = ? GROUP BY game_number",
             (tournament_id,),
         )
     }
@@ -263,17 +270,21 @@ def bowler_brackets(tournament_id: int, bowler_id: int) -> list[dict]:
         }
     )
 
-    if me["mystery_doubles_opt_in"]:
+    if me.get("mystery_doubles_opt_in"):
         brackets.append(_mystery_bracket(tournament_id, standings, me, games_left))
     return brackets
 
 
 def _mystery_bracket(tournament_id: int, standings: list[dict], me: dict, games_left: int) -> dict:
     by_id = {row["id"]: row for row in standings}
-    pairs = query(
-        "SELECT bowler_1_id, bowler_2_id FROM mystery_doubles_pairs WHERE tournament_id = ?",
-        (tournament_id,),
-    )
+    try:
+        pairs = query(
+            "SELECT bowler_1_id, bowler_2_id FROM mystery_doubles_pairs WHERE tournament_id = ?",
+            (tournament_id,),
+        )
+    except Exception:
+        pairs = []
+
     if not pairs:
         return {"name": "$5 Mystery Doubles", "alive": True, "detail": "Draw pending"}
 
