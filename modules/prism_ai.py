@@ -1,154 +1,109 @@
-"""Dual-engine Gemini router: rulebook-grounded Pro for disputes, Flash for quick guidance."""
-
-import json
-import logging
-import re
-from functools import lru_cache
-from pathlib import Path
+"""Floating Prism A.I Tournament Assistant."""
 
 import streamlit as st
-from google import genai
-from google.genai import types
-
-logger = logging.getLogger(__name__)
-
-PRO_MODEL = "gemini-pro-latest"
-FLASH_MODEL = "gemini-flash-latest"
-RULEBOOK_PATH = Path(__file__).resolve().parent.parent / "assets" / "USBC-Playing-Rulebook-26-27.pdf"
-
-RULE_KEYWORDS = re.compile(
-    r"\b(rules?|disputes?|ruling|rulebook|usbc|legal|illegal|foul|protest|"
-    r"penalty|violation|allowed|permitted|official|regulation|interference|"
-    r"deadwood|dead\s*ball|out\s+of\s+order|re-?rate|rerate|319|misconduct|appeal)\b",
-    re.IGNORECASE,
-)
-
-FLASH_INSTRUCTION = (
-    "You are Prism, an assistant for bowling tournament directors. Observe the "
-    "provided screen state and suggest the next logical tournament desk action in "
-    "under two sentences. Do not cite or quote rulebooks."
-)
-PRO_INSTRUCTION = (
-    "You are Prism, a USBC rules expert assisting a tournament director. Use the "
-    "query_usbc_rulebook tool to ground every ruling in the USBC Playing Rulebook "
-    "(dead ball, foul, out of order, Rule 319 average rerate and similar disputes), "
-    "cite the relevant rule, and keep the answer brief."
-)
+from modules.prism_ai import get_prism_ai_guidance
 
 
-def _get_client() -> genai.Client:
-    key = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
-    if not key or key.startswith("YOUR_"):
-        raise ValueError("GEMINI_API_KEY is missing or still a placeholder")
-    return genai.Client(api_key=key)
-
-
-@lru_cache(maxsize=1)
-def _load_rulebook() -> bytes:
-    return RULEBOOK_PATH.read_bytes()
-
-
-def query_usbc_rulebook(query: str) -> str:
-    """Look up the USBC Playing Rulebook and answer a rules question.
-
-    Use for rule disputes such as dead ball, foul, out of order, or Rule 319 average rerate.
-
-    Args:
-        query: The rule or dispute question to research in the rulebook.
-    """
-    try:
-        response = _get_client().models.generate_content(
-            model=FLASH_MODEL,
-            contents=[
-                types.Part.from_bytes(data=_load_rulebook(), mime_type="application/pdf"),
-                "Using only this rulebook, answer the question and cite the "
-                f"rule number and page where possible.\n\nQuestion: {query}",
-            ],
-        )
-    except Exception as e:
-        logger.error("Rulebook lookup failed: %s", e)
-        return "The rulebook lookup is unavailable right now. Please check the USBC Playing Rulebook directly."
-    return response.text or "No relevant rule found."
-
-
-def extract_scores_from_photo(image_bytes: bytes, bowler_names: list[str]) -> dict[str, int]:
-    """OCR a photo of a score sheet; returns {bowler name: score} for recognized names only."""
-    try:
-        response = _get_client().models.generate_content(
-            model=FLASH_MODEL,
-            contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-                "Read this bowling score sheet. Return a JSON object mapping each of these "
-                f"bowler names to their final game score as an integer: {json.dumps(bowler_names)}. "
-                "Omit any bowler whose score is not clearly legible.",
-            ],
-            config=types.GenerateContentConfig(response_mime_type="application/json"),
-        )
-        parsed = json.loads(response.text or "{}")
-    except (KeyError, ValueError, genai.errors.APIError):
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
+def collect_view_state(current_view: str) -> dict:
+    """Collect lightweight operational context for the active screen."""
     return {
-        name: int(score)
-        for name, score in parsed.items()
-        if name in bowler_names and isinstance(score, (int, float)) and 0 <= score <= 300
+        "view": current_view,
+        "active_tournament_id": st.session_state.get("active_tournament_id"),
+        "intake_summary": st.session_state.get("intake_summary", {}),
     }
 
 
-def _is_rules_query(user_prompt: str | None) -> bool:
-    return bool(user_prompt and RULE_KEYWORDS.search(user_prompt))
+@st.dialog("🎳 Prism A.I — Desk Assistant", width="large")
+def _open_prism_dialog(current_view: str, view_state: dict | None = None) -> None:
+    """Modal popup dialog triggered by clicking the floating assistant button."""
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown(
+            f"""
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+                <span style="background:#0F172A; border:1px solid #334155; border-radius:999px; color:#94A3B8; font-size:12px; padding:3px 12px;">
+                    Active Screen: <strong style="color:#F8FAFC;">{current_view}</strong>
+                </span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col2:
+        if st.button("🔄 Refresh", key="dialog_refresh_guidance", use_container_width=True):
+            st.session_state["prism_guidance_cache"] = None
+            st.rerun()
+
+    # Routine Operational Guidance Block
+    guidance_text = st.session_state.get("prism_guidance_cache")
+    if not guidance_text:
+        with st.spinner("Prism is analyzing desk operations..."):
+            guidance_text = get_prism_ai_guidance(view_state or {"view": current_view})
+            st.session_state["prism_guidance_cache"] = guidance_text
+
+    st.markdown(
+        f"""
+        <div style="background:#0F172A; border-left:4px solid #F59E0B; border-radius:8px; padding:12px 16px; color:#E2E8F0; font-size:14px; margin-bottom:16px;">
+            {guidance_text}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Collapsible USBC Rule Arbitrator
+    with st.expander("⚖️ USBC Rule & Dispute Arbitrator (Official Rulebook Tool)", expanded=True):
+        st.caption("Ask questions regarding dead balls (Rule 8), wrong lanes (Rule 9), foul sensors (Rule 10), surface adjustments (Rule 18), or Rule 400 SMART compliance.")
+        rule_query = st.text_input(
+            "Enter tournament dispute or rule question:",
+            placeholder="e.g., Bowler delivered on the wrong lane...",
+            key="modal_rule_query",
+        )
+        if st.button("Consult USBC Rulebook", key="modal_rule_submit", use_container_width=True):
+            if rule_query.strip():
+                with st.spinner("Arbitrating via official USBC Rulebook..."):
+                    result = get_prism_ai_guidance(view_state or {"view": current_view}, user_prompt=rule_query)
+                    st.info(result)
 
 
-def _fallback_guidance(screen_state: dict, user_prompt: str | None) -> str:
-    """Friendly operational hint from the screen state when the AI is unavailable."""
-    if _is_rules_query(user_prompt):
-        return "💡 The rules assistant is unavailable. Check the USBC Playing Rulebook directly and note the ruling in the audit log."
-    state = screen_state if isinstance(screen_state, dict) else {}
-    if state.get("local_hint"):
-        return str(state["local_hint"])
-    game = state.get("game")
-    reported, total = state.get("pairs_reported"), state.get("pairs_total")
-    pending = state.get("pairs_pending") or []
-    if isinstance(reported, int) and isinstance(total, int) and total:
-        if reported >= total:
-            label = f"Game {game}" if game else "the game"
-            return f"💡 All pairs have reported {label}. Review the leaderboard, then move on to the next game or finals."
-        if pending:
-            listed = ", ".join(str(p) for p in pending[:6]) + ("…" if len(pending) > 6 else "")
-            return f"💡 Waiting on lane reports (pairs {listed}). Tap Enter Scores or use the mobile verifier."
-    return "💡 Waiting on lane reports for the active game. Tap Enter Scores or use mobile verifier."
-
-
-def get_prism_ai_guidance(screen_state: dict, user_prompt: str | None = None) -> str:
-    """Route to Pro (rules/disputes, rulebook tool) or Flash (screen-state guidance).
-
-    Never raises: any failure is logged and replaced by a screen-state based fallback.
+def render_prism_dock(current_view: str = "Active Squad Hub", view_state: dict | None = None) -> None:
     """
-    try:
-        client = _get_client()
-        state_text = json.dumps(screen_state, default=str)
+    Renders a floating bowling pin button anchored in the lower-left corner of the viewport.
+    """
+    st.markdown(
+        """
+        <style>
+        .ptcc-fab-container {
+            position: fixed !important;
+            bottom: 24px !important;
+            left: 24px !important;
+            z-index: 999999 !important;
+        }
+        .ptcc-fab-container button {
+            background: #1E293B !important;
+            border: 2px solid #F59E0B !important;
+            color: #F8FAFC !important;
+            border-radius: 9999px !important;
+            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5) !important;
+            padding: 8px 18px !important;
+            font-weight: 700 !important;
+            font-size: 14px !important;
+        }
+        .ptcc-fab-container button:hover {
+            background: #334155 !important;
+            border-color: #FCD34D !important;
+        }
+        @media (max-width: 640px) {
+            .ptcc-fab-container {
+                bottom: 16px !important;
+                left: 16px !important;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-        if _is_rules_query(user_prompt):
-            response = client.models.generate_content(
-                model=PRO_MODEL,
-                contents=f"Screen state: {state_text}\n\nQuestion: {user_prompt}",
-                config=types.GenerateContentConfig(
-                    system_instruction=PRO_INSTRUCTION,
-                    tools=[query_usbc_rulebook],
-                ),
-            )
-        else:
-            prompt = f"Screen state: {state_text}"
-            if user_prompt:
-                prompt += f"\n\nUser request: {user_prompt}"
-            response = client.models.generate_content(
-                model=FLASH_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(system_instruction=FLASH_INSTRUCTION),
-            )
-        text = (response.text or "").strip()
-    except Exception as e:
-        logger.error("Prism AI request failed: %s", e)
-        return _fallback_guidance(screen_state, user_prompt)
-    return text or _fallback_guidance(screen_state, user_prompt)
+    with st.container():
+        st.markdown('<div class="ptcc-fab-container">', unsafe_allow_html=True)
+        if st.button("🎳 Prism A.I", key="prism_fab_trigger"):
+            _open_prism_dialog(current_view, view_state)
+        st.markdown('</div>', unsafe_allow_html=True)
