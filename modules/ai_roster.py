@@ -1,4 +1,4 @@
-"""AI Roster Ingestion Engine with dynamic model auto-discovery and resilient multi-format document support."""
+"""AI Roster Ingestion Engine with dynamic model auto-discovery."""
 
 import io
 import json
@@ -18,7 +18,6 @@ def get_gemini_client():
 
 
 def get_best_available_model(client: genai.Client) -> str:
-    """Queries online models from the API and dynamically selects the newest active Flash model."""
     override = st.secrets.get("GEMINI_MODEL")
     if override:
         return override
@@ -65,10 +64,7 @@ EXTRACTION_PROMPT = (
 
 
 def _extract_text_from_file(file_bytes: bytes, file_name: str) -> str | None:
-    """Extract raw text or table contents from Word, Excel, CSV, or Text files."""
     fn = file_name.lower()
-
-    # Excel Spreadsheets (.xlsx, .xls)
     if fn.endswith((".xlsx", ".xls")):
         try:
             excel_file = io.BytesIO(file_bytes)
@@ -81,7 +77,6 @@ def _extract_text_from_file(file_bytes: bytes, file_name: str) -> str | None:
         except Exception:
             return None
 
-    # Word Documents (.docx)
     if fn.endswith(".docx"):
         try:
             import docx
@@ -95,14 +90,12 @@ def _extract_text_from_file(file_bytes: bytes, file_name: str) -> str | None:
         except Exception:
             return None
 
-    # CSV Files
     if fn.endswith(".csv"):
         try:
             return file_bytes.decode("utf-8-sig", errors="replace")
         except Exception:
             return None
 
-    # Plain Text Files
     if fn.endswith(".txt"):
         try:
             return file_bytes.decode("utf-8", errors="replace")
@@ -113,7 +106,6 @@ def _extract_text_from_file(file_bytes: bytes, file_name: str) -> str | None:
 
 
 def _format_records(raw_text: str) -> list[dict]:
-    """Parse JSON and normalize roster lists."""
     cleaned = raw_text.strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.split("\n", 1)[1].rsplit("\n", 1)[0].strip()
@@ -128,7 +120,6 @@ def _format_records(raw_text: str) -> list[dict]:
 
 
 def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
-    """Extracts structured bowler roster records from Word, Excel, PDF, CSV, or Images."""
     client = get_gemini_client()
     if not client:
         raise ValueError("GEMINI_API_KEY is missing from Streamlit secrets or environment.")
@@ -158,7 +149,6 @@ def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
 
 
 def parse_roster_text_with_gemini(raw_text_input: str) -> list[dict]:
-    """Extracts structured bowler roster records directly from raw pasted text."""
     client = get_gemini_client()
     if not client:
         raise ValueError("GEMINI_API_KEY is missing from Streamlit secrets or environment.")
