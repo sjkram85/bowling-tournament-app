@@ -1,6 +1,5 @@
-"""AI Roster Ingestion Engine with dynamic model discovery and multi-format document support."""
+"""AI Roster Ingestion Engine with dynamic model auto-discovery across active Gemini 3 and 2.5 generations."""
 
-import csv
 import io
 import json
 import os
@@ -19,7 +18,7 @@ def get_gemini_client():
 
 
 def get_best_available_model(client: genai.Client) -> str:
-    """Queries online models from the API and selects the newest active Flash model."""
+    """Queries online models from the API and dynamically selects the newest active Flash model."""
     override = st.secrets.get("GEMINI_MODEL")
     if override:
         return override
@@ -37,7 +36,7 @@ def get_best_available_model(client: genai.Client) -> str:
                     candidates.append(name)
 
         if candidates:
-            # Sort version numbers descending (e.g. 3.8 > 3.5 > 2.5 > 2.0)
+            # Sort version numbers descending so Gemini 3.8/3.7/3.5 win over 2.5
             def version_sort_key(s: str):
                 nums = re.findall(r"(\d+(?:\.\d+)?)", s)
                 return [float(n) for n in nums] if nums else [0.0]
@@ -47,15 +46,15 @@ def get_best_available_model(client: genai.Client) -> str:
     except Exception:
         pass
 
-    # Standard fallback if listing fails
-    return "gemini-2.5-flash"
+    # High-reliability default fallback if model list call is blocked
+    return "gemini-3.8-flash"
 
 
 def _extract_text_from_file(file_bytes: bytes, file_name: str) -> str | None:
     """Extract raw text or table contents from Word, Excel, CSV, or Text files."""
     fn = file_name.lower()
-    
-    # Excel Sheets
+
+    # Excel Spreadsheets (.xlsx, .xls)
     if fn.endswith((".xlsx", ".xls")):
         try:
             excel_file = io.BytesIO(file_bytes)
@@ -89,7 +88,7 @@ def _extract_text_from_file(file_bytes: bytes, file_name: str) -> str | None:
         except Exception:
             return None
 
-    # Text Files
+    # Plain Text Files
     if fn.endswith(".txt"):
         try:
             return file_bytes.decode("utf-8", errors="replace")
@@ -122,16 +121,14 @@ def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
         "- is_youth: Boolean true if explicitly labeled youth, junior, Rule 400, or has a SMART account, else false\n"
         "- smart_account_id: SMART scholarship ID (string or null)\n"
         "- paid_status: 'paid' or 'unpaid' (default 'paid' unless noted as unpaid, owing, or balance due)\n\n"
-        "Return a JSON array of objects conforming to this schema."
+        "Return ONLY a clean JSON array of objects conforming to this schema."
     )
 
     extracted_text = _extract_text_from_file(file_bytes, file_name)
 
     if extracted_text:
-        # Pass structured text
         contents = [extraction_prompt, f"--- DOCUMENT DATA ({file_name}) ---\n{extracted_text}"]
     else:
-        # Multimodal pass for PDFs and Images
         fn_lower = file_name.lower()
         if fn_lower.endswith(".pdf"):
             mime = "application/pdf"
@@ -159,7 +156,6 @@ def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
     raw_text = response.text.strip()
     records = json.loads(raw_text)
     if isinstance(records, dict):
-        # Look for wrapped keys like {"bowlers": [...]} or {"roster": [...]}
         for key in ("bowlers", "roster", "competitors", "players"):
             if key in records and isinstance(records[key], list):
                 return records[key]

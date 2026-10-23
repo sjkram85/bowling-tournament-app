@@ -1,10 +1,12 @@
-"""Intake Gateway — Squad initialization, roster import, manual entry, and concourse check-in station."""
+"""Intake Gateway — Squad initialization, AI roster document import, manual entry, and concourse check-in station."""
 
 import base64
 import io
+import pandas as pd
 import qrcode
 import streamlit as st
 
+from modules.ai_roster import get_best_available_model, get_gemini_client, parse_roster_with_gemini
 from modules.auth import current_user
 from modules.constants import CENTERS, HOST_CENTERS
 from modules.db_state import get_connection, log_desk_action
@@ -45,8 +47,8 @@ def _get_squad_bowlers(tournament_id: int) -> list[dict]:
     try:
         rows = conn.execute(
             """
-            SELECT id, name, usbc_id, entering_avg, handicap, lane_assignment,
-                   lineup_position, is_pacer, is_youth, paid_status, checked_in, checked_in_at
+            SELECT id, name, usbc_id, email, entering_avg, handicap, lane_assignment,
+                   lineup_position, is_pacer, is_youth, smart_account_id, paid_status, checked_in
             FROM bowlers
             WHERE tournament_id = ?
             ORDER BY lane_assignment ASC, lineup_position ASC
@@ -111,8 +113,7 @@ def render_intake_gateway() -> None:
         unsafe_allow_html=True,
     )
 
-    # Tabs for Roster Management and Concourse Station
-    tab_roster, tab_manual, tab_concourse = st.tabs(["📋 Squad Roster", "➕ Add Competitor", "📱 Concourse Access Badges"])
+    tab_roster, tab_entry, tab_concourse = st.tabs(["📋 Squad Roster", "➕ Add Competitors & AI Ingestion", "📱 Concourse Access Badges"])
 
     # --- TAB 1: SQUAD ROSTER ---
     with tab_roster:
@@ -127,49 +128,124 @@ def render_intake_gateway() -> None:
 
             st.dataframe(bowlers, hide_index=True, use_container_width=True)
 
-    # --- TAB 2: MANUAL COMPETITOR ENTRY ---
-    with tab_manual:
-        with st.form("manual_bowler_entry_form", clear_on_submit=True):
-            c1, c2 = st.columns(2)
-            with c1:
-                b_name = st.text_input("Bowler Full Name")
-                b_usbc = st.text_input("USBC Member ID")
-                b_email = st.text_input("Bowler Email (for recap delivery)")
-            with c2:
-                b_avg = st.number_input("Entering Average", min_value=0, max_value=300, value=200)
-                b_hdcp = st.number_input("Handicap", min_value=0, max_value=150, value=18)
-                b_lane = st.number_input("Assigned Lane", min_value=1, max_value=80, value=1)
+    # --- TAB 2: ADD COMPETITORS (AI DOCUMENT UPLOAD + MANUAL) ---
+    with tab_entry:
+        st.subheader("✨ AI Squad Document Ingestion")
+        client = get_gemini_client()
+        active_model = get_best_available_model(client) if client else "API Key Not Detected"
+        st.caption(f"Upload Word (.docx), Excel (.xlsx/.xls), PDF, CSV, or a roster photo. Powered by **{active_model}**.")
 
-            c3, c4 = st.columns(2)
-            with c3:
-                is_youth = st.checkbox("Youth Competitor (USBC Rule 400 SMART Escrow)")
-                smart_id = st.text_input("SMART Account # (if youth)", value="")
-            with c4:
-                paid = st.selectbox("Payment Status", ["paid", "unpaid"])
+        uploaded_file = st.file_uploader(
+            "Upload Squad File",
+            type=["docx", "xlsx", "xls", "pdf", "csv", "png", "jpg", "jpeg", "txt"],
+            key="ai_roster_uploader",
+        )
 
-            btn_add = st.form_submit_button("📥 Register Bowler to Squad", type="primary", use_container_width=True)
-            if btn_add:
-                if not b_name.strip():
-                    st.error("Bowler name is required.")
-                else:
+        if uploaded_file is not None:
+            c_run1, c_run2 = st.columns([2, 5])
+            with c_run1:
+                if st.button("🤖 Ingest Roster with Gemini", type="primary", use_container_width=True):
+                    with st.spinner(f"Analyzing {uploaded_file.name} with {active_model}..."):
+                        try:
+                            file_bytes = uploaded_file.getvalue()
+                            extracted = parse_roster_with_gemini(file_bytes, uploaded_file.name)
+                            if not extracted:
+                                st.warning("No bowler records found in document.")
+                            else:
+                                st.session_state["parsed_ai_roster"] = extracted
+                                st.success(f"Successfully extracted {len(extracted)} bowler(s)!")
+                        except Exception as e:
+                            st.error(f"AI Extraction failed: {e}")
+
+        # Editable preview and batch commit
+        if "parsed_ai_roster" in st.session_state and st.session_state["parsed_ai_roster"]:
+            st.markdown("##### 📝 Review & Edit Roster Before Registering")
+            df_edit = pd.DataFrame(st.session_state["parsed_ai_roster"])
+            edited_df = st.data_editor(df_edit, num_rows="dynamic", use_container_width=True, key="ai_editor")
+
+            col_sub1, col_sub2 = st.columns([2, 5])
+            with col_sub1:
+                if st.button("📥 Commit Roster to Squad", type="primary", use_container_width=True):
                     conn = get_connection()
+                    inserted = 0
                     try:
                         with conn:
-                            conn.execute(
-                                """
-                                INSERT INTO bowlers (
-                                    tournament_id, name, usbc_id, email, entering_avg, handicap,
-                                    lane_assignment, lineup_position, is_youth, smart_account_id, paid_status
+                            for _, row in edited_df.iterrows():
+                                b_name = str(row.get("name", "")).strip()
+                                if not b_name:
+                                    continue
+                                conn.execute(
+                                    """
+                                    INSERT INTO bowlers (
+                                        tournament_id, name, usbc_id, email, entering_avg, handicap,
+                                        lane_assignment, lineup_position, is_youth, smart_account_id, paid_status
+                                    )
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                                    """,
+                                    (
+                                        t_id,
+                                        b_name,
+                                        str(row.get("usbc_id") or "").strip(),
+                                        str(row.get("email") or "").strip(),
+                                        int(row.get("entering_avg") or 200),
+                                        int(row.get("handicap") or 0),
+                                        int(row.get("lane_assignment") or 1),
+                                        1 if row.get("is_youth") else 0,
+                                        str(row.get("smart_account_id") or "").strip(),
+                                        str(row.get("paid_status") or "paid"),
+                                    ),
                                 )
-                                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-                                """,
-                                (t_id, b_name.strip(), b_usbc.strip(), b_email.strip(), b_avg, b_hdcp, b_lane, 1 if is_youth else 0, smart_id.strip(), paid),
-                            )
-                        log_desk_action(td_name, "td", f"Registered bowler '{b_name}' on Lane {b_lane} for squad #{t_id}")
-                        st.success(f"Bowler {b_name} added to Squad #{t_id}!")
+                                inserted += 1
+                        log_desk_action(td_name, "td", f"AI batch-registered {inserted} bowlers for squad #{t_id}")
+                        st.session_state["parsed_ai_roster"] = []
+                        st.success(f"Successfully registered {inserted} bowler(s) to Squad #{t_id}!")
                         st.rerun()
                     finally:
                         conn.close()
+
+        st.markdown("---")
+        with st.expander("✍️ Manual Competitor Entry (Single Bowler Walk-In)"):
+            with st.form("manual_bowler_entry_form", clear_on_submit=True):
+                c1, c2 = st.columns(2)
+                with c1:
+                    b_name = st.text_input("Bowler Full Name")
+                    b_usbc = st.text_input("USBC Member ID")
+                    b_email = st.text_input("Bowler Email (for recap delivery)")
+                with c2:
+                    b_avg = st.number_input("Entering Average", min_value=0, max_value=300, value=200)
+                    b_hdcp = st.number_input("Handicap", min_value=0, max_value=150, value=18)
+                    b_lane = st.number_input("Assigned Lane", min_value=1, max_value=80, value=1)
+
+                c3, c4 = st.columns(2)
+                with c3:
+                    is_youth = st.checkbox("Youth Competitor (USBC Rule 400 SMART Escrow)")
+                    smart_id = st.text_input("SMART Account # (if youth)", value="")
+                with c4:
+                    paid = st.selectbox("Payment Status", ["paid", "unpaid"])
+
+                btn_add = st.form_submit_button("📥 Register Bowler to Squad", type="primary", use_container_width=True)
+                if btn_add:
+                    if not b_name.strip():
+                        st.error("Bowler name is required.")
+                    else:
+                        conn = get_connection()
+                        try:
+                            with conn:
+                                conn.execute(
+                                    """
+                                    INSERT INTO bowlers (
+                                        tournament_id, name, usbc_id, email, entering_avg, handicap,
+                                        lane_assignment, lineup_position, is_youth, smart_account_id, paid_status
+                                    )
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                                    """,
+                                    (t_id, b_name.strip(), b_usbc.strip(), b_email.strip(), b_avg, b_hdcp, b_lane, 1 if is_youth else 0, smart_id.strip(), paid),
+                                )
+                            log_desk_action(td_name, "td", f"Registered bowler '{b_name}' on Lane {b_lane} for squad #{t_id}")
+                            st.success(f"Bowler {b_name} added to Squad #{t_id}!")
+                            st.rerun()
+                        finally:
+                            conn.close()
 
     # --- TAB 3: CONCOURSE ACCESS BADGES ---
     with tab_concourse:
