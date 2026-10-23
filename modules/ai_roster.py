@@ -1,4 +1,4 @@
-"""AI Roster Ingestion Engine with dynamic model auto-discovery across active Gemini 3 and 2.5 generations."""
+"""AI Roster Ingestion Engine with dynamic model auto-discovery and resilient multi-format document support."""
 
 import io
 import json
@@ -29,14 +29,12 @@ def get_best_available_model(client: genai.Client) -> str:
             raw_name = getattr(m, "name", "") or getattr(m, "id", "")
             name = raw_name.split("/")[-1] if "/" in raw_name else raw_name
 
-            # Look for flash models capable of generating content
             if "flash" in name.lower():
                 supported = getattr(m, "supported_actions", []) or getattr(m, "supported_generation_methods", [])
                 if not supported or "generateContent" in supported:
                     candidates.append(name)
 
         if candidates:
-            # Sort version numbers descending so Gemini 3.8/3.7/3.5 win over 2.5
             def version_sort_key(s: str):
                 nums = re.findall(r"(\d+(?:\.\d+)?)", s)
                 return [float(n) for n in nums] if nums else [0.0]
@@ -46,8 +44,24 @@ def get_best_available_model(client: genai.Client) -> str:
     except Exception:
         pass
 
-    # High-reliability default fallback if model list call is blocked
-    return "gemini-3.8-flash"
+    return "gemini-2.5-flash"
+
+
+EXTRACTION_PROMPT = (
+    "You are an expert tournament director intake assistant for the Cecil Harford USBC. "
+    "Extract all bowling competitors from the provided tournament roster data. "
+    "For every bowler found, extract the following fields strictly:\n"
+    "- name: Bowler Full Name (required string)\n"
+    "- usbc_id: USBC Member ID (string or null)\n"
+    "- entering_avg: Entering average (integer, default 200 if not listed)\n"
+    "- handicap: Entering handicap (integer, default calculated as 90% of (220 - avg) if not listed, min 0)\n"
+    "- lane_assignment: Starting lane number (integer, default 1 if not listed)\n"
+    "- email: Bowler email address (string or null)\n"
+    "- is_youth: Boolean true if explicitly labeled youth, junior, Rule 400, or has a SMART account, else false\n"
+    "- smart_account_id: SMART scholarship ID (string or null)\n"
+    "- paid_status: 'paid' or 'unpaid' (default 'paid' unless noted as unpaid, owing, or balance due)\n\n"
+    "Return ONLY a clean JSON array of objects conforming to this schema."
+)
 
 
 def _extract_text_from_file(file_bytes: bytes, file_name: str) -> str | None:
@@ -70,8 +84,8 @@ def _extract_text_from_file(file_bytes: bytes, file_name: str) -> str | None:
     # Word Documents (.docx)
     if fn.endswith(".docx"):
         try:
-            from docx import Document
-            doc = Document(io.BytesIO(file_bytes))
+            import docx
+            doc = docx.Document(io.BytesIO(file_bytes))
             paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
             table_rows = []
             for t in doc.tables:
@@ -98,36 +112,32 @@ def _extract_text_from_file(file_bytes: bytes, file_name: str) -> str | None:
     return None
 
 
+def _format_records(raw_text: str) -> list[dict]:
+    """Parse JSON and normalize roster lists."""
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1].rsplit("\n", 1)[0].strip()
+
+    records = json.loads(cleaned)
+    if isinstance(records, dict):
+        for key in ("bowlers", "roster", "competitors", "players"):
+            if key in records and isinstance(records[key], list):
+                return records[key]
+        return [records]
+    return records
+
+
 def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
     """Extracts structured bowler roster records from Word, Excel, PDF, CSV, or Images."""
     client = get_gemini_client()
     if not client:
-        raise ValueError(
-            "GEMINI_API_KEY is missing. Please add GEMINI_API_KEY to your Streamlit secrets or environment variables."
-        )
+        raise ValueError("GEMINI_API_KEY is missing from Streamlit secrets or environment.")
 
     model_name = get_best_available_model(client)
-
-    extraction_prompt = (
-        "You are an expert tournament director intake assistant for the Cecil Harford USBC. "
-        "Extract all bowling competitors from the provided tournament roster document. "
-        "For every bowler found, extract the following fields strictly:\n"
-        "- name: Bowler Full Name (required string)\n"
-        "- usbc_id: USBC Member ID (string or null)\n"
-        "- entering_avg: Entering average (integer, default 200 if not listed)\n"
-        "- handicap: Entering handicap (integer, default calculated as 90% of (220 - avg) if not listed, min 0)\n"
-        "- lane_assignment: Starting lane number (integer, default 1 if not listed)\n"
-        "- email: Bowler email address (string or null)\n"
-        "- is_youth: Boolean true if explicitly labeled youth, junior, Rule 400, or has a SMART account, else false\n"
-        "- smart_account_id: SMART scholarship ID (string or null)\n"
-        "- paid_status: 'paid' or 'unpaid' (default 'paid' unless noted as unpaid, owing, or balance due)\n\n"
-        "Return ONLY a clean JSON array of objects conforming to this schema."
-    )
-
     extracted_text = _extract_text_from_file(file_bytes, file_name)
 
     if extracted_text:
-        contents = [extraction_prompt, f"--- DOCUMENT DATA ({file_name}) ---\n{extracted_text}"]
+        contents = [EXTRACTION_PROMPT, f"--- DOCUMENT DATA ({file_name}) ---\n{extracted_text}"]
     else:
         fn_lower = file_name.lower()
         if fn_lower.endswith(".pdf"):
@@ -140,25 +150,22 @@ def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
             mime = "application/octet-stream"
 
         part = types.Part.from_bytes(data=file_bytes, mime_type=mime)
-        contents = [extraction_prompt, part]
+        contents = [EXTRACTION_PROMPT, part]
 
-    config = types.GenerateContentConfig(
-        response_mime_type="application/json",
-        temperature=0.1,
-    )
+    config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1)
+    response = client.models.generate_content(model=model_name, contents=contents, config=config)
+    return _format_records(response.text)
 
-    response = client.models.generate_content(
-        model=model_name,
-        contents=contents,
-        config=config,
-    )
 
-    raw_text = response.text.strip()
-    records = json.loads(raw_text)
-    if isinstance(records, dict):
-        for key in ("bowlers", "roster", "competitors", "players"):
-            if key in records and isinstance(records[key], list):
-                return records[key]
-        return [records]
+def parse_roster_text_with_gemini(raw_text_input: str) -> list[dict]:
+    """Extracts structured bowler roster records directly from raw pasted text."""
+    client = get_gemini_client()
+    if not client:
+        raise ValueError("GEMINI_API_KEY is missing from Streamlit secrets or environment.")
 
-    return records
+    model_name = get_best_available_model(client)
+    contents = [EXTRACTION_PROMPT, f"--- PASTED ROSTER TEXT ---\n{raw_text_input}"]
+    config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1)
+
+    response = client.models.generate_content(model=model_name, contents=contents, config=config)
+    return _format_records(response.text)
