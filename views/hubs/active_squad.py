@@ -1,12 +1,31 @@
-"""Active Squad Hub — Live scoring matrix, lane movement, check-in status, and 8-person bracket desk controls."""
+"""Active Squad Hub — Live scoring matrix, lane movement, check-in status, quick QR codes, and 8-person bracket desk controls."""
 
+import io
 import pandas as pd
+import qrcode
 import streamlit as st
 
 from modules.auth import current_user
 from modules.brackets import generate_eight_person_brackets, score_bracket_round
 from modules.constants import CENTERS
 from modules.db_state import get_connection, log_desk_action
+
+
+def _get_base_url() -> str:
+    """Dynamically determine current host environment base URL."""
+    return st.secrets.get("APP_BASE_URL", "https://chusbc-desk.streamlit.app")
+
+
+def _generate_qr_buffer(url: str) -> io.BytesIO:
+    """Generate high-contrast QR code image in memory."""
+    qr = qrcode.QRCode(box_size=4, border=2)
+    qr.add_data(url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="#0F172A", back_color="#FFFFFF")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
 
 def _get_active_tournament() -> dict | None:
@@ -142,7 +161,6 @@ def render_active_squad() -> None:
     total_bowlers = len(bowlers)
     checked_in_count = sum(1 for b in bowlers if b.get("checked_in"))
     unchecked_bowlers = [b for b in bowlers if not b.get("checked_in")]
-    unpaid_bowlers = [b for b in bowlers if b.get("paid_status") != "paid"]
 
     if checked_in_count == total_bowlers and total_bowlers > 0:
         st.markdown(
@@ -199,6 +217,52 @@ def render_active_squad() -> None:
                         """,
                         unsafe_allow_html=True,
                     )
+
+    # =========================================================
+    # QUICK QR ACCESS DRAWER (LIVE SCORER & BOWLER PORTAL)
+    # =========================================================
+    with st.expander("📱 Quick Scan: Floor Scorer Pad & Live Bowler Standings QR", expanded=False):
+        base_url = _get_base_url()
+        scorer_url = f"{base_url}/?mode=score"
+        portal_url = f"{base_url}/?mode=bowler"
+
+        buf_scorer = _generate_qr_buffer(scorer_url)
+        buf_portal = _generate_qr_buffer(portal_url)
+
+        qr_col1, qr_col2 = st.columns(2, gap="large")
+        with qr_col1:
+            with st.container(border=True):
+                st.markdown(
+                    f"""
+                    <div style="text-align:center;">
+                        <span style="background:#1E3A8A; color:#93C5FD; font-size:11px; font-weight:800; padding:2px 8px; border-radius:4px;">
+                            FLOOR SCORING PAD
+                        </span>
+                        <h4 style="color:#F8FAFC; margin:8px 0 2px 0;">📱 Mobile Scorer</h4>
+                        <p style="color:#10B981; font-weight:700; font-size:13px; margin-bottom:8px;">🔑 PIN: {tourney['pin_verifier']}</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                st.image(buf_scorer.getvalue(), caption="Floor Assistant 10-Key Input", use_container_width=True)
+                st.markdown(f"<div style='text-align:center;'><a href='{scorer_url}' target='_blank'>Open Scorer Tab ↗</a></div>", unsafe_allow_html=True)
+
+        with qr_col2:
+            with st.container(border=True):
+                st.markdown(
+                    """
+                    <div style="text-align:center;">
+                        <span style="background:#0284C7; color:#BAE6FD; font-size:11px; font-weight:800; padding:2px 8px; border-radius:4px;">
+                            PUBLIC STANDINGS
+                        </span>
+                        <h4 style="color:#F8FAFC; margin:8px 0 2px 0;">📊 Bowler Portal</h4>
+                        <p style="color:#94A3B8; font-size:13px; margin-bottom:8px;">Live standings, cut line & brackets</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                st.image(buf_portal.getvalue(), caption="Bowler Live Scoreboard", use_container_width=True)
+                st.markdown(f"<div style='text-align:center;'><a href='{portal_url}' target='_blank'>Open Portal Tab ↗</a></div>", unsafe_allow_html=True)
 
     # =========================================================
     # 8-PERSON BRACKET & SIDE POT CONTROLS
