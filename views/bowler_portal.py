@@ -204,20 +204,11 @@ def _render_my_action_tab(tournament_id: int) -> None:
         conn.close()
 
 
-def _render_standings_flow(active_tourneys: list[dict]) -> None:
-    """Public live standings & cut-line leaderboard with pre-game pairing preview."""
-    st.title("🎳 Live Bowler Portal & Standings")
-
-    if not active_tourneys:
-        st.info("No live tournament results currently available.")
-        return
-
-    tourney = active_tourneys[0]
-    st.caption(f"Viewing: **{tourney['name']}** ({tourney['host_center']})")
-
+@st.fragment(run_every="8s")
+def _render_live_standings_table(tourney: dict) -> None:
+    """Auto-polling broadcast-styled standings board with podium badges and cut lines."""
     conn = get_connection()
     try:
-        # Check overall squad bowler check-in status
         bowler_rows = conn.execute(
             "SELECT id, name, lane_assignment, lineup_position, entering_avg, handicap, checked_in, is_pacer "
             "FROM bowlers WHERE tournament_id = ? AND is_pacer = 0 ORDER BY lane_assignment ASC, lineup_position ASC",
@@ -235,31 +226,29 @@ def _render_standings_flow(active_tourneys: list[dict]) -> None:
         GROUP BY b.id
         ORDER BY grand_total DESC, total_scratch DESC
         """
-        rows = conn.execute(sql, (tourney["id"],)).fetchall()
+        rows = [dict(r) for r in conn.execute(sql, (tourney["id"],)).fetchall()]
 
         total_field = len(bowler_rows)
         checked_field = sum(1 for b in bowler_rows if b["checked_in"])
         all_checked = (checked_field == total_field) and total_field > 0
 
-        # Pre-competition or awaiting first scores
+        # Pre-competition State
         if not rows or rows[0]["games_bowled"] == 0:
             if all_checked:
                 st.markdown(
                     """
-                    <div style="background: linear-gradient(135deg, #064E3B 0%, #0F172A 100%); border: 1px solid #10B981; border-radius: 10px; padding: 16px 20px; margin-bottom: 20px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div>
-                                <h3 style="color: #ECFDF5; margin: 0 0 4px 0; font-size: 18px;">
-                                    🎳 Squad In Progress &middot; Game 1 Scores Pending
-                                </h3>
-                                <p style="color: #6EE7B7; font-size: 13px; margin: 0;">
-                                    All bowlers have checked in. Live leaderboard will auto-populate as recap sheets are audited.
-                                </p>
-                            </div>
-                            <span style="background: #10B981; color: #022C22; font-weight: 800; font-size: 11px; padding: 4px 10px; border-radius: 999px;">
-                                ON LANES
-                            </span>
+                    <div style="background: linear-gradient(135deg, #064E3B 0%, #0F172A 100%); border: 1px solid #10B981; border-radius: 10px; padding: 16px 20px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <h3 style="color: #ECFDF5; margin: 0 0 4px 0; font-size: 18px;">
+                                🎳 Squad In Progress &middot; Game 1 Scores Pending
+                            </h3>
+                            <p style="color: #6EE7B7; font-size: 13px; margin: 0;">
+                                All bowlers confirmed on lanes. Standings board will update automatically.
+                            </p>
                         </div>
+                        <span style="background: #10B981; color: #022C22; font-weight: 800; font-size: 11px; padding: 4px 10px; border-radius: 999px;">
+                            ON LANES
+                        </span>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -270,14 +259,13 @@ def _render_standings_flow(active_tourneys: list[dict]) -> None:
                     <div style="background: #1E293B; border: 1px solid #334155; border-radius: 10px; padding: 16px 20px; margin-bottom: 20px;">
                         <h4 style="color: #F8FAFC; margin: 0 0 4px 0;">⏳ Tournament Check-In Phase</h4>
                         <p style="color: #94A3B8; font-size: 13px; margin: 0;">
-                            Paddock arrival gate is open ({checked_field} of {total_field} bowlers confirmed). Scores will appear once competition commences.
+                            Paddock gate open ({checked_field} of {total_field} bowlers confirmed). Scores will appear once competition commences.
                         </p>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
 
-            # Pre-game starting lane assignment sheet
             if bowler_rows:
                 st.markdown("#### Official Squad Lane Pairings")
                 pair_data = []
@@ -293,22 +281,120 @@ def _render_standings_flow(active_tourneys: list[dict]) -> None:
                 st.dataframe(pd.DataFrame(pair_data), hide_index=True, use_container_width=True)
             return
 
-        # Scores are recorded: Render live cut-line leaderboard
-        data = []
-        for rank, r in enumerate(rows, start=1):
-            data.append({
-                "Rank": rank,
-                "Bowler": r["name"],
-                "Lane": r["lane_assignment"],
-                "Games": r["games_bowled"],
-                "Scratch": r["total_scratch"],
-                "HDCP Total": r["grand_total"],
-            })
+        # Active Competition Leaderboard
+        leader = rows[0]
+        max_games = max(r["games_bowled"] for r in rows)
 
-        df = pd.DataFrame(data)
-        st.dataframe(df, hide_index=True, use_container_width=True)
+        # Leaderboard Top Highlight Card
+        st.markdown(
+            f"""
+            <div style="background: linear-gradient(135deg, #1E1B4B 0%, #0F172A 100%); border: 1px solid #6366F1; border-radius: 12px; padding: 16px 20px; margin-bottom: 18px; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <span style="background: #4F46E5; color: #EEF2FF; font-size: 10px; font-weight: 800; padding: 2px 8px; border-radius: 4px; text-transform: uppercase;">
+                        👑 CURRENT TOURNAMENT LEADER
+                    </span>
+                    <h2 style="color: #FFFFFF; margin: 6px 0 2px 0; font-size: 24px;">{leader['name']}</h2>
+                    <span style="color: #A5B4FC; font-size: 12px;">Lane {leader['lane_assignment']} &middot; Scratch: <b>{leader['total_scratch']}</b> (+{leader['handicap']} HDCP/gm)</span>
+                </div>
+                <div style="text-align: right;">
+                    <div style="font-size: 32px; font-weight: 900; color: #38BDF8; line-height: 1;">{leader['grand_total']}</div>
+                    <span style="color: #94A3B8; font-size: 11px; font-weight: 700; text-transform: uppercase;">Total Score ({leader['games_bowled']}/{tourney['game_count']} Gms)</span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Live Standings Table Rows
+        st.markdown(
+            """
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <h4 style="color: #F8FAFC; margin: 0;">Live Cut-Line Standings</h4>
+                <span style="color: #10B981; font-weight: 700; font-size: 11px;">● LIVE (8s AUTO-UPDATE)</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        table_rows_html = ""
+        for rank, r in enumerate(rows, start=1):
+            if rank == 1:
+                badge_html = "<span style='background:#F59E0B; color:#451A03; font-weight:900; padding:3px 8px; border-radius:6px; font-size:12px;'>🥇 1ST</span>"
+                row_bg = "background: rgba(245, 158, 11, 0.08);"
+            elif rank == 2:
+                badge_html = "<span style='background:#94A3B8; color:#0F172A; font-weight:900; padding:3px 8px; border-radius:6px; font-size:12px;'>🥈 2ND</span>"
+                row_bg = "background: rgba(148, 163, 184, 0.06);"
+            elif rank == 3:
+                badge_html = "<span style='background:#D97706; color:#451A03; font-weight:900; padding:3px 8px; border-radius:6px; font-size:12px;'>🥉 3RD</span>"
+                row_bg = "background: rgba(217, 119, 6, 0.06);"
+            else:
+                badge_html = f"<span style='color:#94A3B8; font-weight:800; font-size:13px;'>#{rank}</span>"
+                row_bg = ""
+
+            diff_to_leader = r["grand_total"] - leader["grand_total"]
+            diff_label = "LEADER" if diff_to_leader == 0 else f"{diff_to_leader}"
+
+            table_rows_html += f"""
+            <tr style="border-bottom: 1px solid #1E293B; {row_bg}">
+                <td style="padding: 12px 14px; text-align: center;">{badge_html}</td>
+                <td style="padding: 12px 14px;">
+                    <div style="font-weight: 700; color: #F8FAFC; font-size: 14px;">{r['name']}</div>
+                    <small style="color: #64748B;">Lane {r['lane_assignment']} &bull; HDCP +{r['handicap']}</small>
+                </td>
+                <td style="padding: 12px 14px; text-align: center; color: #CBD5E1; font-weight: 600;">{r['games_bowled']}</td>
+                <td style="padding: 12px 14px; text-align: right; color: #E2E8F0; font-weight: 600;">{r['total_scratch']}</td>
+                <td style="padding: 12px 14px; text-align: right;">
+                    <span style="font-size: 16px; font-weight: 800; color: #38BDF8;">{r['grand_total']}</span>
+                </td>
+                <td style="padding: 12px 14px; text-align: right; color: {'#10B981' if diff_to_leader == 0 else '#94A3B8'}; font-weight: 700; font-size: 12px;">
+                    {diff_label}
+                </td>
+            </tr>
+            """
+
+        full_table_html = f"""
+        <div style="background: #0B1120; border: 1px solid #334155; border-radius: 10px; overflow: hidden; margin-bottom: 24px;">
+            <table style="width: 100%; border-collapse: collapse; text-align: left; font-family: sans-serif;">
+                <thead>
+                    <tr style="background: #1E293B; border-bottom: 2px solid #334155; color: #94A3B8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">
+                        <th style="padding: 10px 14px; text-align: center; width: 70px;">Rank</th>
+                        <th style="padding: 10px 14px;">Bowler</th>
+                        <th style="padding: 10px 14px; text-align: center; width: 80px;">Games</th>
+                        <th style="padding: 10px 14px; text-align: right; width: 90px;">Scratch</th>
+                        <th style="padding: 10px 14px; text-align: right; width: 110px;">HDCP Total</th>
+                        <th style="padding: 10px 14px; text-align: right; width: 90px;">+/- Cut</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {table_rows_html}
+                </tbody>
+            </table>
+        </div>
+        """
+        st.markdown(full_table_html, unsafe_allow_html=True)
     finally:
         conn.close()
+
+
+def _render_standings_flow(active_tourneys: list[dict]) -> None:
+    """Public live standings & cut-line leaderboard."""
+    st.markdown(
+        """
+        <div style="display: flex; align-items: center; margin-bottom: 8px;">
+            <h2 style="color: #F8FAFC; margin: 0; font-size: 26px;">🎳 Live Bowler Portal & Standings</h2>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not active_tourneys:
+        st.info("No live tournament results currently available.")
+        return
+
+    tourney = active_tourneys[0]
+    st.caption(f"Viewing: **{tourney['name']}** ({tourney['host_center']})")
+
+    _render_live_standings_table(tourney)
 
 
 def render_bowler_portal() -> None:
