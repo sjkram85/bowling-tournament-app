@@ -469,14 +469,21 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
 
 
 def archive_snapshot(tournament_id: int) -> dict:
+    """Build the full event snapshot safely handling optional or unmigrated tables."""
+    def safe_query(sql: str, params: tuple = ()) -> list[dict]:
+        try:
+            return query(sql, params)
+        except Exception:
+            return []
+
     snapshot = {
         "tournament": get_tournament(tournament_id),
-        "bowlers": query("SELECT * FROM bowlers WHERE tournament_id = ?", (tournament_id,)),
-        "scores": query("SELECT * FROM scores WHERE tournament_id = ?", (tournament_id,)),
-        "teams": query("SELECT * FROM tournament_teams WHERE tournament_id = ?", (tournament_id,)),
-        "mystery_doubles_pairs": query("SELECT * FROM mystery_doubles_pairs WHERE tournament_id = ?", (tournament_id,)),
-        "tiebreak_roll_offs": query("SELECT * FROM tiebreak_roll_offs WHERE tournament_id = ?", (tournament_id,)),
-        "stepladder_matches": query("SELECT * FROM stepladder_matches WHERE tournament_id = ?", (tournament_id,)),
+        "bowlers": safe_query("SELECT * FROM bowlers WHERE tournament_id = ?", (tournament_id,)),
+        "scores": safe_query("SELECT * FROM scores WHERE tournament_id = ?", (tournament_id,)),
+        "teams": safe_query("SELECT * FROM tournament_teams WHERE tournament_id = ?", (tournament_id,)),
+        "mystery_doubles_pairs": safe_query("SELECT * FROM mystery_doubles_pairs WHERE tournament_id = ?", (tournament_id,)),
+        "tiebreak_roll_offs": safe_query("SELECT * FROM tiebreak_roll_offs WHERE tournament_id = ?", (tournament_id,)),
+        "stepladder_matches": safe_query("SELECT * FROM stepladder_matches WHERE tournament_id = ?", (tournament_id,)),
         "final_standings": [
             {k: v for k, v in row.items() if k not in ("game_scores", "tiebreak_key")}
             for row in compute_standings(tournament_id)
