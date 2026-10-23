@@ -395,16 +395,30 @@ def is_admin() -> bool:
 
 
 def logout() -> None:
-    """Clear active user session."""
+    """Clear active user session and reset navigation state."""
     user = current_user()
     if user:
         log_desk_action(user["display_name"], user["role"], "Staff user logged out")
     st.session_state.pop("user", None)
+    st.query_params.clear()
 
 
 def render_login_screen() -> None:
     """Render a compact, centered card layout for staff login and registration with official sanction branding."""
     _bootstrap_admin()
+
+    # Hide sidebar completely on login/registration screen so the card is centered
+    st.markdown(
+        """
+        <style>
+        section[data-testid="stSidebar"],
+        div[data-testid="collapsedControl"] {
+            display: none !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     _, center_col, _ = st.columns([1.0, 1.8, 1.0])
 
