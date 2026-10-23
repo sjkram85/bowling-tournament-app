@@ -1,10 +1,13 @@
 """Finals closeout, prize payout audit, one-click print/email recap, and USBC Rule 400 SMART compliance."""
 
+import csv
+import io
 import pandas as pd
 import streamlit as st
 
 from modules.auth import current_user
 from modules.brackets import get_bracket_financial_ledger
+from modules.cde_bls_bridge import build_bls_streams
 from modules.db_state import get_connection, log_desk_action
 from modules.reports import build_certified_pdf, build_smart_scholarship_csv
 from modules.stepladder import (
@@ -61,6 +64,25 @@ def _get_tournament_emails(tournament_id: int) -> list[dict]:
         return [dict(r) for r in rows]
     except Exception:
         return []
+    finally:
+        conn.close()
+
+
+def _get_audit_log_csv() -> str:
+    """Fetch all desk audit entries as a formatted CSV string."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT timestamp, user_name, role, action_description FROM audit_log ORDER BY id DESC"
+        ).fetchall()
+        out = io.StringIO()
+        writer = csv.writer(out, lineterminator="\n")
+        writer.writerow(["Timestamp (UTC)", "User", "Role", "Desk Action Description"])
+        for r in rows:
+            writer.writerow([r["timestamp"], r["user_name"], r["role"], r["action_description"]])
+        return out.getvalue()
+    except Exception:
+        return ""
     finally:
         conn.close()
 
@@ -132,7 +154,7 @@ def render_finals_close() -> None:
                     "Grand Total": bowler["grand_total"],
                     "Division": "YOUTH (Rule 400)" if is_youth else "ADULT",
                     "Prize": f"${prize:.2f}",
-                    "Disbursement": routing,
+                    "Payout Type": routing,
                 })
 
             df = pd.DataFrame(audit_rows)
@@ -148,7 +170,7 @@ def render_finals_close() -> None:
 
             c_print, c_email, c_lock = st.columns(3, gap="medium")
 
-            # Action 1: On-Demand PDF Concourse Printout
+            # Action 1: Lazy-loaded Concourse Print PDF
             with c_print:
                 st.download_button(
                     label="🖨️ Download Printable PDF",
@@ -273,13 +295,15 @@ def render_finals_close() -> None:
                                 st.success(f"🏆 Winner: **{winner_label}**")
 
     # ---------------------------------------------------------
-    # TAB 4: AUDIT LOGS, CSV & SMART COMPLIANCE EXPORTS
+    # TAB 4: AUDIT LOGS, CSV & CDE BLS EXPORTS
     # ---------------------------------------------------------
     with tab_audit:
         st.subheader("Official Audit Exports & Compliance Vault")
-        st.caption("Generate raw data files and official USBC SMART scholarship upload spreadsheets.")
+        st.caption("Generate raw data files, CDE BLS software bridge files, and USBC SMART scholarship upload spreadsheets.")
 
-        col_smart, col_csv = st.columns(2)
+        # Row 1: Core USBC Compliance & Standings
+        st.markdown("##### 📜 Official USBC & Association Deliverables")
+        col_smart, col_standings = st.columns(2)
         with col_smart:
             smart_csv = build_smart_scholarship_csv(t_id, prize_pool=smart_total if "smart_total" in locals() else 0.0)
             st.download_button(
@@ -288,10 +312,10 @@ def render_finals_close() -> None:
                 file_name=f"USBC_SMART_Export_Tourney_{t_id}.csv",
                 mime="text/csv",
                 use_container_width=True,
-                help="Pre-formatted CSV ready for upload to the USBC SMART portal.",
+                help="Pre-formatted CSV ready for direct upload to the USBC SMART portal.",
             )
 
-        with col_csv:
+        with col_standings:
             if "df" in locals():
                 csv_bytes = df.to_csv(index=False).encode("utf-8")
                 st.download_button(
@@ -300,4 +324,50 @@ def render_finals_close() -> None:
                     file_name=f"Standings_Tourney_{t_id}.csv",
                     mime="text/csv",
                     use_container_width=True,
+                    help="Spreadsheet containing full final ranks, scratch scores, and handicap totals.",
                 )
+
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+
+        # Row 2: CDE BLS Tournament Software Bridge
+        st.markdown("##### 🎳 CDE BLS Tournament Software Bridge")
+        col_bls_bits, col_bls_dat = st.columns(2)
+
+        try:
+            bls_data = build_bls_streams(t_id)
+        except Exception:
+            bls_data = {"bits_csv": "", "autoscoring_dat": ""}
+
+        with col_bls_bits:
+            st.download_button(
+                "💾 Download BLS / BITS Bridge (.CSV)",
+                data=bls_data["bits_csv"],
+                file_name=f"BLS_BITS_Export_{t_id}.csv",
+                mime="text/csv",
+                use_container_width=True,
+                help="Standard CDE BLS / Bowler TRAC roster and series import file.",
+            )
+
+        with col_bls_dat:
+            st.download_button(
+                "🖩 Download AutoScoring ASCII Stream (.DAT)",
+                data=bls_data["autoscoring_dat"],
+                file_name=f"AutoScoring_Export_{t_id}.dat",
+                mime="text/plain",
+                use_container_width=True,
+                help="Fixed-width ASCII stream compatible with automated recap archives.",
+            )
+
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+
+        # Row 3: Permanent Desk Action Audit Log
+        st.markdown("##### 🔒 Immutable Desk Audit Trail")
+        audit_csv_data = _get_audit_log_csv()
+        st.download_button(
+            "📋 Download Desk Action Audit Log (.CSV)",
+            data=audit_csv_data,
+            file_name=f"Desk_Audit_Log_Event_{t_id}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            help="Timestamped chronological record of all score entries, verification overrides, and desk actions.",
+        )

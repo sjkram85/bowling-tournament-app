@@ -5,7 +5,6 @@ import io
 
 from modules.db_state import get_connection
 
-# Header aliases (lower-cased, stripped of spaces/underscores) -> roster field.
 _FIELD_ALIASES = {
     "usbcid": "usbc_id",
     "usbc": "usbc_id",
@@ -27,7 +26,6 @@ _FIELD_ALIASES = {
     "email": "email",
     "emailaddress": "email",
 }
-# Layout assumed for header-less files.
 _POSITIONAL_FIELDS = ["usbc_id", "last_name", "first_name", "entering_avg", "handicap", "email"]
 
 BITS_COLUMNS = ["USBC ID", "Last Name", "First Name", "Average", "Handicap", "Lane", "Game 1", "Game 2", "Game 3"]
@@ -47,11 +45,7 @@ def _to_int(value: str | None) -> int | None:
 
 
 def parse_bls_bits_file(file_content: str | bytes) -> list[dict]:
-    """Parse a comma-delimited BITS / Bowler TRAC file into bowler roster records.
-
-    Uses the header row when one is present, otherwise assumes the column order
-    USBC ID, Last, First, Average, Handicap, Email. Rows without a name are skipped.
-    """
+    """Parse a comma-delimited BITS / Bowler TRAC file into bowler roster records."""
     if isinstance(file_content, bytes):
         file_content = file_content.decode("utf-8-sig", errors="replace")
     rows = [row for row in csv.reader(io.StringIO(file_content.lstrip("\ufeff"))) if any(c.strip() for c in row)]
@@ -67,9 +61,7 @@ def parse_bls_bits_file(file_content: str | bytes) -> list[dict]:
     records = []
     for row in data_rows:
         raw = {field: cell.strip() for field, cell in zip(fields, row) if field}
-        name = raw.get("name") or " ".join(
-            part for part in (raw.get("first_name"), raw.get("last_name")) if part
-        )
+        name = raw.get("name") or " ".join(part for part in (raw.get("first_name"), raw.get("last_name")) if part)
         if not name:
             continue
         records.append(
@@ -90,7 +82,7 @@ def _split_name(name: str) -> tuple[str, str]:
 
 
 def generate_bls_export(tournament_id: int) -> str:
-    """Return the AutoScoring ASCII ``.dat`` stream of game-by-game scores for a tournament."""
+    """Return the AutoScoring ASCII .dat stream of game-by-game scores for a tournament."""
     return build_bls_streams(tournament_id)["autoscoring_dat"]
 
 
@@ -102,12 +94,12 @@ def build_bls_streams(tournament_id: int) -> dict[str, str]:
     """
     connection = get_connection()
     try:
-        game_count = connection.execute(
+        game_count_row = connection.execute(
             "SELECT game_count FROM tournaments WHERE id = ?", (tournament_id,)
         ).fetchone()
-        if game_count is None:
+        if game_count_row is None:
             raise ValueError(f"Tournament {tournament_id} not found")
-        game_count = game_count["game_count"]
+        game_count = game_count_row["game_count"]
         bowlers = connection.execute(
             "SELECT id, name, usbc_id, entering_avg, handicap, lane_assignment "
             "FROM bowlers WHERE tournament_id = ? ORDER BY lane_assignment, name",
@@ -115,7 +107,7 @@ def build_bls_streams(tournament_id: int) -> dict[str, str]:
         ).fetchall()
         scores: dict[int, dict[int, int]] = {}
         for row in connection.execute(
-            "SELECT bowler_id, game_number, scratch_score FROM bowler_scores WHERE tournament_id = ?",
+            "SELECT bowler_id, game_number, scratch_score FROM scores WHERE tournament_id = ?",
             (tournament_id,),
         ):
             scores.setdefault(row["bowler_id"], {})[row["game_number"]] = row["scratch_score"]
