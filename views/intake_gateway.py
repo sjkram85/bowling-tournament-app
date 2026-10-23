@@ -53,6 +53,21 @@ def _empty_roster() -> pd.DataFrame:
     )
 
 
+def _ensure_roster_schema(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure any session-persisted or legacy dataframe contains all expected triage columns."""
+    for col in TRIAGE_COLUMNS:
+        if col not in df.columns:
+            if col in ("Paid", "Pacer", "Youth"):
+                df[col] = False
+            elif col in ("Entering Avg", "Handicap"):
+                df[col] = pd.Series(dtype="Int64")
+            else:
+                df[col] = pd.Series(dtype="str")
+    return df[TRIAGE_COLUMNS].astype(
+        {"Entering Avg": "Int64", "Handicap": "Int64", "Paid": "bool", "Pacer": "bool", "Youth": "bool"}
+    )
+
+
 def _records_to_frame(records: list[dict]) -> pd.DataFrame:
     rows = [
         {
@@ -66,9 +81,8 @@ def _records_to_frame(records: list[dict]) -> pd.DataFrame:
         }
         for r in records
     ]
-    return pd.DataFrame(rows, columns=TRIAGE_COLUMNS).astype(
-        {"Entering Avg": "Int64", "Handicap": "Int64", "Paid": "bool", "Pacer": "bool", "Youth": "bool"}
-    )
+    df = pd.DataFrame(rows, columns=TRIAGE_COLUMNS)
+    return _ensure_roster_schema(df)
 
 
 def _int_or_none(value) -> int | None:
@@ -87,7 +101,7 @@ def _generate_qr_buffer(url: str) -> io.BytesIO:
     return buf
 
 
-def _create_tournament(name, host_code, squad_format, game_count, roster, mystery_doubles, pin) -> int:
+def _create_tournament(name, host_code, squad_format, game_count, roster: pd.DataFrame, mystery_doubles, pin) -> int:
     lanes = CENTERS[host_code]["lanes"]
     connection = get_connection()
     try:
@@ -108,25 +122,30 @@ def _create_tournament(name, host_code, squad_format, game_count, roster, myster
                     pin,
                 ),
             ).lastrowid
-            for index, row in enumerate(roster.itertuples(index=False)):
-                average = _int_or_none(row[2])
-                handicap = _int_or_none(row[3])
+
+            for index, row in enumerate(roster.to_dict(orient="records")):
+                average = _int_or_none(row.get("Entering Avg"))
+                handicap = _int_or_none(row.get("Handicap"))
                 lane = (index // 2) % lanes + 1
+                is_pacer = int(bool(row.get("Pacer", False)))
+                is_youth = int(bool(row.get("Youth", False)))
+                paid_status = "paid" if bool(row.get("Paid", False)) else "unpaid"
+
                 connection.execute(
                     "INSERT INTO bowlers (tournament_id, name, usbc_id, entering_avg, handicap, "
                     "lane_assignment, lineup_position, is_pacer, is_youth, paid_status, mystery_doubles_opt_in) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         tournament_id,
-                        str(row[0]).strip(),
-                        str(row[1]).strip() or None,
+                        str(row.get("Bowler Name", "")).strip(),
+                        str(row.get("USBC ID", "")).strip() or None,
                         average,
                         handicap if handicap is not None else default_handicap(average),
                         lane,
                         index + 1,
-                        int(bool(row[5])),
-                        int(bool(row[6])),
-                        "paid" if row[4] else "unpaid",
+                        is_pacer,
+                        is_youth,
+                        paid_status,
                         int(mystery_doubles),
                     ),
                 )
@@ -156,7 +175,11 @@ def render_intake_gateway() -> None:
             st.session_state["intake_upload_id"] = upload.file_id
             st.session_state["intake_roster"] = _records_to_frame(parse_bls_bits_file(upload.getvalue()))
 
-    roster = st.session_state.setdefault("intake_roster", _empty_roster())
+    # Ensure schema on active session roster to prevent KeyError from older session states
+    raw_roster = st.session_state.setdefault("intake_roster", _empty_roster())
+    roster = _ensure_roster_schema(raw_roster)
+    st.session_state["intake_roster"] = roster
+
     st.subheader("Desk triage")
     edited = st.data_editor(
         roster,
@@ -178,16 +201,21 @@ def render_intake_gateway() -> None:
         f"{DEFAULT_HANDICAP_BASE} minus entering average."
     )
 
+    # Safe column indexing
     valid_now = edited[edited["Bowler Name"].fillna("").astype(str).str.strip() != ""]
+    has_pacer = valid_now["Pacer"].fillna(False).astype(bool).sum() if "Pacer" in valid_now.columns else 0
+    has_youth = valid_now["Youth"].fillna(False).astype(bool).sum() if "Youth" in valid_now.columns else 0
+    unpaid_count = (~valid_now["Paid"].fillna(False).astype(bool)).sum() if "Paid" in valid_now.columns else len(valid_now)
+
     mystery = st.toggle(
         f"Run ${DEFAULT_MYSTERY_DOUBLES_FEE:.0f} Mystery Doubles side pot draw on start",
         help="Bowlers are randomly paired when the squad starts.",
     )
     st.session_state["intake_summary"] = {
         "bowlers": len(valid_now),
-        "pacers": int(valid_now["Pacer"].fillna(False).astype(bool).sum()),
-        "youth": int(valid_now["Youth"].fillna(False).astype(bool).sum()),
-        "unpaid": int((~valid_now["Paid"].fillna(False).astype(bool)).sum()),
+        "pacers": int(has_pacer),
+        "youth": int(has_youth),
+        "unpaid": int(unpaid_count),
         "host_code": host_code,
         "mystery_doubles": mystery,
     }
