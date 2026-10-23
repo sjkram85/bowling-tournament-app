@@ -37,6 +37,39 @@ def staff_count() -> int:
         connection.close()
 
 
+def bootstrap_admin_from_secrets() -> bool:
+    """
+    Automatically creates the root administrator account if the database is fresh/empty.
+    Reads credentials securely from st.secrets to prevent lockouts on Cloud reboots.
+    """
+    username = st.secrets.get("ADMIN_BOOTSTRAP_USER")
+    password = st.secrets.get("ADMIN_BOOTSTRAP_PASS")
+    display_name = st.secrets.get("ADMIN_BOOTSTRAP_NAME", "Scott Kramer")
+    center = st.secrets.get("ADMIN_BOOTSTRAP_CENTER", "CHUSBC")
+
+    if not username or not password:
+        return False
+
+    username = username.strip().lower()
+    connection = get_connection()
+    try:
+        with connection:
+            count = connection.execute("SELECT COUNT(*) FROM staff_users").fetchone()[0]
+            if count == 0:
+                connection.execute(
+                    "INSERT INTO staff_users "
+                    "(username, password_hash, display_name, center_affiliation, role, is_approved) "
+                    "VALUES (?, ?, ?, ?, 'admin', 1)",
+                    (username, hash_password(password), display_name.strip(), center),
+                )
+                return True
+    except Exception:
+        return False
+    finally:
+        connection.close()
+    return False
+
+
 def create_staff_user(
     username: str, password: str, display_name: str, center_affiliation: str, role: str
 ) -> str | None:
@@ -313,7 +346,12 @@ def require_login() -> dict | None:
     user = current_user()
     if user:
         return user
+
+    # Auto-provision from cloud secrets if the container is fresh
     if staff_count() == 0:
+        if bootstrap_admin_from_secrets():
+            _login_form()
+            return None
         _setup_form()
     else:
         _login_form()
