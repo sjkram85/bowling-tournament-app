@@ -20,18 +20,18 @@ ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 CHUSBC_LOGO = ASSETS_DIR / "CHUSBC.jpg"
 
 
-def _get_chusbc_logo_tag(height: int = 70) -> str:
+def _get_chusbc_logo_tag(height: int = 110) -> str:
     """Generate an inline base64 image tag for the official CHUSBC sanction logo."""
     if CHUSBC_LOGO.is_file():
         data = base64.b64encode(CHUSBC_LOGO.read_bytes()).decode()
         return (
-            f'<div style="text-align: center; margin-bottom: 12px;">'
+            f'<div style="text-align: center; margin-bottom: 16px;">'
             f'<img src="data:image/jpeg;base64,{data}" '
-            f'style="height:{height}px; width:auto; border-radius:6px; background:#FFFFFF; padding:4px; box-shadow:0 2px 8px rgba(0,0,0,0.4);" '
+            f'style="height:{height}px; max-width:90%; width:auto; border-radius:8px; background:#FFFFFF; padding:6px; box-shadow:0 4px 12px rgba(0,0,0,0.45);" '
             f'alt="USBC Cecil Harford Association">'
             f'</div>'
         )
-    return '<div style="font-size: 36px; text-align: center; margin-bottom: 8px;">🎳</div>'
+    return '<div style="font-size: 48px; text-align: center; margin-bottom: 12px;">🎳</div>'
 
 
 def hash_password(password: str) -> str:
@@ -225,18 +225,18 @@ def render_login_screen() -> None:
     """Render a compact, centered card layout for staff login and registration with official sanction branding."""
     _bootstrap_admin()
 
-    _, center_col, _ = st.columns([1.2, 1.6, 1.2])
+    _, center_col, _ = st.columns([1.0, 1.8, 1.0])
 
     with center_col:
-        logo_markup = _get_chusbc_logo_tag(height=72)
+        logo_markup = _get_chusbc_logo_tag(height=110)
         st.markdown(
             f"""
-            <div style="text-align: center; margin-bottom: 20px; padding-top: 10px;">
+            <div style="text-align: center; margin-bottom: 24px; padding-top: 10px;">
                 {logo_markup}
-                <h2 style="color: #F8FAFC; margin: 4px 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px;">
+                <h2 style="color: #F8FAFC; margin: 6px 0; font-size: 26px; font-weight: 800; letter-spacing: -0.5px;">
                     Prism Tournament Control Center
                 </h2>
-                <p style="color: #94A3B8; font-size: 13px; margin: 0;">
+                <p style="color: #94A3B8; font-size: 14px; margin: 0;">
                     Cecil Harford USBC Official Tournament Operations
                 </p>
             </div>
