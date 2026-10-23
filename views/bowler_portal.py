@@ -1,168 +1,191 @@
-"""Bowler portal, reached with ?mode=bowler."""
+"""Public Bowler Self-Service Portal & Concourse Arrival Check-In Gate."""
 
-from html import escape
-
+from datetime import datetime
+import pandas as pd
 import streamlit as st
 
-from components.leaderboard import render_leaderboard
 from components.styles import inject_styles
-from components.tournament_picker import pick_tournament
-from modules.db_state import init_db
-from modules.reports import ladder_size, payout_equity, stepladder_matches
-from modules.standings import (
-    CUT_SEED,
-    bowler_brackets,
-    compute_standings,
-    lane_count,
-    lane_for_game,
-    pair_of_lane,
-    query,
-    squad_pairs,
-)
-
-REFRESH_SECONDS = 20
+from modules.db_state import get_connection, log_desk_action
 
 
-def _movement_banner(tournament: dict, me: dict, lanes: int) -> None:
-    if me["lane_assignment"] is None:
-        body, sub = "Lane not yet assigned", "See the tournament desk"
-    elif me["games_bowled"] >= tournament["game_count"]:
-        body, sub = "All games complete", "Check the standings for your finish"
-    else:
-        game = me["games_bowled"] + 1
-        lane = lane_for_game(me["lane_assignment"], game, lanes)
-        pair = pair_of_lane(lane)
-        lanes_text = f"Lanes {2 * pair - 1}-{2 * pair}"
-        if game == 1:
-            body = f"Game 1: Go to {lanes_text}"
-        else:
-            shift = pair - pair_of_lane(lane_for_game(me["lane_assignment"], game - 1, lanes))
-            if shift > 0:
-                body = f"Game {game}: Move right {shift} pair{'s' if shift > 1 else ''} to {lanes_text}"
-            else:
-                body = f"Game {game}: Move to {lanes_text}"
-        if game < tournament["game_count"]:
-            following = pair_of_lane(lane_for_game(me["lane_assignment"], game + 1, lanes))
-            sub = f"Then Game {game + 1}: Lanes {2 * following - 1}-{2 * following}"
-        else:
-            sub = "Final game"
+def _get_active_tournaments() -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, name, host_center, status, game_count FROM tournaments "
+            "WHERE status = 'active' ORDER BY id DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def _get_tournament_bowlers(tournament_id: int) -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, name, usbc_id, entering_avg, handicap, lane_assignment, "
+            "paid_status, checked_in, checked_in_at, is_youth "
+            "FROM bowlers WHERE tournament_id = ? ORDER BY lane_assignment, lineup_position",
+            (tournament_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def _confirm_check_in(bowler_id: int, bowler_name: str) -> bool:
+    conn = get_connection()
+    now_str = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
+    try:
+        with conn:
+            cursor = conn.execute(
+                "UPDATE bowlers SET checked_in = 1, checked_in_at = ? WHERE id = ?",
+                (now_str, bowler_id),
+            )
+            if cursor.rowcount > 0:
+                log_desk_action(bowler_name, "bowler", f"Bowler confirmed self check-in via mobile portal")
+                return True
+        return False
+    finally:
+        conn.close()
+
+
+def _render_checkin_flow(active_tourneys: list[dict]) -> None:
+    """Dedicated arrival verification gate for bowlers."""
     st.markdown(
-        f'<div class="ptcc-banner">{escape(body)}<small>{escape(sub)}</small></div>',
+        """
+        <div style="background: linear-gradient(135deg, #064E3B 0%, #0F172A 100%); border: 1px solid #10B981; border-radius: 12px; padding: 18px; text-align: center; margin-bottom: 20px;">
+            <span style="background: #10B981; color: #022C22; font-size: 11px; font-weight: 800; padding: 3px 10px; border-radius: 999px; text-transform: uppercase;">
+                CHUSBC Arrival Gate
+            </span>
+            <h2 style="color: #F8FAFC; margin: 10px 0 4px 0;">🎳 Bowler Self Check-In</h2>
+            <p style="color: #6EE7B7; font-size: 13px; margin-bottom: 0;">Confirm entry, verify entry fee payment & receive lane assignment</p>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
+    if not active_tourneys:
+        st.warning("No active tournament check-in is currently open. Check with tournament desk.")
+        return
 
-@st.fragment(run_every=REFRESH_SECONDS)
-def _standings_tab(tournament_id: int, bowler_id: int) -> None:
-    standings = compute_standings(tournament_id)
-    me = next((row for row in standings if row["id"] == bowler_id), None)
-    if me and len(standings) >= CUT_SEED:
-        cut_total = standings[CUT_SEED - 1]["handicap_total"]
-        gap = me["handicap_total"] - cut_total
-        if me["rank"] <= CUT_SEED:
-            status = f"You are in, {gap} pins above the line" if gap else "You are on the line"
-        else:
-            status = f"You are {-gap} pins below the line"
-        st.markdown(
-            '<div style="background:#DC2626;border-radius:12px;color:#FFFFFF;font-weight:700;'
-            f'padding:10px 16px;margin-bottom:8px">Cut line: Seed #{CUT_SEED} at {cut_total} · '
-            f"{escape(status)}</div>",
-            unsafe_allow_html=True,
-        )
-    render_leaderboard(standings, highlight_bowler_id=bowler_id)
+    tourney = active_tourneys[0] if len(active_tourneys) == 1 else None
+    if not tourney:
+        tourney_map = {f"{t['name']} ({t['host_center']})": t for t in active_tourneys}
+        choice = st.selectbox("Select Your Tournament", list(tourney_map.keys()))
+        tourney = tourney_map[choice]
 
+    bowlers = _get_tournament_bowlers(tourney["id"])
+    if not bowlers:
+        st.info("Roster has not been ingested by the tournament desk yet.")
+        return
 
-def _next_opponent(tournament: dict, me: dict, standings: list[dict]) -> tuple[str, list[tuple[str, str]]]:
-    """Return (heading, [(opponent name, lane text)]) for the bowler's next matchup."""
-    if me["games_bowled"] >= tournament["game_count"]:
-        size = ladder_size(standings)
-        if me["rank"] > size:
-            return "Qualifying complete", []
-        matches = stepladder_matches(tournament["id"])
-        round_number = len(matches) + 1
-        if round_number > size - 1:
-            return "Stepladder complete", []
-        seeds = {row["rank"]: row for row in standings[:size]}
-        challenger_id = seeds[size]["id"] if round_number == 1 else matches[-1]["winner_id"]
-        defender_id = seeds[size - round_number]["id"]
-        if me["id"] not in (challenger_id, defender_id):
-            return "Stepladder in progress — you are waiting for a later round", []
-        other_id = defender_id if me["id"] == challenger_id else challenger_id
-        other = next(row for row in standings if row["id"] == other_id)
-        return f"Stepladder round {round_number}", [(other["name"], "lane posted at the desk")]
+    names = [b["name"] for b in bowlers]
+    selected_name = st.selectbox("Find Your Name", ["-- Select Your Name --"] + names)
 
-    game = me["games_bowled"] + 1
-    for pair in squad_pairs(tournament["id"], game):
-        if any(b["id"] == me["id"] for b in pair["bowlers"]):
-            others = [(b["name"], f"Lane {b['lane']}") for b in pair["bowlers"] if b["id"] != me["id"]]
-            return f"Game {game} on Lanes {pair['lanes'][0]}-{pair['lanes'][1]}", others
-    return "Lane not yet assigned", []
+    if selected_name != "-- Select Your Name --":
+        record = next(b for b in bowlers if b["name"] == selected_name)
+        
+        is_paid = record["paid_status"] == "paid"
+        is_checked = bool(record["checked_in"])
 
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+        with st.container(border=True):
+            col_l, col_r = st.columns([2, 1])
+            with col_l:
+                st.subheader(record["name"])
+                usbc = record["usbc_id"] or "Not on file"
+                st.caption(f"USBC ID: **{usbc}** | Entering Avg: **{record['entering_avg'] or 'N/A'}** | HDCP: **+{record['handicap']}**")
+            with col_r:
+                if is_paid:
+                    st.markdown("<div style='text-align:right;'><span style='background:#064E3B; color:#6EE7B7; font-weight:700; padding:4px 10px; border-radius:6px;'>PAID IN FULL</span></div>", unsafe_allow_html=True)
+                else:
+                    st.markdown("<div style='text-align:right;'><span style='background:#7F1D1D; color:#FCA5A5; font-weight:700; padding:4px 10px; border-radius:6px;'>UNPAID BALANCE</span></div>", unsafe_allow_html=True)
 
-def _my_action_tab(tournament: dict, me: dict, standings: list[dict]) -> None:
-    brackets = bowler_brackets(tournament["id"], me["id"])
-    alive = sum(b["alive"] for b in brackets)
-    with st.container(border=True):
-        st.subheader(f"{'🟢' if alive else '🔴'} Alive in {alive} of {len(brackets)} Brackets")
-        for bracket in brackets:
-            icon = "✅" if bracket["alive"] else "❌"
-            st.markdown(f"{icon} **{bracket['name']}** — {escape(bracket['detail'])}")
+            st.markdown("---")
 
-    with st.container(border=True):
-        heading, opponents = _next_opponent(tournament, me, standings)
-        st.markdown(f"**Next matchup · {escape(heading)}**")
-        for name, lane in opponents:
-            st.write(f"vs **{name}** — {lane}")
-
-    equity = payout_equity(tournament, standings, me["id"])
-    with st.container(border=True):
-        st.markdown("**Scholarship equity**")
-        if not equity["pool"]:
-            st.caption("The scholarship pool has not been set yet.")
-        else:
-            cols = st.columns(2)
-            cols[0].metric("Guaranteed", f"${equity['guaranteed']:,.2f}")
-            cols[1].metric("If standings hold", f"${equity['projected']:,.2f}")
-            st.caption(
-                f"Top {equity['paid_places']} places are paid. Guaranteed assumes you score nothing "
-                f"more while everyone else bowls perfect games (worst finish: #{equity['worst_rank']})."
-            )
-
-    cut = standings[CUT_SEED - 1]["handicap_total"] if len(standings) >= CUT_SEED else None
-    columns = st.columns(3)
-    columns[0].metric("Rank", f"#{me['rank']}")
-    columns[1].metric("Total", me["handicap_total"])
-    if cut is not None:
-        columns[2].metric(f"vs Seed #{CUT_SEED} cut", f"{me['handicap_total'] - cut:+d}")
+            # Check-in Logic Handling
+            if not is_paid:
+                st.error("⚠️ Entry fee balance required before starting lane can be assigned. Please step up to the tournament desk cash window.")
+            elif is_checked:
+                st.markdown(
+                    f"""
+                    <div style="background:#0F172A; border:2px solid #10B981; border-radius:10px; padding:20px; text-align:center;">
+                        <span style="color:#6EE7B7; font-weight:700; font-size:12px;">CHECK-IN VERIFIED</span>
+                        <h1 style="color:#FFFFFF; margin:8px 0; font-size:36px;">LANE {record['lane_assignment']}</h1>
+                        <p style="color:#94A3B8; font-size:12px; margin:0;">Arrival Timestamp: {record['checked_in_at'] or 'Registered'}</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.info("Your entry is verified and paid. Tap below to confirm arrival.")
+                if st.button("Confirm Check-In & Get Lane", type="primary", use_container_width=True):
+                    if _confirm_check_in(record["id"], record["name"]):
+                        st.success(f"Checked in! Proceed to Lane {record['lane_assignment']}.")
+                        st.rerun()
 
 
-def render_bowler_portal(tournament_id: int | None = None) -> None:
-    init_db()
+def _render_standings_flow(active_tourneys: list[dict]) -> None:
+    """Public live standings & cut-line leaderboard."""
+    st.title("🎳 Live Bowler Portal & Standings")
+
+    if not active_tourneys:
+        st.info("No live tournament results currently available.")
+        return
+
+    tourney = active_tourneys[0]
+    st.caption(f"Viewing: **{tourney['name']}** ({tourney['host_center']})")
+
+    conn = get_connection()
+    try:
+        # Pull cumulative scores
+        query = """
+            SELECT b.id, b.name, b.lane_assignment, b.handicap,
+                   COUNT(s.game_number) as games_bowled,
+                   COALESCE(SUM(s.scratch_score), 0) as total_scratch,
+                   COALESCE(SUM(s.total_score), 0) as grand_total
+            FROM bowlers b
+            LEFT JOIN scores s ON b.id = s.bowler_id
+            WHERE b.tournament_id = ? AND b.is_pacer = 0
+            GROUP BY b.id
+            ORDER BY grand_total DESC, total_scratch DESC
+        """
+        rows = conn.execute(query, (tourney["id"],)).fetchall()
+        if not rows or rows[0]["games_bowled"] == 0:
+            st.info("Tournament is in check-in phase. Scores will appear once competition commences.")
+            return
+
+        data = []
+        for rank, r in enumerate(rows, start=1):
+            data.append({
+                "Rank": rank,
+                "Bowler": r["name"],
+                "Lane": r["lane_assignment"],
+                "Games": r["games_bowled"],
+                "Scratch": r["total_scratch"],
+                "HDCP Total": r["grand_total"],
+            })
+        
+        df = pd.DataFrame(data)
+        st.dataframe(df, hide_index=True, use_container_width=True)
+    finally:
+        conn.close()
+
+
+def render_bowler_portal() -> None:
+    """Entry point for all public bowler devices."""
     inject_styles()
-    st.title("Bowler Portal")
-    tournament = pick_tournament(tournament_id, key="portal_tournament", statuses=("active", "completed"))
-    if tournament is None:
-        return
-    standings = compute_standings(tournament["id"])
-    if not standings:
-        st.info("No bowlers registered yet.")
-        return
+    action = st.query_params.get("action")
+    active_tourneys = _get_active_tournaments()
 
-    by_id = {row["id"]: row for row in standings}
-    me_id = st.selectbox(
-        "Who are you?",
-        list(by_id),
-        format_func=lambda i: (
-            f"{by_id[i]['name']} ({by_id[i]['usbc_id']})" if by_id[i]["usbc_id"] else by_id[i]["name"]
-        ),
-        key=f"portal_bowler_{tournament['id']}",
-    )
-    me = by_id[me_id]
-    bowlers = query("SELECT lane_assignment FROM bowlers WHERE tournament_id = ?", (tournament["id"],))
-    _movement_banner(tournament, me, lane_count(tournament, bowlers))
-
-    standings_tab, action_tab = st.tabs(["Standings", "My Action"])
-    with standings_tab:
-        _standings_tab(tournament["id"], me["id"])
-    with action_tab:
-        _my_action_tab(tournament, me, standings)
+    if action == "checkin":
+        _render_checkin_flow(active_tourneys)
+    else:
+        # Tabbed view for general portal
+        tab_standings, tab_checkin = st.tabs(["📊 Live Standings & Cut Line", "✅ Concourse Check-In"])
+        with tab_standings:
+            _render_standings_flow(active_tourneys)
+        with tab_checkin:
+            _render_checkin_flow(active_tourneys)

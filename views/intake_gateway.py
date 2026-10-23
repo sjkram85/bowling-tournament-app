@@ -1,6 +1,7 @@
 """Tournament intake dashboard."""
 
 import io
+import os
 import secrets
 
 import pandas as pd
@@ -20,7 +21,7 @@ from modules.mystery_doubles import generate_mystery_doubles_draw
 
 FORMATS = ["Singles", "Doubles", "Teams 3", "Teams 4", "Teams 5"]
 HOST_OPTIONS = {code: CENTERS[code]["name"] for code in ("FHL", "HL", "APG")}
-TRIAGE_COLUMNS = ["Bowler Name", "USBC ID", "Entering Avg", "Handicap", "Paid", "Pacer"]
+TRIAGE_COLUMNS = ["Bowler Name", "USBC ID", "Entering Avg", "Handicap", "Paid", "Pacer", "Youth"]
 
 
 def default_handicap(
@@ -33,6 +34,11 @@ def default_handicap(
     return int((base - average) * pct)
 
 
+def _get_base_url() -> str:
+    """Dynamically determine current host environment base URL."""
+    return st.secrets.get("APP_BASE_URL", "https://chusbc-desk.streamlit.app")
+
+
 def _empty_roster() -> pd.DataFrame:
     return pd.DataFrame(
         {
@@ -42,6 +48,7 @@ def _empty_roster() -> pd.DataFrame:
             "Handicap": pd.Series(dtype="Int64"),
             "Paid": pd.Series(dtype="bool"),
             "Pacer": pd.Series(dtype="bool"),
+            "Youth": pd.Series(dtype="bool"),
         }
     )
 
@@ -55,11 +62,12 @@ def _records_to_frame(records: list[dict]) -> pd.DataFrame:
             "Handicap": r["handicap"] if r["handicap"] is not None else default_handicap(r["entering_avg"]),
             "Paid": False,
             "Pacer": False,
+            "Youth": False,
         }
         for r in records
     ]
     return pd.DataFrame(rows, columns=TRIAGE_COLUMNS).astype(
-        {"Entering Avg": "Int64", "Handicap": "Int64", "Paid": "bool", "Pacer": "bool"}
+        {"Entering Avg": "Int64", "Handicap": "Int64", "Paid": "bool", "Pacer": "bool", "Youth": "bool"}
     )
 
 
@@ -103,12 +111,11 @@ def _create_tournament(name, host_code, squad_format, game_count, roster, myster
             for index, row in enumerate(roster.itertuples(index=False)):
                 average = _int_or_none(row[2])
                 handicap = _int_or_none(row[3])
-                # Two bowlers per lane in roster order, wrapping at the center's lane count.
                 lane = (index // 2) % lanes + 1
                 connection.execute(
                     "INSERT INTO bowlers (tournament_id, name, usbc_id, entering_avg, handicap, "
-                    "lane_assignment, lineup_position, is_pacer, paid_status, mystery_doubles_opt_in) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "lane_assignment, lineup_position, is_pacer, is_youth, paid_status, mystery_doubles_opt_in) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         tournament_id,
                         str(row[0]).strip(),
@@ -118,6 +125,7 @@ def _create_tournament(name, host_code, squad_format, game_count, roster, myster
                         lane,
                         index + 1,
                         int(bool(row[5])),
+                        int(bool(row[6])),
                         "paid" if row[4] else "unpaid",
                         int(mystery_doubles),
                     ),
@@ -162,11 +170,12 @@ def render_intake_gateway() -> None:
             "Handicap": st.column_config.NumberColumn(min_value=0, max_value=200, step=1),
             "Paid": st.column_config.CheckboxColumn("Paid", default=False),
             "Pacer": st.column_config.CheckboxColumn("Is Pacer", default=False),
+            "Youth": st.column_config.CheckboxColumn("Rule 400 Youth", default=False),
         },
     )
     st.caption(
-        f"Leave Handicap blank to use {int(DEFAULT_HANDICAP_PERCENT * 100)}% of "
-        f"{DEFAULT_HANDICAP_BASE} minus the entering average."
+        f"Handicap auto-defaults to {int(DEFAULT_HANDICAP_PERCENT * 100)}% of "
+        f"{DEFAULT_HANDICAP_BASE} minus entering average."
     )
 
     valid_now = edited[edited["Bowler Name"].fillna("").astype(str).str.strip() != ""]
@@ -177,6 +186,7 @@ def render_intake_gateway() -> None:
     st.session_state["intake_summary"] = {
         "bowlers": len(valid_now),
         "pacers": int(valid_now["Pacer"].fillna(False).astype(bool).sum()),
+        "youth": int(valid_now["Youth"].fillna(False).astype(bool).sum()),
         "unpaid": int((~valid_now["Paid"].fillna(False).astype(bool)).sum()),
         "host_code": host_code,
         "mystery_doubles": mystery,
@@ -195,9 +205,10 @@ def render_intake_gateway() -> None:
 
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
 
-    checkin_url = "https://chusbc-desk.streamlit.app/?mode=bowler&action=checkin"
-    portal_url = "https://chusbc-desk.streamlit.app/?mode=bowler"
-    scorer_url = "https://chusbc-desk.streamlit.app/?mode=score"
+    base = _get_base_url()
+    checkin_url = f"{base}/?mode=bowler&action=checkin"
+    portal_url = f"{base}/?mode=bowler"
+    scorer_url = f"{base}/?mode=score"
 
     buf_checkin = _generate_qr_buffer(checkin_url)
     buf_portal = _generate_qr_buffer(portal_url)
