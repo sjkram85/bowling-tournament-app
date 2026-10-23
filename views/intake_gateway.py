@@ -27,6 +27,38 @@ from modules.auth import current_user
 from modules.constants import CENTERS, HOST_CENTERS
 from modules.db_state import get_connection, log_desk_action
 
+# Pure SVG bowling ball (no pins attached) with 3D gradient & finger holes
+BOWLING_BALL_SVG = (
+    '<svg width="28" height="28" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style="display:block;">'
+    '  <defs>'
+    '    <radialGradient id="ballGrad" cx="35%" cy="30%" r="65%">'
+    '      <stop offset="0%" stop-color="#60A5FA"/>'
+    '      <stop offset="45%" stop-color="#2563EB"/>'
+    '      <stop offset="100%" stop-color="#0F172A"/>'
+    '    </radialGradient>'
+    '  </defs>'
+    '  <circle cx="16" cy="16" r="14" fill="url(#ballGrad)" stroke="#1E3A8A" stroke-width="1"/>'
+    '  <circle cx="20" cy="11" r="1.8" fill="#090D16"/>'
+    '  <circle cx="23" cy="15" r="1.8" fill="#090D16"/>'
+    '  <circle cx="18" cy="16" r="2.1" fill="#090D16"/>'
+    '  <ellipse cx="11" cy="10" rx="3" ry="1.5" transform="rotate(-30 11 10)" fill="rgba(255,255,255,0.35)"/>'
+    '</svg>'
+)
+
+MINI_BALL_SVG = (
+    '<svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style="display:inline-block; vertical-align:middle; margin-right:6px;">'
+    '  <circle cx="16" cy="16" r="14" fill="#3B82F6" stroke="#1D4ED8" stroke-width="1.5"/>'
+    '  <circle cx="20" cy="11" r="2.2" fill="#0F172A"/>'
+    '  <circle cx="23" cy="16" r="2.2" fill="#0F172A"/>'
+    '  <circle cx="17" cy="16" r="2.4" fill="#0F172A"/>'
+    '</svg>'
+)
+
+PIN_DOT = (
+    '<span style="width:7px; height:7px; border-radius:50%; background:#FFFFFF; '
+    'border:1px solid #DC2626; box-shadow:0 1px 2px rgba(0,0,0,0.65); display:inline-block;"></span>'
+)
+
 
 def _get_base_url() -> str:
     """Dynamically determine current host environment base URL."""
@@ -47,35 +79,36 @@ def _generate_qr_base64(url: str) -> str:
 def _run_with_bowling_animation(task_func, *args):
     """
     Executes the Gemini extraction directly on the active Streamlit thread
-    with a visual bowling lane animation, eliminating thread-context freezes.
+    with a horizontal bowling lane, pure SVG bowling ball, and properly oriented 10-pin rack
+    (1-pin facing left toward the oncoming ball, 7-8-9-10 against the back right pit).
     """
     anim_box = st.empty()
     progress_bar = st.progress(0)
 
     stages = [
-        (20, "🎳 Setting lane oil pattern & initializing Gemini Flash...", 20),
-        (45, "🎳 Bowler on the approach... reading roster names & USBC IDs...", 40),
-        (70, "🎳 Mid-lane roll... parsing entering averages & handicaps...", 65),
+        (20, "Setting lane oil pattern & initializing Gemini Flash...", 18),
+        (45, "Bowler on the approach... reading roster names & USBC IDs...", 42),
+        (70, "Mid-lane roll... parsing entering averages & handicaps...", 64),
     ]
 
     def render_lane(stage_desc, pct, ball_pos):
         html_lane = (
             f'<div style="background:#0F172A; border:1px solid #1E293B; border-radius:10px; padding:16px 20px; margin-bottom:12px; box-shadow:0 4px 12px rgba(0,0,0,0.3);">'
             f'  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">'
-            f'    <span style="color:#38BDF8; font-weight:600; font-size:14px;">{stage_desc}</span>'
+            f'    <span style="color:#38BDF8; font-weight:600; font-size:14px; display:flex; align-items:center;">{MINI_BALL_SVG}{stage_desc}</span>'
             f'    <span style="color:#F8FAFC; font-family:monospace; font-weight:700; font-size:16px; background:#1E293B; padding:2px 8px; border-radius:4px;">{pct}%</span>'
             f'  </div>'
-            f'  <div style="position:relative; width:100%; height:54px; background:linear-gradient(180deg, #78350F 0%, #B45309 40%, #78350F 100%); border-radius:6px; border:2px solid #92400E; overflow:hidden; display:flex; align-items:center;">'
+            f'  <div style="position:relative; width:100%; height:58px; background:linear-gradient(180deg, #78350F 0%, #B45309 40%, #78350F 100%); border-radius:6px; border:2px solid #92400E; overflow:hidden; display:flex; align-items:center;">'
             f'    <div style="position:absolute; left:20px; top:0; bottom:0; width:4px; background:#EF4444; box-shadow:0 0 6px #EF4444; z-index:2;"></div>'
-            f'    <div style="position:absolute; left:25%; color:rgba(0,0,0,0.25); font-size:18px; pointer-events:none;">▲</div>'
-            f'    <div style="position:absolute; left:45%; color:rgba(0,0,0,0.25); font-size:18px; pointer-events:none;">▲</div>'
-            f'    <div style="position:absolute; left:65%; color:rgba(0,0,0,0.25); font-size:18px; pointer-events:none;">▲</div>'
-            f'    <div style="position:absolute; left:{ball_pos}%; font-size:28px; line-height:1; transition:left 0.15s ease-out; filter:drop-shadow(0 4px 6px rgba(0,0,0,0.6)); z-index:3;">🎳</div>'
-            f'    <div style="position:absolute; right:16px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px; z-index:2;">'
-            f'      <div style="display:flex; gap:3px; font-size:9px; line-height:1;"><span>⚪</span><span>⚪</span><span>⚪</span><span>⚪</span></div>'
-            f'      <div style="display:flex; gap:4px; font-size:9px; line-height:1;"><span>⚪</span><span>⚪</span><span>⚪</span></div>'
-            f'      <div style="display:flex; gap:5px; font-size:9px; line-height:1;"><span>⚪</span><span>⚪</span></div>'
-            f'      <div style="font-size:9px; line-height:1;"><span>⚪</span></div>'
+            f'    <div style="position:absolute; left:25%; color:rgba(0,0,0,0.28); font-size:13px; pointer-events:none;">▶</div>'
+            f'    <div style="position:absolute; left:45%; color:rgba(0,0,0,0.28); font-size:13px; pointer-events:none;">▶</div>'
+            f'    <div style="position:absolute; left:65%; color:rgba(0,0,0,0.28); font-size:13px; pointer-events:none;">▶</div>'
+            f'    <div style="position:absolute; left:{ball_pos}%; transition:left 0.15s ease-out; filter:drop-shadow(0 4px 6px rgba(0,0,0,0.65)); z-index:3;">{BOWLING_BALL_SVG}</div>'
+            f'    <div style="position:absolute; right:14px; display:flex; flex-direction:row; align-items:center; gap:5px; z-index:2;">'
+            f'      <div style="display:flex; flex-direction:column; justify-content:center;">{PIN_DOT}</div>'
+            f'      <div style="display:flex; flex-direction:column; gap:5px; justify-content:center;">{PIN_DOT}{PIN_DOT}</div>'
+            f'      <div style="display:flex; flex-direction:column; gap:4px; justify-content:center;">{PIN_DOT}{PIN_DOT}{PIN_DOT}</div>'
+            f'      <div style="display:flex; flex-direction:column; gap:3px; justify-content:center;">{PIN_DOT}{PIN_DOT}{PIN_DOT}{PIN_DOT}</div>'
             f'    </div>'
             f'  </div>'
             f'</div>'
@@ -88,11 +121,10 @@ def _run_with_bowling_animation(task_func, *args):
         render_lane(desc, pct, b_pos)
         time.sleep(0.08)
 
-    # Hook phase directly before API call
-    render_lane("🎳 Ball hooking into 1-3 pocket... parsing Rule 400 SMART tags...", 85, 78)
+    # Hook phase right at the 1-3 pocket before API call
+    render_lane("Ball hooking into 1-3 pocket... parsing Rule 400 SMART tags...", 85, 83)
 
     try:
-        # Direct execution on main thread with native access to st.secrets
         result = task_func(*args)
     except Exception as exc:
         anim_box.empty()
@@ -101,15 +133,16 @@ def _run_with_bowling_animation(task_func, *args):
 
     # Strike state
     html_strike = (
-        '<div style="background:#064E3B; border:1px solid #059669; border-radius:10px; padding:16px 20px; margin-bottom:12px; box-shadow:0 4px 12px rgba(6,78,59,0.3);">'
-        '  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">'
-        '    <span style="color:#6EE7B7; font-weight:700; font-size:15px;">💥 STRIKE! 10 in the Pit — Roster Extracted & Ready for Review!</span>'
-        '    <span style="color:#F8FAFC; font-family:monospace; font-weight:700; font-size:16px; background:#047857; padding:2px 8px; border-radius:4px;">100%</span>'
-        '  </div>'
-        '  <div style="position:relative; width:100%; height:54px; background:linear-gradient(180deg, #78350F 0%, #B45309 40%, #78350F 100%); border-radius:6px; border:2px solid #059669; display:flex; align-items:center; justify-content:flex-end; padding-right:24px;">'
-        '    <div style="color:#FEF08A; font-weight:900; font-size:18px; letter-spacing:1px; text-shadow:0 2px 4px rgba(0,0,0,0.8);">🎳 💥 💨 ALL 10 DOWN!</div>'
-        '  </div>'
-        '</div>'
+        f'<div style="background:#064E3B; border:1px solid #059669; border-radius:10px; padding:16px 20px; margin-bottom:12px; box-shadow:0 4px 12px rgba(6,78,59,0.3);">'
+        f'  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">'
+        f'    <span style="color:#6EE7B7; font-weight:700; font-size:15px; display:flex; align-items:center;">{MINI_BALL_SVG}💥 STRIKE! 10 in the Pit — Roster Extracted & Ready for Review!</span>'
+        f'    <span style="color:#F8FAFC; font-family:monospace; font-weight:700; font-size:16px; background:#047857; padding:2px 8px; border-radius:4px;">100%</span>'
+        f'  </div>'
+        f'  <div style="position:relative; width:100%; height:58px; background:linear-gradient(180deg, #78350F 0%, #B45309 40%, #78350F 100%); border-radius:6px; border:2px solid #059669; display:flex; align-items:center; justify-content:flex-end; padding-right:24px; gap:10px;">'
+        f'    {BOWLING_BALL_SVG}'
+        f'    <div style="color:#FEF08A; font-weight:900; font-size:18px; letter-spacing:1px; text-shadow:0 2px 4px rgba(0,0,0,0.8);">💥 💨 ALL 10 DOWN!</div>'
+        f'  </div>'
+        f'</div>'
     )
     anim_box.markdown(html_strike, unsafe_allow_html=True)
     progress_bar.progress(100)
