@@ -2,6 +2,7 @@
 
 import streamlit as st
 from components.styles import inject_styles
+from modules.constants import CENTERS
 from modules.db_state import get_connection, log_desk_action
 from modules.ocr_engine import extract_scores_from_overhead_photo
 
@@ -11,6 +12,19 @@ def _get_active_tournament_for_scoring() -> dict | None:
     try:
         row = conn.execute("SELECT * FROM tournaments WHERE status = 'active' ORDER BY id DESC LIMIT 1").fetchone()
         return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def _get_active_squad_lanes(tournament_id: int) -> list[int]:
+    """Retrieve distinct lanes currently in play for this tournament."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT lane_assignment FROM bowlers WHERE tournament_id = ? AND lane_assignment IS NOT NULL ORDER BY lane_assignment ASC",
+            (tournament_id,),
+        ).fetchall()
+        return [r["lane_assignment"] for r in rows if r["lane_assignment"]]
     finally:
         conn.close()
 
@@ -67,7 +81,7 @@ def render_mobile_scoring() -> None:
         st.warning("No active tournament available for scoring.")
         return
 
-    # PIN Authentication
+    # Authentication Gate
     if not st.session_state.get("scorer_authenticated"):
         with st.container(border=True):
             st.subheader("Floor Assistant Access")
@@ -83,20 +97,52 @@ def render_mobile_scoring() -> None:
         return
 
     verifier_name = st.session_state.get("verifier_name", "Floor Verifier")
-    st.caption(f"Authenticated as: **{verifier_name}** | Tournament: **{tourney['name']}**")
+
+    # Header status badge
+    st.markdown(
+        f"""
+        <div style="background:#0F172A; border:1px solid #334155; border-radius:8px; padding:10px 14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
+            <div>
+                <span style="color:#F8FAFC; font-weight:700; font-size:13px;">👤 {verifier_name}</span>
+                <span style="color:#94A3B8; font-size:12px; margin-left:8px;">&bull; {tourney['name']}</span>
+            </div>
+            <span style="background:#1E3A8A; color:#93C5FD; font-size:10px; font-weight:800; padding:2px 8px; border-radius:4px;">
+                PIN VERIFIED
+            </span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     tab_manual, tab_camera = st.tabs(["🔢 10-Key Manual Input", "📸 AI Overhead Camera OCR"])
 
+    # Determine selectable lanes from active roster
+    active_lanes = _get_active_squad_lanes(tourney["id"])
+    if not active_lanes:
+        host_code = tourney.get("host_center", "FHL")
+        max_lanes = CENTERS.get(host_code, {}).get("lanes", 40)
+        active_lanes = list(range(1, max_lanes + 1))
+
     # --- TAB 1: 10-KEY MANUAL PAD ---
     with tab_manual:
-        col_lane, col_game = st.columns([1, 2])
+        col_lane, col_game = st.columns([1, 1], gap="small")
         with col_lane:
-            lane = st.number_input("Lane Number", min_value=1, max_value=40, value=1, step=1)
+            if len(active_lanes) <= 12:
+                lane = st.radio(
+                    "Select Lane",
+                    options=active_lanes,
+                    format_func=lambda l: f"Lane {l}",
+                    horizontal=True,
+                    index=0,
+                    key="mobile_lane_radio",
+                )
+            else:
+                lane = st.selectbox("Select Lane", options=active_lanes, index=0)
+
         with col_game:
-            # Segmented multi-choice buttons for mobile touch entry
             game_options = list(range(1, tourney["game_count"] + 1))
             game = st.radio(
-                "Game Number",
+                "Select Game",
                 options=game_options,
                 format_func=lambda g: f"Game {g}",
                 horizontal=True,
@@ -120,7 +166,7 @@ def render_mobile_scoring() -> None:
                         step=1,
                         key=f"scratch_{b['id']}_g{game}",
                     )
-                submitted = st.form_submit_button("Submit Lane Scores", type="primary", use_container_width=True)
+                submitted = st.form_submit_button(f"Submit Lane {lane} Game {game} Scores", type="primary", use_container_width=True)
                 if submitted:
                     for b in bowlers:
                         val = st.session_state.get(f"scratch_{b['id']}_g{game}", 0)
