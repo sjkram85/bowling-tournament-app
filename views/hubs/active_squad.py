@@ -1,4 +1,4 @@
-"""Active Squad Hub — Live scoring matrix, lane movement, and 8-person bracket desk controls."""
+"""Active Squad Hub — Live scoring matrix, lane movement, check-in status, and 8-person bracket desk controls."""
 
 import pandas as pd
 import streamlit as st
@@ -29,7 +29,7 @@ def _get_squad_bowlers(tournament_id: int) -> list[dict]:
         rows = conn.execute(
             """
             SELECT id, name, usbc_id, entering_avg, handicap, lane_assignment,
-                   lineup_position, is_pacer, is_youth, paid_status, checked_in
+                   lineup_position, is_pacer, is_youth, paid_status, checked_in, checked_in_at
             FROM bowlers
             WHERE tournament_id = ?
             ORDER BY lane_assignment ASC, lineup_position ASC
@@ -72,7 +72,7 @@ def _save_score(tournament_id: int, bowler_id: int, game_number: int, scratch: i
                 """,
                 (tournament_id, bowler_id, game_number, scratch, hdcp, total, user_name),
             )
-            log_desk_action(user_name, "td", f"Logged Game {game_number} score {scratch} (HDCP +{hdcp}) for Bowler #{bowler_id}")
+        log_desk_action(user_name, "td", f"Logged Game {game_number} score {scratch} (HDCP +{hdcp}) for Bowler #{bowler_id}")
     finally:
         conn.close()
 
@@ -122,13 +122,83 @@ def render_active_squad() -> None:
     # Dynamic Cross Lane Movement Banner
     st.markdown(
         f"""
-        <div class="ptcc-banner">
-            <div>Game {active_game} Movement: Even Lanes Move Right 1 Pair (+2) | Odd Lanes Move Left 1 Pair (-2)</div>
-            <small>Host: {CENTERS.get(host_code, {}).get('name', 'Bowling Center')} (Total {total_lanes} Lanes)</small>
+        <div class="ptcc-banner" style="background:#1E293B; border:1px solid #334155; border-radius:8px; padding:12px 16px; margin-bottom:16px;">
+            <div style="font-weight:700; color:#F8FAFC;">Game {active_game} Movement: Even Lanes Move Right 1 Pair (+2) | Odd Lanes Move Left 1 Pair (-2)</div>
+            <small style="color:#94A3B8;">Host: {CENTERS.get(host_code, {}).get('name', 'Bowling Center')} (Total {total_lanes} Lanes)</small>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+    # Bowler roster and check-in analysis
+    bowlers = _get_squad_bowlers(t_id)
+    if not bowlers:
+        st.warning("No bowlers registered on the squad roster.")
+        return
+
+    # =========================================================
+    # ROSTER CHECK-IN & PADDOCK GATE CLEARANCE STATUS
+    # =========================================================
+    total_bowlers = len(bowlers)
+    checked_in_count = sum(1 for b in bowlers if b.get("checked_in"))
+    unchecked_bowlers = [b for b in bowlers if not b.get("checked_in")]
+    unpaid_bowlers = [b for b in bowlers if b.get("paid_status") != "paid"]
+
+    if checked_in_count == total_bowlers and total_bowlers > 0:
+        st.markdown(
+            f"""
+            <div style="background-color: #064E3B; border: 1px solid #10B981; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <span style="color: #ECFDF5; font-size: 14px; font-weight: 800;">
+                        ✅ Paddock Gate Cleared: All {total_bowlers} Bowlers Checked In
+                    </span>
+                    <div style="color: #6EE7B7; font-size: 12px; margin-top: 2px;">
+                        All competitors confirmed on lane assignments and cleared for tournament competition.
+                    </div>
+                </div>
+                <span style="background: #10B981; color: #022C22; font-size: 11px; font-weight: 800; padding: 4px 10px; border-radius: 4px; letter-spacing: 0.5px;">
+                    100% ARRIVED
+                </span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        pct = int((checked_in_count / total_bowlers) * 100) if total_bowlers > 0 else 0
+        st.markdown(
+            f"""
+            <div style="background-color: #451A03; border: 1px solid #F59E0B; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <span style="color: #FEF3C7; font-size: 14px; font-weight: 800;">
+                        ⚠️ Paddock Gate Active: {checked_in_count} of {total_bowlers} Checked In ({len(unchecked_bowlers)} Awaiting Arrival)
+                    </span>
+                    <div style="color: #FCD34D; font-size: 12px; margin-top: 2px;">
+                        Bowlers may self-check-in at <code>?mode=bowler&action=checkin</code> or at the tournament desk.
+                    </div>
+                </div>
+                <span style="background: #F59E0B; color: #451A03; font-size: 11px; font-weight: 800; padding: 4px 10px; border-radius: 4px; letter-spacing: 0.5px;">
+                    {pct}% CHECKED IN
+                </span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        with st.expander(f"👀 View Unchecked Bowlers ({len(unchecked_bowlers)})", expanded=False):
+            u_cols = st.columns(2)
+            for idx, ub in enumerate(unchecked_bowlers):
+                col_target = u_cols[idx % 2]
+                paid_label = "PAID" if ub.get("paid_status") == "paid" else "UNPAID BALANCE"
+                paid_color = "#34D399" if ub.get("paid_status") == "paid" else "#F87171"
+                with col_target:
+                    st.markdown(
+                        f"""
+                        <div style="background:#0F172A; border:1px solid #334155; border-radius:6px; padding:8px 12px; margin-bottom:6px;">
+                            <strong style="color:#F8FAFC;">{ub['name']}</strong> &middot; Starting Lane <b>{ub['lane_assignment']}</b><br>
+                            <span style="font-size:11px; color:{paid_color}; font-weight:700;">{paid_label}</span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
 
     # =========================================================
     # 8-PERSON BRACKET & SIDE POT CONTROLS
@@ -154,18 +224,13 @@ def render_active_squad() -> None:
                 score_bracket_round(t_id, game_round=active_game)
                 st.success(f"Advanced brackets using Game {active_game} scores!")
 
-    # Bowler roster and game scores
-    bowlers = _get_squad_bowlers(t_id)
-    if not bowlers:
-        st.warning("No bowlers registered on the squad roster.")
-        return
-
     scores_map = _get_game_scores(t_id, active_game)
 
     # =========================================================
     # BIRDS-EYE HEATMAP MATRIX
     # =========================================================
-    st.markdown("### 🗺️ Birds-Eye Heatmap: Active Lane Status")
+    st.markdown("### 🗺️ Birds-Eye Heatmap: Active Lane Scoring Status")
+    st.caption("Displays score reporting progress across active lanes for the selected game.")
     lane_status_cols = st.columns(6)
 
     assigned_lanes = sorted(list({b["lane_assignment"] for b in bowlers}))
