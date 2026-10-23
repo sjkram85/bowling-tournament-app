@@ -1,4 +1,4 @@
-"""Intake Gateway — Squad initialization, AI roster ingestion (file upload or copy/paste), manual entry, and concourse check-in."""
+"""Intake Gateway — Squad initialization, AI roster ingestion (file upload or copy/paste), manual entry, multi-event package registration, and concourse check-in."""
 
 import base64
 import io
@@ -27,7 +27,7 @@ from modules.auth import current_user
 from modules.constants import CENTERS, HOST_CENTERS
 from modules.db_state import get_connection, log_desk_action
 
-# Pure SVG bowling ball (no pins attached) with 3D gradient & finger holes
+# Pure SVG bowling ball with 3D gradient & finger holes
 BOWLING_BALL_SVG = (
     '<svg width="28" height="28" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style="display:block;">'
     '  <defs>'
@@ -77,11 +77,6 @@ def _generate_qr_base64(url: str) -> str:
 
 
 def _run_with_bowling_animation(task_func, *args):
-    """
-    Executes the Gemini extraction directly on the active Streamlit thread
-    with a horizontal bowling lane, pure SVG bowling ball, and properly oriented 10-pin rack
-    (1-pin facing left toward the oncoming ball, 7-8-9-10 against the back right pit).
-    """
     anim_box = st.empty()
     progress_bar = st.progress(0)
 
@@ -116,12 +111,10 @@ def _run_with_bowling_animation(task_func, *args):
         anim_box.markdown(html_lane, unsafe_allow_html=True)
         progress_bar.progress(pct)
 
-    # Initial delivery down the boards
     for pct, desc, b_pos in stages:
         render_lane(desc, pct, b_pos)
         time.sleep(0.08)
 
-    # Hook phase right at the 1-3 pocket before API call
     render_lane("Ball hooking into 1-3 pocket... parsing Rule 400 SMART tags...", 85, 83)
 
     try:
@@ -131,7 +124,6 @@ def _run_with_bowling_animation(task_func, *args):
         progress_bar.empty()
         raise RuntimeError(f"Gemini API request failed: {exc}")
 
-    # Strike state
     html_strike = (
         f'<div style="background:#064E3B; border:1px solid #059669; border-radius:10px; padding:16px 20px; margin-bottom:12px; box-shadow:0 4px 12px rgba(6,78,59,0.3);">'
         f'  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">'
@@ -255,10 +247,10 @@ def render_intake_gateway() -> None:
                 conn.close()
 
     tab_roster, tab_entry, tab_concourse = st.tabs(
-        ["📋 Squad Roster", "➕ Add Competitors (AI & Manual)", "📱 Concourse Access Badges"]
+        ["📋 Squad Roster (Fully Editable)", "➕ Add Competitors (AI & Manual)", "📱 Concourse Access Badges"]
     )
 
-    # --- TAB 1: SQUAD ROSTER ---
+    # --- TAB 1: SQUAD ROSTER (EDITABLE) ---
     with tab_roster:
         bowlers = _get_squad_bowlers(t_id)
         if not bowlers:
@@ -269,17 +261,76 @@ def render_intake_gateway() -> None:
             col_m2.metric("Checked In", f"{sum(1 for b in bowlers if b['checked_in'])} Bowlers")
             col_m3.metric("Paid Entries", f"{sum(1 for b in bowlers if b['paid_status'] == 'paid')} Entries")
 
-            st.dataframe(bowlers, hide_index=True, use_container_width=True)
+            st.caption("💡 You can directly edit any field in the table below and click save.")
+            
+            df_bowlers = pd.DataFrame(bowlers)
+            edited_roster = st.data_editor(
+                df_bowlers,
+                hide_index=True,
+                use_container_width=True,
+                key="editable_squad_roster",
+                disabled=["id", "tournament_id"]
+            )
 
-    # --- TAB 2: ADD COMPETITORS (3-WAY CHOICE) ---
+            if st.button("💾 Save Roster Changes", type="primary"):
+                conn = get_connection()
+                try:
+                    with conn:
+                        for _, row in edited_roster.iterrows():
+                            conn.execute(
+                                """
+                                UPDATE bowlers SET
+                                    name = ?,
+                                    usbc_id = ?,
+                                    email = ?,
+                                    entering_avg = ?,
+                                    handicap = ?,
+                                    lane_assignment = ?,
+                                    lineup_position = ?,
+                                    is_youth = ?,
+                                    smart_account_id = ?,
+                                    paid_status = ?
+                                WHERE id = ?
+                                """,
+                                (
+                                    row["name"],
+                                    row["usbc_id"],
+                                    row["email"],
+                                    int(row["entering_avg"]),
+                                    int(row["handicap"]),
+                                    int(row["lane_assignment"]),
+                                    int(row["lineup_position"]),
+                                    int(row["is_youth"]),
+                                    row["smart_account_id"],
+                                    row["paid_status"],
+                                    row["id"],
+                                ),
+                            )
+                    log_desk_action(td_name, "td", f"Updated squad roster for tournament #{t_id}")
+                    st.success("Roster changes saved successfully!")
+                    st.rerun()
+                finally:
+                    conn.close()
+
+    # --- TAB 2: ADD COMPETITORS (MULTI-EVENT PACKAGE & TEMPLATE) ---
     with tab_entry:
         client = get_gemini_client() if AI_MODULE_LOADED else None
         active_model = get_best_available_model(client) if client else "gemini-3.8-flash"
 
+        st.markdown("##### 🏆 Multi-Event Package Registration")
+        st.caption("Select which events this roster entry applies to simultaneously (avoids importing separate files for Singles, Doubles, Team, and All-Events):")
+        col_ev1, col_ev2, col_ev3, col_ev4 = st.columns(4)
+        reg_singles = col_ev1.checkbox("Singles", value=True)
+        reg_doubles = col_ev2.checkbox("Doubles", value=True)
+        reg_team = col_ev3.checkbox("Team", value=False)
+        reg_all_events = col_ev4.checkbox("All-Events", value=True)
+
+        st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
+
         intake_mode = st.radio(
             "Select Intake Method:",
             [
-                "📁 Upload Document (Word, Excel, PDF, CSV, Photo)",
+                "📁 Upload Document (Excel, CSV, PDF, Photo)",
                 "📋 Copy & Paste Roster Text (Gemini Auto-Parser)",
                 "✍️ Manual Entry (Single Walk-In Bowler)",
             ],
@@ -288,11 +339,39 @@ def render_intake_gateway() -> None:
 
         st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 
-        # OPTION A: FILE UPLOAD
+        # OPTION A: FILE UPLOAD + TEMPLATE DOWNLOAD
         if intake_mode.startswith("📁"):
-            st.caption(f"Upload your roster document. Processed by **{active_model}**.")
+            st.caption(f"Upload your roster document or spreadsheet. Processed by **{active_model}**.")
+            
+            template_df = pd.DataFrame(columns=["name", "usbc_id", "email", "entering_avg", "handicap", "lane_assignment", "is_youth", "smart_account_id", "paid_status"])
+            template_loc = pd.DataFrame([{
+                "name": "Jane Doe",
+                "usbc_id": "8412-12345",
+                "email": "jane@example.com",
+                "entering_avg": 210,
+                "handicap": 15,
+                "lane_assignment": 1,
+                "is_youth": 0,
+                "smart_account_id": "",
+                "paid_status": "paid"
+            }])
+            template_df = pd.concat([template_df, template_loc], ignore_index=True)
+            
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+                template_df.to_excel(writer, index=False, sheet_name="Roster Template")
+            buffer.seek(0)
+
+            st.download_button(
+                label="📥 Download Blank Roster Excel Template (.xlsx)",
+                data=buffer,
+                file_name="prism_roster_template.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                help="Download this pre-formatted template to ensure your spreadsheet uploads instantly without errors."
+            )
+
             uploaded_file = st.file_uploader(
-                "Upload Squad File",
+                "Upload Filled Squad File",
                 type=["docx", "xlsx", "xls", "pdf", "csv", "png", "jpg", "jpeg", "txt"],
                 key="ai_roster_uploader",
             )
@@ -311,12 +390,25 @@ def render_intake_gateway() -> None:
                     except Exception as e:
                         st.error(f"AI Extraction failed: {e}")
 
-        # OPTION B: COPY & PASTE TEXT
+        # OPTION B: COPY & PASTE TEXT WITH FORMAT GUIDE
         elif intake_mode.startswith("📋"):
-            st.caption(f"Copy and paste roster text directly from Word, emails, Facebook posts, or notes. Powered by **{active_model}**.")
+            st.markdown(
+                """
+                <div style="background:#1E293B; padding:12px; border-radius:6px; margin-bottom:12px; border-left:4px solid #38BDF8;">
+                    <strong style="color:#38BDF8;">📋 Copy & Paste Format Guide:</strong><br/>
+                    <small style="color:#94A3B8;">Format each line with the <b>Name</b>, <b>USBC ID</b>, and <b>Average</b>:</small><br/>
+                    <code style="color:#F8FAFC; background:#0F172A; padding:2px 6px; border-radius:4px; display:inline-block; margin-top:6px;">
+                    Lane 1: Marcus Vance (USBC 8412-10921, Avg 218) - Paid<br/>
+                    Lane 1: Tyler Jenkins (USBC 8412-44102, Avg 192) - Paid
+                    </code>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            
             pasted_text = st.text_area(
                 "Paste Roster Content Here",
-                placeholder="Example:\nLane 1: Marcus Vance (USBC 8412-10921, Avg 218) - Paid\nLane 1: Tyler Jenkins (USBC 8412-44102, Avg 192) - Paid\nLane 2: Dylan Cooper (USBC 8412-99014, Avg 174, Youth, SMART 4412)",
+                placeholder="Lane 1: Marcus Vance (USBC 8412-10921, Avg 218) - Paid\nLane 1: Tyler Jenkins (USBC 8412-44102, Avg 192) - Paid",
                 height=180,
             )
             if st.button("🤖 Ingest Pasted Text with Gemini", type="primary"):
@@ -343,7 +435,7 @@ def render_intake_gateway() -> None:
                 with c1:
                     b_name = st.text_input("Bowler Full Name")
                     b_usbc = st.text_input("USBC Member ID")
-                    b_email = st.text_input("Bowler Email (for recap delivery)")
+                    b_email = st.text_input("Bowler Email")
                 with c2:
                     b_avg = st.number_input("Entering Average", min_value=0, max_value=300, value=200)
                     b_hdcp = st.number_input("Handicap", min_value=0, max_value=150, value=18)
@@ -364,7 +456,7 @@ def render_intake_gateway() -> None:
                         conn = get_connection()
                         try:
                             with conn:
-                                conn.execute(
+                                cur = conn.execute(
                                     """
                                     INSERT INTO bowlers (
                                         tournament_id, name, usbc_id, email, entering_avg, handicap,
@@ -385,13 +477,28 @@ def render_intake_gateway() -> None:
                                         paid,
                                     ),
                                 )
-                            log_desk_action(td_name, "td", f"Registered bowler '{b_name}' on Lane {b_lane} for squad #{t_id}")
+                                b_db_id = cur.lastrowid
+                                
+                                # Register across selected package events
+                                selected_events = []
+                                if reg_singles: selected_events.append("Singles")
+                                if reg_doubles: selected_events.append("Doubles")
+                                if reg_team: selected_events.append("Team")
+                                if reg_all_events: selected_events.append("All-Events")
+
+                                for ev in selected_events:
+                                    conn.execute(
+                                        "INSERT OR IGNORE INTO bowler_events (bowler_id, tournament_id, event_type, paid_status) VALUES (?, ?, ?, ?)",
+                                        (b_db_id, t_id, ev, paid)
+                                    )
+
+                            log_desk_action(td_name, "td", f"Registered bowler '{b_name}' for squad #{t_id} across multi-event package")
                             st.success(f"Bowler {b_name} added to Squad #{t_id}!")
                             st.rerun()
                         finally:
                             conn.close()
 
-        # SHARED REVIEW & COMMIT TABLE
+        # SHARED REVIEW & COMMIT TABLE (WITH MULTI-EVENT MAPPING)
         if "parsed_ai_roster" in st.session_state and st.session_state["parsed_ai_roster"]:
             st.markdown("---")
             st.markdown("##### 📝 Review & Edit Extracted Roster Before Committing")
@@ -406,11 +513,17 @@ def render_intake_gateway() -> None:
                     inserted = 0
                     try:
                         with conn:
+                            selected_events = []
+                            if reg_singles: selected_events.append("Singles")
+                            if reg_doubles: selected_events.append("Doubles")
+                            if reg_team: selected_events.append("Team")
+                            if reg_all_events: selected_events.append("All-Events")
+
                             for _, row in edited_df.iterrows():
                                 b_name = str(row.get("name", "")).strip()
                                 if not b_name or b_name.lower() == "nan":
                                     continue
-                                conn.execute(
+                                cur = conn.execute(
                                     """
                                     INSERT INTO bowlers (
                                         tournament_id, name, usbc_id, email, entering_avg, handicap,
@@ -431,10 +544,16 @@ def render_intake_gateway() -> None:
                                         str(row.get("paid_status") or "paid"),
                                     ),
                                 )
+                                b_db_id = cur.lastrowid
+                                for ev in selected_events:
+                                    conn.execute(
+                                        "INSERT OR IGNORE INTO bowler_events (bowler_id, tournament_id, event_type, paid_status) VALUES (?, ?, ?, ?)",
+                                        (b_db_id, t_id, ev, str(row.get("paid_status") or "paid"))
+                                    )
                                 inserted += 1
-                        log_desk_action(td_name, "td", f"AI batch-registered {inserted} bowlers for squad #{t_id}")
+                        log_desk_action(td_name, "td", f"AI batch-registered {inserted} bowlers across multi-event package for squad #{t_id}")
                         st.session_state["parsed_ai_roster"] = []
-                        st.success(f"Successfully registered {inserted} bowler(s) to Squad #{t_id}!")
+                        st.success(f"Successfully registered {inserted} bowler(s) across multi-event package!")
                         st.rerun()
                     finally:
                         conn.close()

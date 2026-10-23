@@ -28,7 +28,7 @@ def checkpoint_db() -> None:
 
 
 def init_db() -> None:
-    """Initialize core tables, audit log, and schema dependencies."""
+    """Initialize core tables, audit log, multi-event package tracking, and schema dependencies."""
     conn = get_connection()
     try:
         with conn:
@@ -87,6 +87,18 @@ def init_db() -> None:
                     FOREIGN KEY(tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS bowler_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bowler_id INTEGER NOT NULL,
+                    tournament_id INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    event_fee REAL DEFAULT 25.0,
+                    paid_status TEXT DEFAULT 'paid',
+                    FOREIGN KEY(bowler_id) REFERENCES bowlers(id) ON DELETE CASCADE,
+                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
+                    UNIQUE(bowler_id, event_type)
+                );
+
                 CREATE TABLE IF NOT EXISTS scores (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     tournament_id INTEGER NOT NULL,
@@ -94,20 +106,6 @@ def init_db() -> None:
                     game_number INTEGER NOT NULL,
                     scratch_score INTEGER NOT NULL DEFAULT 0,
                     total_score INTEGER NOT NULL DEFAULT 0,
-                    verified INTEGER DEFAULT 0,
-                    verified_by TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
-                    FOREIGN KEY(bowler_id) REFERENCES bowlers(id) ON DELETE CASCADE,
-                    UNIQUE(tournament_id, bowler_id, game_number)
-                );
-
-                CREATE TABLE IF NOT EXISTS bowler_scores (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tournament_id INTEGER NOT NULL,
-                    bowler_id INTEGER NOT NULL,
-                    game_number INTEGER NOT NULL,
-                    scratch_score INTEGER NOT NULL DEFAULT 0,
                     verified INTEGER DEFAULT 0,
                     verified_by TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -154,19 +152,6 @@ def init_db() -> None:
                     FOREIGN KEY(tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
                 );
 
-                CREATE TABLE IF NOT EXISTS mystery_doubles_pairs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tournament_id INTEGER NOT NULL,
-                    bowler_1_id INTEGER NOT NULL,
-                    bowler_2_id INTEGER NOT NULL,
-                    combined_scratch INTEGER DEFAULT 0,
-                    combined_handicap INTEGER DEFAULT 0,
-                    combined_total INTEGER DEFAULT 0,
-                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
-                    FOREIGN KEY(bowler_1_id) REFERENCES bowlers(id) ON DELETE CASCADE,
-                    FOREIGN KEY(bowler_2_id) REFERENCES bowlers(id) ON DELETE CASCADE
-                );
-
                 CREATE TABLE IF NOT EXISTS tournament_archives (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     tournament_id INTEGER NOT NULL,
@@ -182,16 +167,16 @@ def init_db() -> None:
                 """
             )
 
-            # Auto-migrate columns if table existed from an earlier schema version
-            existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_users);").fetchall()]
-            if "email" not in existing_cols:
-                conn.execute("ALTER TABLE staff_users ADD COLUMN email TEXT DEFAULT '';")
-            if "is_approved" not in existing_cols:
-                conn.execute("ALTER TABLE staff_users ADD COLUMN is_approved INTEGER DEFAULT 1;")
-            if "center_affiliation" not in existing_cols:
-                conn.execute("ALTER TABLE staff_users ADD COLUMN center_affiliation TEXT DEFAULT 'CHUSBC';")
-            if "is_active" not in existing_cols:
-                conn.execute("ALTER TABLE staff_users ADD COLUMN is_active INTEGER DEFAULT 1;")
+        # Auto-migrate columns if table existed from an earlier schema version
+        existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_users);").fetchall()]
+        if "email" not in existing_cols:
+            conn.execute("ALTER TABLE staff_users ADD COLUMN email TEXT DEFAULT '';")
+        if "is_approved" not in existing_cols:
+            conn.execute("ALTER TABLE staff_users ADD COLUMN is_approved INTEGER DEFAULT 1;")
+        if "center_affiliation" not in existing_cols:
+            conn.execute("ALTER TABLE staff_users ADD COLUMN center_affiliation TEXT DEFAULT 'CHUSBC';")
+        if "is_active" not in existing_cols:
+            conn.execute("ALTER TABLE staff_users ADD COLUMN is_active INTEGER DEFAULT 1;")
 
     finally:
         conn.close()
