@@ -1,4 +1,4 @@
-"""Floating Prism A.I Tournament Assistant."""
+"""Prism A.I Tournament Assistant."""
 
 import streamlit as st
 from modules.prism_ai import get_prism_ai_guidance
@@ -15,7 +15,7 @@ def collect_view_state(current_view: str) -> dict:
 
 @st.dialog("🎳 Prism A.I — Desk Assistant", width="large")
 def _open_prism_dialog(current_view: str, view_state: dict | None = None) -> None:
-    """Modal popup dialog triggered by clicking the floating assistant button."""
+    """Modal popup dialog triggered by clicking the assistant button."""
     col1, col2 = st.columns([3, 1])
     with col1:
         st.markdown(
@@ -66,46 +66,29 @@ def _open_prism_dialog(current_view: str, view_state: dict | None = None) -> Non
 
 def render_prism_dock(current_view: str = "Active Squad Hub", view_state: dict | None = None) -> None:
     """
-    Renders a compact, floating bowling pin button in the lower-left corner of the viewport.
-    Clicking the button launches the assistant modal window.
+    Renders the dedicated Prism A.I button directly in the sidebar navigation rail.
     """
-    st.markdown(
+    st.sidebar.markdown(
         """
         <style>
-        div[class*="st-key-prism_fab_trigger"] {
-            position: fixed !important;
-            bottom: 24px !important;
-            left: 24px !important;
-            z-index: 999990 !important;
-            width: auto !important;
-        }
-        div[class*="st-key-prism_fab_trigger"] button {
+        div[class*="st-key-sidebar_prism_dock"] button {
             background: #1E293B !important;
-            border: 2px solid #F59E0B !important;
+            border: 1.5px solid #F59E0B !important;
             color: #F8FAFC !important;
-            border-radius: 9999px !important;
-            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45) !important;
-            padding: 8px 18px !important;
+            border-radius: 8px !important;
             font-weight: 700 !important;
-            font-size: 14px !important;
-            transition: all 0.2s ease !important;
+            padding: 8px 12px !important;
+            margin-top: 10px !important;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3) !important;
         }
-        div[class*="st-key-prism_fab_trigger"] button:hover {
-            background: #334155 !important;
+        div[class*="st-key-sidebar_prism_dock"] button:hover {
             border-color: #FCD34D !important;
-            transform: translateY(-2px) !important;
-            box-shadow: 0 8px 22px rgba(245, 158, 11, 0.3) !important;
-        }
-        @media (max-width: 640px) {
-            div[class*="st-key-prism_fab_trigger"] {
-                bottom: 16px !important;
-                left: 16px !important;
-            }
+            background: #334155 !important;
         }
         </style>
         """,
         unsafe_allow_html=True,
     )
-
-    if st.button("🎳 Prism A.I", key="prism_fab_trigger"):
-        _open_prism_dialog(current_view, view_state)
+    with st.sidebar.container(key="sidebar_prism_dock"):
+        if st.button("🎳 Prism A.I Assistant", key="btn_prism_dock_trigger", use_container_width=True):
+            _open_prism_dialog(current_view, view_state)

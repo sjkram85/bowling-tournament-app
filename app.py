@@ -89,9 +89,11 @@ def render_desk() -> None:
             with st.sidebar.container(key=f"nav_{state}_{item.url_path}"):
                 st.page_link(item, use_container_width=True)
     _sidebar_identity(user)
+
+    # Render Prism A.I assistant into sidebar before page.run()
+    render_prism_dock(current_view=page.title, view_state=collect_view_state(page.title))
+
     page.run()
-    current_view = page.title
-    render_prism_dock(current_view=current_view, view_state=collect_view_state(current_view))
 
 
 mode = st.query_params.get("mode")
