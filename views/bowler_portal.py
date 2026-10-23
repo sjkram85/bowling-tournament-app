@@ -26,8 +26,8 @@ def _get_tournament_bowlers(tournament_id: int) -> list[dict]:
     try:
         rows = conn.execute(
             "SELECT id, name, usbc_id, entering_avg, handicap, lane_assignment, "
-            "paid_status, checked_in, checked_in_at, is_youth "
-            "FROM bowlers WHERE tournament_id = ? ORDER BY lane_assignment, lineup_position",
+            "lineup_position, paid_status, checked_in, checked_in_at, is_youth "
+            "FROM bowlers WHERE tournament_id = ? ORDER BY lane_assignment ASC, lineup_position ASC",
             (tournament_id,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -205,7 +205,7 @@ def _render_my_action_tab(tournament_id: int) -> None:
 
 
 def _render_standings_flow(active_tourneys: list[dict]) -> None:
-    """Public live standings & cut-line leaderboard."""
+    """Public live standings & cut-line leaderboard with pre-game pairing preview."""
     st.title("🎳 Live Bowler Portal & Standings")
 
     if not active_tourneys:
@@ -217,6 +217,13 @@ def _render_standings_flow(active_tourneys: list[dict]) -> None:
 
     conn = get_connection()
     try:
+        # Check overall squad bowler check-in status
+        bowler_rows = conn.execute(
+            "SELECT id, name, lane_assignment, lineup_position, entering_avg, handicap, checked_in, is_pacer "
+            "FROM bowlers WHERE tournament_id = ? AND is_pacer = 0 ORDER BY lane_assignment ASC, lineup_position ASC",
+            (tourney["id"],),
+        ).fetchall()
+
         sql = """
         SELECT b.id, b.name, b.lane_assignment, b.handicap,
                COUNT(s.game_number) as games_bowled,
@@ -229,10 +236,64 @@ def _render_standings_flow(active_tourneys: list[dict]) -> None:
         ORDER BY grand_total DESC, total_scratch DESC
         """
         rows = conn.execute(sql, (tourney["id"],)).fetchall()
+
+        total_field = len(bowler_rows)
+        checked_field = sum(1 for b in bowler_rows if b["checked_in"])
+        all_checked = (checked_field == total_field) and total_field > 0
+
+        # Pre-competition or awaiting first scores
         if not rows or rows[0]["games_bowled"] == 0:
-            st.info("Tournament is in check-in phase. Scores will appear once competition commences.")
+            if all_checked:
+                st.markdown(
+                    """
+                    <div style="background: linear-gradient(135deg, #064E3B 0%, #0F172A 100%); border: 1px solid #10B981; border-radius: 10px; padding: 16px 20px; margin-bottom: 20px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <h3 style="color: #ECFDF5; margin: 0 0 4px 0; font-size: 18px;">
+                                    🎳 Squad In Progress &middot; Game 1 Scores Pending
+                                </h3>
+                                <p style="color: #6EE7B7; font-size: 13px; margin: 0;">
+                                    All bowlers have checked in. Live leaderboard will auto-populate as recap sheets are audited.
+                                </p>
+                            </div>
+                            <span style="background: #10B981; color: #022C22; font-weight: 800; font-size: 11px; padding: 4px 10px; border-radius: 999px;">
+                                ON LANES
+                            </span>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    f"""
+                    <div style="background: #1E293B; border: 1px solid #334155; border-radius: 10px; padding: 16px 20px; margin-bottom: 20px;">
+                        <h4 style="color: #F8FAFC; margin: 0 0 4px 0;">⏳ Tournament Check-In Phase</h4>
+                        <p style="color: #94A3B8; font-size: 13px; margin: 0;">
+                            Paddock arrival gate is open ({checked_field} of {total_field} bowlers confirmed). Scores will appear once competition commences.
+                        </p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            # Pre-game starting lane assignment sheet
+            if bowler_rows:
+                st.markdown("#### Official Squad Lane Pairings")
+                pair_data = []
+                for b in bowler_rows:
+                    pair_data.append({
+                        "Lane": b["lane_assignment"],
+                        "Position": f"#{b['lineup_position']}",
+                        "Bowler Name": b["name"],
+                        "Entering Avg": b["entering_avg"] or "N/A",
+                        "HDCP / Game": f"+{b['handicap']}",
+                        "Check-In Status": "✅ Checked In" if b["checked_in"] else "⏳ Awaiting Arrival",
+                    })
+                st.dataframe(pd.DataFrame(pair_data), hide_index=True, use_container_width=True)
             return
 
+        # Scores are recorded: Render live cut-line leaderboard
         data = []
         for rank, r in enumerate(rows, start=1):
             data.append({
