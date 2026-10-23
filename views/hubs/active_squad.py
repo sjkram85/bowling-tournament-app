@@ -1,5 +1,6 @@
 """Active Squad Hub — Live scoring matrix, lane movement, check-in status, quick QR codes, and 8-person bracket desk controls."""
 
+import base64
 import io
 import pandas as pd
 import qrcode
@@ -16,16 +17,16 @@ def _get_base_url() -> str:
     return st.secrets.get("APP_BASE_URL", "https://chusbc-desk.streamlit.app")
 
 
-def _generate_qr_buffer(url: str) -> io.BytesIO:
-    """Generate high-contrast QR code image in memory."""
-    qr = qrcode.QRCode(box_size=4, border=2)
+def _generate_qr_base64(url: str) -> str:
+    """Generate high-contrast QR code as a base64 data URI string."""
+    qr = qrcode.QRCode(box_size=5, border=2)
     qr.add_data(url)
     qr.make(fit=True)
     img = qr.make_image(fill_color="#0F172A", back_color="#FFFFFF")
     buf = io.BytesIO()
     img.save(buf, format="PNG")
-    buf.seek(0)
-    return buf
+    b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return f"data:image/png;base64,{b64_str}"
 
 
 def _get_active_tournament() -> dict | None:
@@ -226,64 +227,48 @@ def render_active_squad() -> None:
         scorer_url = f"{base_url}/?mode=score"
         portal_url = f"{base_url}/?mode=bowler"
 
-        buf_scorer = _generate_qr_buffer(scorer_url)
-        buf_portal = _generate_qr_buffer(portal_url)
+        b64_scorer = _generate_qr_base64(scorer_url)
+        b64_portal = _generate_qr_base64(portal_url)
 
         _, qr_col1, qr_col2, _ = st.columns([1, 2, 2, 1], gap="medium")
 
         with qr_col1:
-            with st.container(border=True):
-                st.markdown(
-                    f"""
-                    <div style="text-align:center;">
-                        <span style="background:#1E3A8A; color:#93C5FD; font-size:11px; font-weight:800; padding:2px 8px; border-radius:4px;">
-                            FLOOR SCORING PAD
-                        </span>
-                        <h4 style="color:#F8FAFC; margin:8px 0 2px 0;">📱 Mobile Scorer</h4>
-                        <p style="color:#10B981; font-weight:700; font-size:13px; margin-bottom:8px;">🔑 PIN: {tourney['pin_verifier']}</p>
+            st.markdown(
+                f"""
+                <div style="background: #0F172A; border: 1px solid #334155; border-radius: 10px; padding: 20px 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);">
+                    <span style="background: #1E3A8A; color: #93C5FD; font-size: 11px; font-weight: 800; padding: 2px 10px; border-radius: 4px; letter-spacing: 0.5px;">
+                        FLOOR SCORING PAD
+                    </span>
+                    <h4 style="color: #F8FAFC; margin: 10px 0 2px 0;">📱 Mobile Scorer</h4>
+                    <p style="color: #10B981; font-weight: 700; font-size: 13px; margin: 0 0 14px 0;">🔑 PIN: {tourney['pin_verifier']}</p>
+                    <div style="background: #FFFFFF; padding: 8px; border-radius: 8px; display: flex; align-items: center; justify-content: center; margin-bottom: 12px;">
+                        <img src="{b64_scorer}" width="160" height="160" style="display: block; margin: 0 auto;" />
                     </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                _, img_c1, _ = st.columns([1, 2, 1])
-                with img_c1:
-                    st.image(buf_scorer.getvalue(), width=160)
-                st.markdown(
-                    f"""
-                    <div style="text-align:center; font-size:12px; color:#94A3B8; margin-top:4px;">
-                        Floor Assistant 10-Key Input<br>
-                        <a href="{scorer_url}" target="_blank" style="display:inline-block; margin-top:6px;">Open Scorer Tab ↗</a>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                    <span style="font-size: 12px; color: #94A3B8;">Floor Assistant 10-Key Input</span>
+                    <a href="{scorer_url}" target="_blank" style="margin-top: 8px; color: #38BDF8; font-size: 13px; font-weight: 600; text-decoration: none;">Open Scorer Tab ↗</a>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         with qr_col2:
-            with st.container(border=True):
-                st.markdown(
-                    """
-                    <div style="text-align:center;">
-                        <span style="background:#0284C7; color:#BAE6FD; font-size:11px; font-weight:800; padding:2px 8px; border-radius:4px;">
-                            PUBLIC STANDINGS
-                        </span>
-                        <h4 style="color:#F8FAFC; margin:8px 0 2px 0;">📊 Bowler Portal</h4>
-                        <p style="color:#94A3B8; font-size:13px; margin-bottom:8px;">Live standings, cut line & brackets</p>
+            st.markdown(
+                f"""
+                <div style="background: #0F172A; border: 1px solid #334155; border-radius: 10px; padding: 20px 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);">
+                    <span style="background: #0284C7; color: #BAE6FD; font-size: 11px; font-weight: 800; padding: 2px 10px; border-radius: 4px; letter-spacing: 0.5px;">
+                        PUBLIC STANDINGS
+                    </span>
+                    <h4 style="color: #F8FAFC; margin: 10px 0 2px 0;">📊 Bowler Portal</h4>
+                    <p style="color: #94A3B8; font-size: 13px; margin: 0 0 14px 0;">Live standings, cut line & brackets</p>
+                    <div style="background: #FFFFFF; padding: 8px; border-radius: 8px; display: flex; align-items: center; justify-content: center; margin-bottom: 12px;">
+                        <img src="{b64_portal}" width="160" height="160" style="display: block; margin: 0 auto;" />
                     </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                _, img_c2, _ = st.columns([1, 2, 1])
-                with img_c2:
-                    st.image(buf_portal.getvalue(), width=160)
-                st.markdown(
-                    f"""
-                    <div style="text-align:center; font-size:12px; color:#94A3B8; margin-top:4px;">
-                        Bowler Live Scoreboard<br>
-                        <a href="{portal_url}" target="_blank" style="display:inline-block; margin-top:6px;">Open Portal Tab ↗</a>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                    <span style="font-size: 12px; color: #94A3B8;">Bowler Live Scoreboard</span>
+                    <a href="{portal_url}" target="_blank" style="margin-top: 8px; color: #38BDF8; font-size: 13px; font-weight: 600; text-decoration: none;">Open Portal Tab ↗</a>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
     # =========================================================
     # 8-PERSON BRACKET & SIDE POT CONTROLS
