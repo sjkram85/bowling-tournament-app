@@ -111,6 +111,19 @@ def init_db() -> None:
                     role TEXT NOT NULL,
                     action_description TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS tournament_archives (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tournament_id INTEGER NOT NULL,
+                    archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    archived_by TEXT NOT NULL,
+                    snapshot_json TEXT NOT NULL,
+                    certified_pdf BLOB,
+                    smart_csv TEXT,
+                    bls_bits_csv TEXT,
+                    bls_autoscoring_dat TEXT,
+                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id)
+                );
                 """
             )
             _migrate_columns(conn)
