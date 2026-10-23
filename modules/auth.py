@@ -57,7 +57,7 @@ def verify_password(password_hash: str, password: str) -> bool:
 
 
 def _bootstrap_admin() -> None:
-    """Bootstrap default administrator in SQLite with Scott Kramer's credentials."""
+    """Bootstrap default administrator in SQLite with automatic column schema migration."""
     username = "skramer"
     password = "Gussierocks1"
     display_name = "Scott Kramer"
@@ -67,6 +67,36 @@ def _bootstrap_admin() -> None:
     conn = get_connection()
     try:
         with conn:
+            # 1. Ensure staff_users table exists
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS staff_users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    email TEXT DEFAULT '',
+                    center_affiliation TEXT DEFAULT 'CHUSBC',
+                    role TEXT NOT NULL DEFAULT 'td',
+                    is_approved INTEGER DEFAULT 1,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+
+            # 2. Check and migrate columns on existing database files
+            columns = [col[1] for col in conn.execute("PRAGMA table_info(staff_users);").fetchall()]
+            if "email" not in columns:
+                conn.execute("ALTER TABLE staff_users ADD COLUMN email TEXT DEFAULT '';")
+            if "is_approved" not in columns:
+                conn.execute("ALTER TABLE staff_users ADD COLUMN is_approved INTEGER DEFAULT 1;")
+            if "center_affiliation" not in columns:
+                conn.execute("ALTER TABLE staff_users ADD COLUMN center_affiliation TEXT DEFAULT 'CHUSBC';")
+            if "is_active" not in columns:
+                conn.execute("ALTER TABLE staff_users ADD COLUMN is_active INTEGER DEFAULT 1;")
+
+            # 3. Check for existing admin record
             existing = conn.execute(
                 "SELECT id FROM staff_users WHERE username = ?",
                 (username,),

@@ -47,8 +47,10 @@ def init_db() -> None:
                     username TEXT UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL,
                     display_name TEXT NOT NULL,
+                    email TEXT DEFAULT '',
+                    center_affiliation TEXT DEFAULT 'CHUSBC',
                     role TEXT NOT NULL DEFAULT 'td',
-                    center_affiliation TEXT,
+                    is_approved INTEGER DEFAULT 1,
                     is_active INTEGER DEFAULT 1,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
@@ -179,6 +181,18 @@ def init_db() -> None:
                 );
                 """
             )
+
+            # Auto-migrate columns if table existed from an earlier schema version
+            existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_users);").fetchall()]
+            if "email" not in existing_cols:
+                conn.execute("ALTER TABLE staff_users ADD COLUMN email TEXT DEFAULT '';")
+            if "is_approved" not in existing_cols:
+                conn.execute("ALTER TABLE staff_users ADD COLUMN is_approved INTEGER DEFAULT 1;")
+            if "center_affiliation" not in existing_cols:
+                conn.execute("ALTER TABLE staff_users ADD COLUMN center_affiliation TEXT DEFAULT 'CHUSBC';")
+            if "is_active" not in existing_cols:
+                conn.execute("ALTER TABLE staff_users ADD COLUMN is_active INTEGER DEFAULT 1;")
+
     finally:
         conn.close()
 
