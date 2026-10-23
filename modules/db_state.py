@@ -11,10 +11,12 @@ BACKUP_DIR = Path("backups")
 
 
 def get_connection() -> sqlite3.Connection:
-    """Create and return a configured connection to the SQLite database."""
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    """Create and return a configured connection to the SQLite database with WAL and busy timeout."""
+    conn = sqlite3.connect(DB_FILE, timeout=30.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 
@@ -135,7 +137,7 @@ def checkpoint_db(label: str = "manual") -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     sanitized_label = "".join(c for c in label if c.isalnum() or c in ("-", "_")).strip() or "checkpoint"
     dest_path = BACKUP_DIR / f"prism_{timestamp}_{sanitized_label}.db"
-    
+
     # Flush database to disk before copying
     if DB_FILE.exists():
         conn = get_connection()
@@ -145,7 +147,7 @@ def checkpoint_db(label: str = "manual") -> Path:
             pass
         finally:
             conn.close()
-        shutil.copy2(DB_FILE, dest_path)
+    shutil.copy2(DB_FILE, dest_path)
     return dest_path
 
 

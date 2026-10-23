@@ -103,11 +103,6 @@ def authenticate(username: str, password: str) -> dict | None:
 
         if user and verify_password(user["password_hash"], password):
             user_dict = dict(user)
-            log_desk_action(
-                user_dict["display_name"],
-                user_dict["role"],
-                f"Staff user '{user_dict['username']}' logged in successfully",
-            )
             return user_dict
         return None
     finally:
@@ -155,16 +150,18 @@ def create_staff_user(
                     int(is_approved),
                 ),
             )
-            log_desk_action(
-                "Admin",
-                "admin",
-                f"Created staff account '{username.strip()}' with role '{role}'",
-            )
-        return True, "Staff account created successfully."
     except Exception as exc:
         return False, f"Account creation failed: {str(exc)}"
     finally:
         conn.close()
+
+    # Log action outside transaction scope to prevent file deadlock
+    log_desk_action(
+        "Admin",
+        "admin",
+        f"Created staff account '{username.strip()}' with role '{role}'",
+    )
+    return True, "Staff account created successfully."
 
 
 def register_staff_user(
@@ -202,16 +199,18 @@ def register_staff_user(
                     center_affiliation,
                 ),
             )
-            log_desk_action(
-                display_name.strip(),
-                "applicant",
-                f"New staff access request submitted for affiliation: {center_affiliation}",
-            )
-        return True, "Access request submitted successfully! An administrator will review and activate your account."
     except Exception as exc:
         return False, f"Registration failed: {str(exc)}"
     finally:
         conn.close()
+
+    # Log action after closing the write transaction
+    log_desk_action(
+        display_name.strip(),
+        "applicant",
+        f"New staff access request submitted for affiliation: {center_affiliation}",
+    )
+    return True, "Access request submitted successfully! An administrator will review and activate your account."
 
 
 def current_user() -> dict | None:
@@ -276,6 +275,11 @@ def render_login_screen() -> None:
                         else:
                             user = authenticate(username, password)
                             if user:
+                                log_desk_action(
+                                    user["display_name"],
+                                    user["role"],
+                                    f"Staff user '{user['username']}' logged in successfully",
+                                )
                                 st.session_state["user"] = user
                                 st.rerun()
                             else:
