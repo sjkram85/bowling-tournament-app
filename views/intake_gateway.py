@@ -339,7 +339,7 @@ def render_intake_gateway() -> None:
 
         st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 
-        # OPTION A: FILE UPLOAD + TEMPLATE DOWNLOAD
+        # OPTION A: FILE UPLOAD + CSV TEMPLATE DOWNLOAD
         if intake_mode.startswith("📁"):
             st.caption(f"Upload your roster document or spreadsheet. Processed by **{active_model}**.")
             
@@ -356,23 +356,19 @@ def render_intake_gateway() -> None:
                 "paid_status": "paid"
             }])
             template_df = pd.concat([template_df, template_loc], ignore_index=True)
-            
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-                template_df.to_excel(writer, index=False, sheet_name="Roster Template")
-            buffer.seek(0)
+            csv_template_data = template_df.to_csv(index=False)
 
             st.download_button(
-                label="📥 Download Blank Roster Excel Template (.xlsx)",
-                data=buffer,
-                file_name="prism_roster_template.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                help="Download this pre-formatted template to ensure your spreadsheet uploads instantly without errors."
+                label="📥 Download Blank Roster Template (.csv)",
+                data=csv_template_data,
+                file_name="prism_roster_template.csv",
+                mime="text/csv",
+                help="Download this pre-formatted CSV template to ensure your spreadsheet uploads instantly without errors."
             )
 
             uploaded_file = st.file_uploader(
                 "Upload Filled Squad File",
-                type=["docx", "xlsx", "xls", "pdf", "csv", "png", "jpg", "jpeg", "txt"],
+                type=["xlsx", "xls", "pdf", "csv", "png", "jpg", "jpeg", "txt"],
                 key="ai_roster_uploader",
             )
             if uploaded_file is not None:
@@ -479,7 +475,6 @@ def render_intake_gateway() -> None:
                                 )
                                 b_db_id = cur.lastrowid
                                 
-                                # Register across selected package events
                                 selected_events = []
                                 if reg_singles: selected_events.append("Singles")
                                 if reg_doubles: selected_events.append("Doubles")
@@ -498,7 +493,7 @@ def render_intake_gateway() -> None:
                         finally:
                             conn.close()
 
-        # SHARED REVIEW & COMMIT TABLE (WITH MULTI-EVENT MAPPING)
+        # SHARED REVIEW & COMMIT TABLE
         if "parsed_ai_roster" in st.session_state and st.session_state["parsed_ai_roster"]:
             st.markdown("---")
             st.markdown("##### 📝 Review & Edit Extracted Roster Before Committing")
