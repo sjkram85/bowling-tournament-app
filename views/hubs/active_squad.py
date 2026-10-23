@@ -66,8 +66,10 @@ def _get_game_scores(tournament_id: int, game_number: int) -> dict[int, dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT bowler_id, scratch_score, hdcp_score, total_score, recorded_by "
-            "FROM scores WHERE tournament_id = ? AND game_number = ?",
+            """
+            SELECT bowler_id, scratch_score, total_score, recorded_by 
+            FROM scores WHERE tournament_id = ? AND game_number = ?
+            """,
             (tournament_id, game_number),
         ).fetchall()
         return {r["bowler_id"]: dict(r) for r in rows}
@@ -103,16 +105,15 @@ def _save_score(tournament_id: int, bowler_id: int, game_number: int, scratch: i
         with conn:
             conn.execute(
                 """
-                INSERT INTO scores (tournament_id, bowler_id, game_number, scratch_score, hdcp_score, total_score, recorded_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(bowler_id, game_number) DO UPDATE SET
+                INSERT INTO scores (tournament_id, bowler_id, game_number, scratch_score, total_score, recorded_by)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(tournament_id, bowler_id, game_number) DO UPDATE SET
                     scratch_score = excluded.scratch_score,
-                    hdcp_score = excluded.hdcp_score,
                     total_score = excluded.total_score,
                     recorded_by = excluded.recorded_by,
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                (tournament_id, bowler_id, game_number, scratch, hdcp, total, user_name),
+                (tournament_id, bowler_id, game_number, scratch, total, user_name),
             )
         log_desk_action(user_name, "td", f"Logged Game {game_number} score {scratch} (HDCP +{hdcp}) for Bowler #{bowler_id}")
     finally:
@@ -283,163 +284,14 @@ def render_active_squad() -> None:
         )
     with top_col3:
         st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-        if st.button("🔄 Refresh Data", use_container_width=True):
-            st.rerun()
+        if st.button("🎲 Manage Brackets", use_container_width=True):
+            generate_eight_person_brackets(t_id)
+            st.success("Brackets verified/generated!")
 
-    # Dynamic Cross Lane Movement Banner
-    st.markdown(
-        f"""
-        <div class="ptcc-banner" style="background:#1E293B; border:1px solid #334155; border-radius:8px; padding:12px 16px; margin-bottom:16px;">
-            <div style="font-weight:700; color:#F8FAFC;">Game {active_game} Movement: Even Lanes Move Right 1 Pair (+2) | Odd Lanes Move Left 1 Pair (-2)</div>
-            <small style="color:#94A3B8;">Host: {CENTERS.get(host_code, {}).get('name', 'Bowling Center')} (Total {total_lanes} Lanes)</small>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
+    st.markdown("---")
     bowlers = _get_squad_bowlers(t_id)
     if not bowlers:
-        st.warning("No bowlers registered on the squad roster.")
+        st.warning("No bowlers loaded on this squad roster yet. Go to the Intake Gateway to import competitors.")
         return
 
-    # =========================================================
-    # ROSTER CHECK-IN & PADDOCK GATE CLEARANCE STATUS
-    # =========================================================
-    total_bowlers = len(bowlers)
-    checked_in_count = sum(1 for b in bowlers if b.get("checked_in"))
-    unchecked_bowlers = [b for b in bowlers if not b.get("checked_in")]
-
-    if checked_in_count == total_bowlers and total_bowlers > 0:
-        st.markdown(
-            f"""
-            <div style="background-color: #064E3B; border: 1px solid #10B981; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                    <span style="color: #ECFDF5; font-size: 14px; font-weight: 800;">
-                        ✅ Paddock Gate Cleared: All {total_bowlers} Bowlers Checked In
-                    </span>
-                    <div style="color: #6EE7B7; font-size: 12px; margin-top: 2px;">
-                        All competitors confirmed on lane assignments and cleared for tournament competition.
-                    </div>
-                </div>
-                <span style="background: #10B981; color: #022C22; font-size: 11px; font-weight: 800; padding: 4px 10px; border-radius: 4px; letter-spacing: 0.5px;">
-                    100% ARRIVED
-                </span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        pct = int((checked_in_count / total_bowlers) * 100) if total_bowlers > 0 else 0
-        st.markdown(
-            f"""
-            <div style="background-color: #451A03; border: 1px solid #F59E0B; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                    <span style="color: #FEF3C7; font-size: 14px; font-weight: 800;">
-                        ⚠️ Paddock Gate Active: {checked_in_count} of {total_bowlers} Checked In ({len(unchecked_bowlers)} Awaiting Arrival)
-                    </span>
-                    <div style="color: #FCD34D; font-size: 12px; margin-top: 2px;">
-                        Bowlers may self-check-in at <code>?mode=bowler&action=checkin</code> or at the tournament desk.
-                    </div>
-                </div>
-                <span style="background: #F59E0B; color: #451A03; font-size: 11px; font-weight: 800; padding: 4px 10px; border-radius: 4px; letter-spacing: 0.5px;">
-                    {pct}% CHECKED IN
-                </span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        with st.expander(f"👀 View Unchecked Bowlers ({len(unchecked_bowlers)})", expanded=False):
-            u_cols = st.columns(2)
-            for idx, ub in enumerate(unchecked_bowlers):
-                col_target = u_cols[idx % 2]
-                paid_label = "PAID" if ub.get("paid_status") == "paid" else "UNPAID BALANCE"
-                paid_color = "#34D399" if ub.get("paid_status") == "paid" else "#F87171"
-                with col_target:
-                    st.markdown(
-                        f"""
-                        <div style="background:#0F172A; border:1px solid #334155; border-radius:6px; padding:8px 12px; margin-bottom:6px;">
-                            <strong style="color:#F8FAFC;">{ub['name']}</strong> &middot; Starting Lane <b>{ub['lane_assignment']}</b><br>
-                            <span style="font-size:11px; color:{paid_color}; font-weight:700;">{paid_label}</span>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-
-    # =========================================================
-    # QUICK QR ACCESS DRAWER (LIVE SCORER & BOWLER PORTAL)
-    # =========================================================
-    with st.expander("📱 Quick Scan: Floor Scorer Pad & Live Bowler Standings QR", expanded=False):
-        base_url = _get_base_url()
-        scorer_url = f"{base_url}/?mode=score"
-        portal_url = f"{base_url}/?mode=bowler"
-
-        b64_scorer = _generate_qr_base64(scorer_url)
-        b64_portal = _generate_qr_base64(portal_url)
-
-        _, qr_col1, qr_col2, _ = st.columns([1, 2, 2, 1], gap="medium")
-
-        with qr_col1:
-            st.markdown(
-                f"""
-                <div style="background: #0F172A; border: 1px solid #334155; border-radius: 10px; padding: 20px 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);">
-                    <span style="background: #1E3A8A; color: #93C5FD; font-size: 11px; font-weight: 800; padding: 2px 10px; border-radius: 4px; letter-spacing: 0.5px;">
-                        FLOOR SCORING PAD
-                    </span>
-                    <h4 style="color: #F8FAFC; margin: 10px 0 2px 0;">📱 Mobile Scorer</h4>
-                    <p style="color: #10B981; font-weight: 700; font-size: 13px; margin: 0 0 14px 0;">🔑 PIN: {tourney['pin_verifier']}</p>
-                    <div style="background: #FFFFFF; padding: 8px; border-radius: 8px; display: flex; align-items: center; justify-content: center; margin-bottom: 12px;">
-                        <img src="{b64_scorer}" width="160" height="160" style="display: block; margin: 0 auto;" />
-                    </div>
-                    <span style="font-size: 12px; color: #94A3B8;">Floor Assistant 10-Key Input</span>
-                    <a href="{scorer_url}" target="_blank" style="margin-top: 8px; color: #38BDF8; font-size: 13px; font-weight: 600; text-decoration: none;">Open Scorer Tab ↗</a>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        with qr_col2:
-            st.markdown(
-                f"""
-                <div style="background: #0F172A; border: 1px solid #334155; border-radius: 10px; padding: 20px 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);">
-                    <span style="background: #0284C7; color: #BAE6FD; font-size: 11px; font-weight: 800; padding: 2px 10px; border-radius: 4px; letter-spacing: 0.5px;">
-                        PUBLIC STANDINGS
-                    </span>
-                    <h4 style="color: #F8FAFC; margin: 10px 0 2px 0;">📊 Bowler Portal</h4>
-                    <p style="color: #94A3B8; font-size: 13px; margin: 0 0 14px 0;">Live standings, cut line & brackets</p>
-                    <div style="background: #FFFFFF; padding: 8px; border-radius: 8px; display: flex; align-items: center; justify-content: center; margin-bottom: 12px;">
-                        <img src="{b64_portal}" width="160" height="160" style="display: block; margin: 0 auto;" />
-                    </div>
-                    <span style="font-size: 12px; color: #94A3B8;">Bowler Live Scoreboard</span>
-                    <a href="{portal_url}" target="_blank" style="margin-top: 8px; color: #38BDF8; font-size: 13px; font-weight: 600; text-decoration: none;">Open Portal Tab ↗</a>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-    # =========================================================
-    # 8-PERSON BRACKET & SIDE POT CONTROLS
-    # =========================================================
-    with st.expander("🌿 8-Person Bracket Desk Engine", expanded=False):
-        b_c1, b_c2, b_c3 = st.columns(3)
-        with b_c1:
-            if st.button("Generate Handicap Brackets", key="btn_gen_hdcp_b", type="primary", use_container_width=True):
-                num_b = generate_eight_person_brackets(t_id, bracket_type="handicap")
-                if num_b > 0:
-                    st.success(f"Generated {num_b} Handicap 8-Person Brackets!")
-                else:
-                    st.warning("Need at least 8 paid, non-pacer bowlers to generate an 8-person bracket.")
-        with b_c2:
-            if st.button("Generate Scratch Brackets", key="btn_gen_scratch_b", use_container_width=True):
-                num_s = generate_eight_person_brackets(t_id, bracket_type="scratch")
-                if num_s > 0:
-                    st.success(f"Generated {num_s} Scratch 8-Person Brackets!")
-                else:
-                    st.warning("Need at least 8 paid, non-pacer bowlers to generate an 8-person bracket.")
-        with b_c3:
-            if st.button(f"Advance Round (Game {active_game})", key="btn_adv_b_round", use_container_width=True):
-                score_bracket_round(t_id, game_round=active_game)
-                st.success(f"Advanced brackets using Game {active_game} scores!")
-
-    user = current_user() or {}
-    td_name = user.get("display_name", "Tournament Director")
-    _render_live_scoring_matrix(t_id, active_game, total_lanes, bowlers, td_name, tourney["game_count"])
+    _render_live_scoring_matrix(t_id, active_game, total_lanes, bowlers, "Tournament Director", tourney["game_count"])
