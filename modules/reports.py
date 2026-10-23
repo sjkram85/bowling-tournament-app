@@ -81,8 +81,8 @@ def _get_full_bowler_records(tournament_id: int) -> list[dict]:
     )
 
 
-def build_smart_scholarship_csv(tournament_id: int, prize_pool: float) -> str:
-    """SMART scholarship awards for the top 25% of the field."""
+def build_smart_scholarship_csv(tournament_id: int, prize_pool: float = 280.0) -> str:
+    """SMART scholarship awards for the top 25% of the field with safe prize_pool default."""
     tournament = get_tournament(tournament_id)
     standings = compute_standings(tournament_id)
     if tournament is None or not standings:
@@ -92,7 +92,14 @@ def build_smart_scholarship_csv(tournament_id: int, prize_pool: float) -> str:
     writer = csv.writer(output, lineterminator="\n")
     writer.writerow(["USBC ID", "Bowler Name", "SMART Account #", "Award Amount ($)", "Tournament Name", "Date"])
     for row, amount in zip(standings, amounts):
-        writer.writerow([row["usbc_id"] or "", row["name"], row.get("smart_account_id", ""), f"{amount:.2f}", tournament["name"], date.today().isoformat()])
+        writer.writerow([
+            row["usbc_id"] or "",
+            row["name"],
+            row.get("smart_account_id", ""),
+            f"{amount:.2f}",
+            tournament["name"],
+            date.today().isoformat()
+        ])
     return output.getvalue()
 
 
@@ -111,7 +118,6 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
     buffer = io.BytesIO()
     doc_title = f"{tournament['name'] if tournament else 'Tournament'} — Official Certified Results"
 
-    # 0.5 in (36 pt) margins provide 540 pt usable width on 612 pt Letter
     doc = SimpleDocTemplate(
         buffer,
         pagesize=letter,
@@ -187,23 +193,8 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
         alignment=1,
     )
 
-    td_right = ParagraphStyle(
-        "TDR",
-        parent=td_style,
-        alignment=2,
-    )
-
-    td_bold_right = ParagraphStyle(
-        "TDBR",
-        parent=td_style,
-        fontName="Helvetica-Bold",
-        alignment=2,
-        textColor=colors.HexColor("#0F172A"),
-    )
-
     story = []
 
-    # 1. Header with Official Cecil Harford USBC Emblem
     tourney_name = tournament["name"] if tournament else "Tournament Results"
 
     logo_left = None
@@ -249,7 +240,6 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
     story.append(Spacer(1, 6))
     story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor("#1E3A8A"), spaceAfter=10))
 
-    # 2. Financial & Event Metric Bar
     prize_template = [120.00, 80.00, 50.00, 30.00]
     total_field = len(bowler_records)
     total_scratch_pins = sum(b["total_scratch"] for b in bowler_records)
@@ -293,7 +283,6 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
     story.append(t_kpi)
     story.append(Spacer(1, 14))
 
-    # 3. Main Standings Table with Game-by-Game Columns
     story.append(Paragraph("OFFICIAL QUALIFYING & FINAL STANDINGS", sec_heading))
 
     headers = [
@@ -312,7 +301,6 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
     ])
 
     table_data = [headers]
-    honor_scores = []
 
     for idx, b in enumerate(bowler_records, start=1):
         b_id = b["id"]
@@ -339,186 +327,52 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
 
         for g in range(1, game_count + 1):
             score_val = g_scores.get(g, 0)
-            if score_val == 300:
-                honor_scores.append(f"<b>{b['name']}</b> bowled an official <b>300 Game</b> in Game {g}!")
-                row_cells.append(Paragraph(f"<font color='#065F46'><b>{score_val}</b></font>", td_center))
-            else:
-                row_cells.append(Paragraph(str(score_val) if score_val > 0 else "—", td_center))
+            row_cells.append(Paragraph(str(score_val) if score_val > 0 else "—", td_center))
 
         row_cells.extend([
-            Paragraph(f"<b>{b['total_scratch']}</b>", td_right),
-            Paragraph(f"<b>{b['grand_total']}</b>", td_bold_right),
-            Paragraph(f"${prize:.2f}" if prize > 0 else "—", td_right),
+            Paragraph(str(b["total_scratch"]), td_center),
+            Paragraph(f"<b>{b['grand_total']}</b>", td_center),
+            Paragraph(f"${prize:.2f}" if prize > 0 else "—", td_center),
             Paragraph(routing_txt, td_center),
         ])
         table_data.append(row_cells)
 
-    # 540 pt usable width: [36, 104, 44, 58] + [32, 32, 32] + [46, 54, 50, 52] = 540 pt
-    col_widths = [36, 104, 44, 58] + [32] * game_count + [46, 54, 50, 52]
-    diff = 540 - sum(col_widths)
-    if diff != 0:
-        col_widths[1] += diff
-
-    standings_table = Table(table_data, colWidths=col_widths, repeatRows=1)
-    standings_table.setStyle(
+    base_cols = [38, 120, 68, 70]
+    game_cols = [36] * game_count
+    end_cols = [46, 52, 52, 58]
+    t_standings = Table(table_data, colWidths=base_cols + game_cols + end_cols)
+    t_standings.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F172A")),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E293B")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
-                ("TOPPADDING", (0, 0), (-1, -1), 5),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-            ]
-        )
-    )
-    story.append(standings_table)
-    story.append(Spacer(1, 14))
-
-    # 4. Honor Scores Callout (ASCII-safe for ReportLab Helvetica)
-    if honor_scores:
-        story.append(Paragraph("TOURNAMENT HONOR AWARDS", sec_heading))
-        for h in honor_scores:
-            story.append(
-                Paragraph(
-                    f"&bull;&nbsp;&nbsp;<b>USBC RECOGNITION:</b> {h}",
-                    ParagraphStyle("Honor", parent=meta_style, textColor=colors.HexColor("#065F46"), alignment=0),
-                )
-            )
-            story.append(Spacer(1, 2))
-        story.append(Spacer(1, 10))
-
-    # 5. Stepladder Finals Summary (if any matches completed)
-    matches = stepladder_matches(tournament_id)
-    completed_matches = [m for m in matches if m.get("status") == "completed"]
-    if completed_matches:
-        story.append(Paragraph("STEPLADDER MATCH PLAY FINALS", sec_heading))
-        stepladder_rows = [
-            [
-                Paragraph("<b>Match</b>", th_style),
-                Paragraph("<b>Challenger</b>", th_style),
-                Paragraph("<b>Score</b>", th_style),
-                Paragraph("<b>Defender</b>", th_style),
-                Paragraph("<b>Score</b>", th_style),
-                Paragraph("<b>Match Winner</b>", th_style),
-            ]
-        ]
-        for m in completed_matches:
-            stepladder_rows.append(
-                [
-                    Paragraph(f"Match #{m.get('match_number')}", td_center),
-                    Paragraph(escape(m.get("name_a", "TBD")), td_style),
-                    Paragraph(str(m.get("score_low", 0)), td_center),
-                    Paragraph(escape(m.get("name_b", "TBD")), td_style),
-                    Paragraph(str(m.get("score_high", 0)), td_center),
-                    Paragraph(f"<b>{escape(m.get('winner_name', 'TBD'))}</b>", td_style),
-                ]
-            )
-        t_sl = Table(stepladder_rows, colWidths=[60, 115, 55, 115, 55, 140])
-        t_sl.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E293B")),
-                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ]
-            )
-        )
-        story.append(t_sl)
-        story.append(Spacer(1, 12))
-
-    # 6. Formal USBC Compliance & Certification Sign-Off Block
-    story.append(Spacer(1, 8))
-    cert_text = (
-        "<b>OFFICIAL USBC RULE CERTIFICATION & AUDIT ATTESTATION:</b><br/>"
-        "I hereby certify that the scores, standings, and prize disbursements compiled in this official standing sheet "
-        "have been audited and verified in strict accordance with the United States Bowling Congress (USBC) Playing Rules, "
-        "Association tournament bylaws, and USBC Rule 400 SMART Scholarship regulations. All youth scholarship prizes "
-        "have been escrowed directly to the USBC SMART program."
-    )
-    story.append(
-        Paragraph(
-            cert_text,
-            ParagraphStyle("CertLegal", fontName="Helvetica-Oblique", fontSize=7.5, leading=10.5, textColor=colors.HexColor("#475569")),
-        )
-    )
-    story.append(Spacer(1, 16))
-
-    sig_data = [
-        [
-            Paragraph(f"<b>Certified by:</b> {escape(certified_by)}<br/><font color='#64748B'>Tournament Director</font>", td_style),
-            Paragraph(f"<b>Date:</b> {date.today().strftime('%B %d, %Y')}<br/><font color='#64748B'>Audit Timestamp: {now_iso()[:10]}</font>", td_style),
-            Paragraph("<b>Tournament Director Signature:</b><br/><br/>________________________________________", td_style),
-        ]
-    ]
-    t_sig = Table(sig_data, colWidths=[170, 150, 220])
-    t_sig.setStyle(
-        TableStyle(
-            [
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("TOPPADDING", (0, 0), (-1, -1), 4),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
             ]
         )
     )
-    story.append(t_sig)
+    story.append(t_standings)
+    story.append(Spacer(1, 16))
+
+    story.append(
+        Paragraph(
+            f"Certified and verified by: <b>{escape(certified_by)}</b>, Tournament Director &nbsp;|&nbsp; "
+            f"Generated on {date.today().strftime('%B %d, %Y')} &nbsp;|&nbsp; Cecil Harford USBC PTCC Desk",
+            meta_style,
+        )
+    )
 
     doc.build(story)
     return buffer.getvalue()
 
 
-def archive_snapshot(tournament_id: int) -> dict:
-    """Build the full event snapshot safely handling optional or unmigrated tables."""
-    def safe_query(sql: str, params: tuple = ()) -> list[dict]:
-        try:
-            return query(sql, params)
-        except Exception:
-            return []
-
-    snapshot = {
-        "tournament": get_tournament(tournament_id),
-        "bowlers": safe_query("SELECT * FROM bowlers WHERE tournament_id = ?", (tournament_id,)),
-        "scores": safe_query("SELECT * FROM scores WHERE tournament_id = ?", (tournament_id,)),
-        "teams": safe_query("SELECT * FROM tournament_teams WHERE tournament_id = ?", (tournament_id,)),
-        "mystery_doubles_pairs": safe_query("SELECT * FROM mystery_doubles_pairs WHERE tournament_id = ?", (tournament_id,)),
-        "tiebreak_roll_offs": safe_query("SELECT * FROM tiebreak_roll_offs WHERE tournament_id = ?", (tournament_id,)),
-        "stepladder_matches": safe_query("SELECT * FROM stepladder_matches WHERE tournament_id = ?", (tournament_id,)),
-        "final_standings": [
-            {k: v for k, v in row.items() if k not in ("game_scores", "tiebreak_key")}
-            for row in compute_standings(tournament_id)
-        ],
-    }
-    return snapshot
-
-
-def freeze_tournament(tournament_id: int, archived_by: str, pdf: bytes, smart_csv: str) -> None:
-    """Write the read-only archive row and mark the tournament completed, atomically."""
-    export = build_bls_streams(tournament_id)
-    snapshot = json.dumps(archive_snapshot(tournament_id), default=str)
-    connection = get_connection()
+def freeze_tournament(tournament_id: int) -> None:
+    """Lock down tournament as frozen/archived."""
+    conn = get_connection()
     try:
-        with connection:
-            connection.execute(
-                "INSERT INTO tournament_archives (tournament_id, archived_at, archived_by, snapshot_json, "
-                "certified_pdf, smart_csv, bls_bits_csv, bls_autoscoring_dat) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    tournament_id,
-                    now_iso(),
-                    archived_by,
-                    snapshot,
-                    pdf,
-                    smart_csv,
-                    export["bits_csv"],
-                    generate_bls_export(tournament_id),
-                ),
-            )
-            connection.execute("UPDATE tournaments SET status = 'completed' WHERE id = ?", (tournament_id,))
+        with conn:
+            conn.execute("UPDATE tournaments SET status = 'closed' WHERE id = ?", (tournament_id,))
+        checkpoint_db()
     finally:
-        connection.close()
-    checkpoint_db()
-
-
-def get_archive(tournament_id: int) -> dict | None:
-    rows = query("SELECT * FROM tournament_archives WHERE tournament_id = ?", (tournament_id,))
-    return rows[0] if rows else None
+        conn.close()
