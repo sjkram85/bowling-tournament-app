@@ -1,4 +1,4 @@
-"""Database connection management, schema initialization, and audit logging."""
+"""Database connection management, schema initialization, checkpointing, and audit logging."""
 
 import os
 from pathlib import Path
@@ -14,6 +14,17 @@ def get_connection() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
+
+
+def checkpoint_db() -> None:
+    """Forces SQLite WAL journal checkpoint to ensure changes are flushed cleanly to disk."""
+    conn = get_connection()
+    try:
+        conn.execute("PRAGMA wal_checkpoint(FULL);")
+    except Exception:
+        pass
+    finally:
+        conn.close()
 
 
 def init_db() -> None:
@@ -72,6 +83,21 @@ def init_db() -> None:
                     checked_in_at TIMESTAMP,
                     mystery_doubles_opt_in INTEGER DEFAULT 0,
                     FOREIGN KEY(tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS scores (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tournament_id INTEGER NOT NULL,
+                    bowler_id INTEGER NOT NULL,
+                    game_number INTEGER NOT NULL,
+                    scratch_score INTEGER NOT NULL DEFAULT 0,
+                    total_score INTEGER NOT NULL DEFAULT 0,
+                    verified INTEGER DEFAULT 0,
+                    verified_by TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
+                    FOREIGN KEY(bowler_id) REFERENCES bowlers(id) ON DELETE CASCADE,
+                    UNIQUE(tournament_id, bowler_id, game_number)
                 );
 
                 CREATE TABLE IF NOT EXISTS bowler_scores (
@@ -137,6 +163,19 @@ def init_db() -> None:
                     FOREIGN KEY(tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
                     FOREIGN KEY(bowler_1_id) REFERENCES bowlers(id) ON DELETE CASCADE,
                     FOREIGN KEY(bowler_2_id) REFERENCES bowlers(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS tournament_archives (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tournament_id INTEGER NOT NULL,
+                    archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    archived_by TEXT NOT NULL,
+                    snapshot_json TEXT NOT NULL,
+                    certified_pdf BLOB NOT NULL,
+                    smart_csv TEXT NOT NULL,
+                    bls_bits_csv TEXT,
+                    bls_autoscoring_dat TEXT,
+                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
                 );
                 """
             )
