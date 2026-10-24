@@ -286,21 +286,54 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
             logo_left = None
 
     fmt = f"{tournament.get('squad_format', 'Singles') if tournament else 'Singles'} ({game_count} Games)"
-    center_text_flowables = [
+    from modules.event_logos import get_logos, partner_heading
+    logos = get_logos(tournament_id)
+    partner_name = (tournament or {}).get("partner_name") or ""
+
+    def _logo(data: bytes, max_w: float, max_h: float):
+        try:
+            from reportlab.lib.utils import ImageReader
+            iw, ih = ImageReader(io.BytesIO(data)).getSize()
+            sc = min(max_w / iw, max_h / ih)
+            return RLImage(io.BytesIO(data), width=iw * sc, height=ih * sc)
+        except Exception:
+            return None
+
+    partner_logo = _logo(logos["partner"], 120, 48) if logos.get("partner") else None
+    event_logo = _logo(logos["event"], 170, 70) if logos.get("event") else None
+    # Title lines span the full page width so they are truly centered; logos sit in a symmetric row below.
+    title_block = [
         Paragraph("CECIL HARFORD UNITED STATES BOWLING CONGRESS", assoc_style),
         Spacer(1, 2),
         Paragraph(escape(tourney_name).upper(), title_style),
-        Spacer(1, 3),
+        Spacer(1, 4),
+    ]
+    center_text_flowables = []
+    if event_logo:
+        center_text_flowables += [event_logo, Spacer(1, 3)]
+    meta_block = [
         Paragraph(f"<b>Official Certified Standing Sheet</b> &nbsp;|&nbsp; Format: <b>{escape(fmt)}</b>", meta_style),
         Paragraph(f"Host Center: <b>{escape(center_name)}</b> ({escape(center_address)})", meta_style),
     ]
-    t_header = Table([[logo_left or "", center_text_flowables]], colWidths=[70, 470])
+    if partner_logo:
+        header_cells, header_widths = [logo_left or "", center_text_flowables, partner_logo], [135, 270, 135]
+    else:
+        header_cells, header_widths = [logo_left or "", center_text_flowables or "", ""], [70, 400, 70]
+    if not (partner_logo or event_logo):  # no event logos: classic compact header, logo beside a centered title
+        header_cells = [logo_left or "", title_block + meta_block, ""]
+        title_block, meta_block = [], []
+    t_header = Table([header_cells], colWidths=header_widths)
     t_header.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
         ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
     ]))
+    story[0:0] = title_block
     story.append(t_header)
+    story += meta_block
+    if partner_name:
+        story.append(Spacer(1, 4))
+        story.append(Paragraph(f"<b>{escape(partner_heading(partner_name))}</b>", assoc_style))
     story.append(Spacer(1, 6))
     story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor("#1E3A8A"), spaceAfter=10))
 

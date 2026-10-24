@@ -55,7 +55,22 @@ def load_board(tournament_id: int) -> dict | None:
         groups = [{"label": "Standings", "rows": rows}]
     from modules.events import center_name
     return {"name": t.get("name") or "Tournament", "center": center_name(t.get("host_center") or ""),
-            "practice": bool(t.get("is_practice")), "groups": groups}
+            "practice": bool(t.get("is_practice")), "groups": groups, **_logo_uris(tournament_id)}
+
+
+def _logo_uris(tournament_id: int) -> dict:
+    """Kiosk uses the light-lettered partner logo only (dark letters vanish on the black screen)."""
+    try:
+        from modules.event_logos import data_uri, get_logos
+        lg = get_logos(tournament_id)
+    except Exception:
+        return {}
+    out = {}
+    if lg.get("partner_kiosk"):
+        out["partner_logo"] = data_uri(lg["partner_kiosk"])
+    if lg.get("event"):
+        out["event_logo"] = data_uri(lg["event"])
+    return out
 
 
 def paginate(groups: list[dict], rows_per_page: int = ROWS_PER_PAGE,

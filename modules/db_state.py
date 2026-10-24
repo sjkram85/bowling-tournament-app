@@ -248,6 +248,7 @@ def ensure_tournament_config_columns() -> None:
                 ("rules_text", "TEXT"),
                 ("event_end_date", "TEXT"),
                 ("cert_number", "TEXT"),
+                ("partner_name", "TEXT"),
             ]
             for col_name, col_type in col_defs:
                 if col_name not in cols:

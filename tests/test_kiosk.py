@@ -38,7 +38,8 @@ def test_rose_murphy_groups_finalists_and_no_private_fields(db):
     girls = next(g for g in board["groups"] if g["rows"])
     assert girls["rows"][0]["name"] == "Girl0" and girls["rows"][0]["finalist"]
     assert not any(r["finalist"] for r in girls["rows"][1:])  # no games bowled yet
-    html = build_html(board, 0, "now")
+    import re
+    html = re.sub(r"data:image/png;base64,[A-Za-z0-9+/=]+", "", build_html(board, 0, "now"))  # logo bytes aren't text
     for secret in ("kid@x.com", "unpaid", "fee", "Paid"):
         assert secret not in html
     assert "FINALIST" in "".join(build_html(board, i, "now") for i in range(len(kiosk_data.paginate(board["groups"]))))
