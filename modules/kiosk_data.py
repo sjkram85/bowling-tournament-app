@@ -20,10 +20,11 @@ def eastern_now(now: datetime | None = None) -> str:
     return now.astimezone(ZoneInfo("America/New_York")).strftime("%-I:%M:%S %p ET")
 
 
-def _row(r: dict, rank: int, finalist: bool = False) -> dict:
+def _row(r: dict, rank: int, finalist: bool = False, tied: bool = False, rolloff: bool = False) -> dict:
     # Only public fields: never fees, paid status, emails, USBC ids, SMART ids.
     return {"rank": rank, "name": r.get("name") or "", "games": int(r.get("games") or r.get("games_bowled") or 0),
-            "total": int(r.get("total") or r.get("handicap_total") or 0), "finalist": bool(finalist)}
+            "total": int(r.get("total") or r.get("handicap_total") or 0), "finalist": bool(finalist),
+            "tied": bool(tied), "rolloff": bool(rolloff)}
 
 
 def load_board(tournament_id: int) -> dict | None:
@@ -41,7 +42,7 @@ def load_board(tournament_id: int) -> dict | None:
         from modules.divisions import grouped_results
         for g in grouped_results(tournament_id):
             groups.append({"label": g.get("label") or g.get("group") or "",
-                           "rows": [_row(r, r["rank"], r.get("finalist")) for r in g["rows"]]})
+                           "rows": [_row(r, r["rank"], r.get("finalist"), r.get("tied"), r.get("rolloff")) for r in g["rows"]]})
     except Exception as exc:
         log.warning("kiosk grouped results failed: %s", exc)
     if not groups:

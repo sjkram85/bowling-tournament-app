@@ -105,7 +105,7 @@ def render_finals_close() -> None:
                 "Bowler": bowler["name"],
                 "USBC ID": bowler["usbc_id"] or "N/A",
                 "Grand Total": bowler["grand_total"],
-                "Division": (group_info[bowler["id"]][0]["group"] + (" · FINALIST" if group_info[bowler["id"]][1]["finalist"] else ""))
+                "Division": (group_info[bowler["id"]][0]["group"] + (" · FINALIST" if group_info[bowler["id"]][1]["finalist"] else (" · TIE – ROLL-OFF" if group_info[bowler["id"]][1].get("rolloff") else "")))
                 if groups else ("YOUTH (Rule 400)" if is_youth else "ADULT"),
                 "Prize": f"${prize:.2f}",
                 "Payout Routing": routing,

@@ -194,6 +194,8 @@ def init_db() -> None:
         try:
             from modules.td_team import ensure_team_tables
             ensure_team_tables(conn)
+            from modules.rolloff import ensure_rolloff_table
+            ensure_rolloff_table(conn)
         except Exception:
             pass
 

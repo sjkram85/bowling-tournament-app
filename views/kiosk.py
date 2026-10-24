@@ -31,14 +31,18 @@ _CSS = """<style>
 .k-table th.n {text-align:right;}
 .k-fin td {background:#052e16;}
 .k-star {color:#4ADE80; font-weight:800;}
+.k-roll td {background:#451a03;}
+.k-tie {color:#FB923C; font-weight:800;}
 .k-foot {color:#9CA3AF; font-size:20px; margin-top:12px;}
 </style>"""
 
 
 def _group_html(g: dict) -> str:
     body = "".join(
-        f"<tr class='{'k-fin' if r['finalist'] else ''}'><td class='n'>{r['rank']}</td>"
-        f"<td>{escape(r['name'])}{' <span class=k-star>★ FINALIST</span>' if r['finalist'] else ''}</td>"
+        f"<tr class='{'k-fin' if r['finalist'] else ('k-roll' if r.get('rolloff') else '')}'>"
+        f"<td class='n'>{'T' if r.get('tied') else ''}{r['rank']}</td>"
+        f"<td>{escape(r['name'])}{' <span class=k-star>★ FINALIST</span>' if r['finalist'] else ''}"
+        f"{' <span class=k-tie>TIE – ROLL-OFF</span>' if r.get('rolloff') else ''}</td>"
         f"<td class='n'>{r['games']}</td><td class='n'>{r['total']}</td></tr>"
         for r in g["rows"]
     ) or "<tr><td colspan=4>No bowlers yet</td></tr>"
@@ -54,12 +58,14 @@ def build_html(board: dict, page_idx: int, now_text: str) -> str:
     idx = page_idx % len(pages)
     page_note = f" · Page {idx + 1} of {len(pages)}" if len(pages) > 1 else ""
     has_finalists = any(r["finalist"] for g in board["groups"] for r in g["rows"])
+    has_roll = any(r.get("rolloff") for g in board["groups"] for r in g["rows"])
     return (
         f"<div class='k-top'><div class='k-name'>{escape(board['name'])}</div>"
         f"<div class='k-meta'>{escape(board['center'])}<br>Last updated {now_text}{page_note}</div></div>"
         + ("<div class='k-practice'>🧪 PRACTICE – not real results</div>" if board["practice"] else "")
         + "<div class='k-grid'>" + "".join(_group_html(g) for g in pages[idx]) + "</div>"
         + "<div class='k-foot'>" + ("★ = currently in the finals cut. " if has_finalists else "")
+        + ("TIE – ROLL-OFF = tied for the last finals spot; a roll-off decides it. " if has_roll else "")
         + "Standings are unofficial until certified.</div>"
     )
 
