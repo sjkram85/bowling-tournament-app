@@ -17,6 +17,9 @@ _CSS = """<style>
 .stApp {background:#000 !important;}
 .block-container {padding:1.2rem 2rem !important; max-width:100% !important;}
 .k-top {display:flex; justify-content:space-between; align-items:flex-end; color:#fff; border-bottom:3px solid #FACC15; padding-bottom:8px;}
+.k-left {display:flex; align-items:center; gap:18px;}
+.k-elogo {height:90px; border-radius:6px;}
+.k-plogo {height:48px; margin:0 18px 6px auto;}
 .k-name {font-size:46px; font-weight:800; line-height:1.1;}
 .k-meta {font-size:22px; color:#E5E7EB; text-align:right;}
 .k-practice {background:#B45309; color:#fff; font-size:34px; font-weight:800; text-align:center; padding:10px; border-radius:8px; margin:10px 0;}
@@ -60,8 +63,11 @@ def build_html(board: dict, page_idx: int, now_text: str) -> str:
     has_finalists = any(r["finalist"] for g in board["groups"] for r in g["rows"])
     has_roll = any(r.get("rolloff") for g in board["groups"] for r in g["rows"])
     return (
-        f"<div class='k-top'><div class='k-name'>{escape(board['name'])}</div>"
-        f"<div class='k-meta'>{escape(board['center'])}<br>Last updated {now_text}{page_note}</div></div>"
+        f"<div class='k-top'><div class='k-left'>"
+        + (f"<img class='k-elogo' src='{board['event_logo']}'>" if board.get("event_logo") else "")
+        + f"<div class='k-name'>{escape(board['name'])}</div></div>"
+        + (f"<img class='k-plogo' src='{board['partner_logo']}'>" if board.get("partner_logo") else "")
+        + f"<div class='k-meta'>{escape(board['center'])}<br>Last updated {now_text}{page_note}</div></div>"
         + ("<div class='k-practice'>🧪 PRACTICE – not real results</div>" if board["practice"] else "")
         + "<div class='k-grid'>" + "".join(_group_html(g) for g in pages[idx]) + "</div>"
         + "<div class='k-foot'>" + ("★ = currently in the finals cut. " if has_finalists else "")

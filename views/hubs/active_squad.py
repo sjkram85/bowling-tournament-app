@@ -323,6 +323,8 @@ def render_active_squad() -> None:
         st.caption("Open this link on the lobby laptop, then press F11 for full screen.")
         st.code(kiosk_url, language=None)
         st.link_button("Open kiosk in a new tab", kiosk_url)
+        st.markdown("---")
+        _render_logo_setup(t_id, tourney)
 
     from modules.auth import is_admin
     if is_admin():
@@ -335,3 +337,35 @@ def render_active_squad() -> None:
         return
 
     _render_live_scoring_matrix(t_id, active_game, total_lanes, bowlers, (current_user() or {}).get("display_name") or "Tournament Director", tourney["game_count"])
+
+def _render_logo_setup(t_id: int, tourney) -> None:
+    """Optional logos for the certified PDF and the kiosk. Events without them look the same as before."""
+    from modules.event_logos import get_logos, partner_heading, set_logo, set_partner_name, validate_image
+    st.markdown("**🖼️ Logos (optional)** — shown on the certified results PDF and the lobby kiosk")
+    logos = get_logos(t_id)
+    partner = st.text_input("Host / partner name", value=(dict(tourney).get("partner_name") or ""),
+                            key=f"partner_name_{t_id}", placeholder="e.g. Forest Hill Lanes")
+    if partner.strip():
+        st.caption(partner_heading(partner.strip()))
+    labels = {"partner": "Host/partner logo (dark letters, for the white PDF)",
+              "partner_kiosk": "Host/partner logo for the dark kiosk (light letters, optional)",
+              "event": "Event logo (under the title)"}
+    for kind, label in labels.items():
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            up = st.file_uploader(label, type=["png", "jpg", "jpeg"], key=f"logo_{kind}_{t_id}")
+            if up is not None:
+                try:
+                    set_logo(t_id, kind, validate_image(up.getvalue()))
+                    st.success("Logo saved.")
+                except ValueError as e:
+                    st.error(str(e))
+        with c2:
+            if logos.get(kind):
+                st.image(logos[kind], width=120)
+                if st.button("Remove", key=f"rm_logo_{kind}_{t_id}"):
+                    set_logo(t_id, kind, None)
+                    st.rerun()
+    if st.button("Save partner name", key=f"save_partner_{t_id}"):
+        set_partner_name(t_id, partner)
+        st.success("Saved.")

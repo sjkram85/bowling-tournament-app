@@ -12,6 +12,7 @@ ROSE_MURPHY_PRESET = {
     "squad_format": "Singles",
     "game_count": 3,
     "default_fee": 0.0,
+    "logos": "rose_murphy",
     "description": ("Youth-only (Maryland USBC), handicap 90% of 220, 3 games on the same pair. Average divisions 1/2/3, "
                     "boys and girls ranked separately. Guaranteed SMART scholarships (no cash, Rule 400). "
                     "Sun Dec 6, 2026 at 10:00 AM. Entry deadline 11/29/2026, NO walk-ins. $30 fee paid at the front desk."),
@@ -133,9 +134,12 @@ def create_tournament_from_template(template_key: str, host_center: str, pin: st
                      locked.get("age_cutoff"), json.dumps(locked.get("age_groups", [])),
                      json.dumps(locked.get("rules_text", [])), t_id),
                 )
-            return t_id
     finally:
         conn.close()
+    if tmpl.get("logos"):
+        from modules.event_logos import apply_preset_logos
+        apply_preset_logos(t_id, tmpl["logos"])
+    return t_id
 
 def save_tournament_as_template(tournament_id: int, custom_template_name: str) -> None:
     """Capture an existing active tournament's configuration and store it as a reusable template."""
