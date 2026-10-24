@@ -58,7 +58,10 @@ def render_finals_close() -> None:
         return
 
     tourney_map = {f"{t['name']} (#{t['id']}) - {t['status'].upper()}": t for t in tournaments}
-    selected_label = st.selectbox("Active Event", list(tourney_map.keys()))
+    labels = list(tourney_map.keys())
+    active_id = st.session_state.get("active_tournament_id")
+    default_idx = next((i for i, k in enumerate(labels) if tourney_map[k]["id"] == active_id), 0)
+    selected_label = st.selectbox("Active Event", labels, index=default_idx)
     tourney = tourney_map[selected_label]
     t_id = tourney["id"]
 
@@ -126,6 +129,10 @@ def render_finals_close() -> None:
             m1.metric("Total Prize Fund", f"${total_prize_fund:.2f}")
             m2.metric("Adult Cash Payouts", f"${cash_total:.2f}")
             m3.metric("USBC SMART Escrow", f"${smart_total:.2f}")
+
+        st.markdown("---")
+        from components.stepladder_box import render_stepladder_box
+        render_stepladder_box(t_id, td_name)
 
     # --- TAB 2: BRACKETS & SIDE POTS LEDGER ---
     with tab_brackets:
