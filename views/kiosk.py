@@ -76,6 +76,10 @@ def _board(tournament_id: int) -> None:
 def render_kiosk() -> None:
     st.markdown(_CSS, unsafe_allow_html=True)
     tournament_id = parse_tournament_id(st.query_params)
+    if tournament_id is None:  # old link: fine when exactly one real event is running
+        from modules.events import active_events
+        real = [e for e in active_events() if not e["is_practice"]]
+        tournament_id = real[0]["id"] if len(real) == 1 else None
     if tournament_id is None:
         st.markdown("<div class='k-name' style='color:#fff'>This kiosk link is missing its event.<br>"
                     "<span style='font-size:26px'>Ask a TD to press “Open kiosk for this event”.</span></div>",

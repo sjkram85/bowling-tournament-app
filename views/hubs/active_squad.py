@@ -39,8 +39,9 @@ def _get_active_tournament() -> dict | None:
             row = conn.execute("SELECT * FROM tournaments WHERE id = ?", (t_id,)).fetchone()
             if row:
                 return dict(row)
-        row = conn.execute("SELECT * FROM tournaments WHERE status = 'active' ORDER BY id DESC LIMIT 1").fetchone()
-        return dict(row) if row else None
+        # No choice on this device: only fall back when exactly one event is active.
+        rows = conn.execute("SELECT * FROM tournaments WHERE status = 'active'").fetchall()
+        return dict(rows[0]) if len(rows) == 1 else None
     finally:
         conn.close()
 
@@ -290,6 +291,12 @@ def render_active_squad() -> None:
         if st.button("🎲 Manage Brackets", use_container_width=True):
             generate_eight_person_brackets(t_id)
             st.success("Brackets verified/generated!")
+
+    with st.expander("📱 Floor-phone scoring link for this event"):
+        score_url = f"{_get_base_url().rstrip('/')}/?mode=score&t={t_id}"
+        st.caption(f"Floor helpers open this on their phone (scan the code). Scoring PIN: {tourney['pin_verifier']}")
+        st.code(score_url, language=None)
+        st.markdown(f"<img src='{_generate_qr_base64(score_url)}' width='160'>", unsafe_allow_html=True)
 
     with st.expander("📺 Open kiosk for this event"):
         kiosk_url = f"{_get_base_url().rstrip('/')}/?mode=kiosk&t={t_id}"

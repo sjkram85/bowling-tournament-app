@@ -21,6 +21,13 @@ def ensure_team_tables(conn) -> None:
             tournament_id INTEGER,
             last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS td_presence_events (
+            username TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            tournament_id INTEGER NOT NULL,
+            last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (username, tournament_id)
+        );
         CREATE TABLE IF NOT EXISTS td_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tournament_id INTEGER NOT NULL,
@@ -54,14 +61,16 @@ def _safe(default):
 # ---------- TDs on duty ----------
 @_safe(None)
 def heartbeat(username: str, display_name: str, tournament_id) -> None:
+    if not tournament_id:
+        return None
     conn = get_connection()
     try:
         with conn:
             conn.execute(
-                """INSERT INTO td_presence (username, display_name, tournament_id, last_seen)
+                """INSERT INTO td_presence_events (username, display_name, tournament_id, last_seen)
                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                   ON CONFLICT(username) DO UPDATE SET display_name=excluded.display_name,
-                   tournament_id=excluded.tournament_id, last_seen=CURRENT_TIMESTAMP""",
+                   ON CONFLICT(username, tournament_id) DO UPDATE SET display_name=excluded.display_name,
+                   last_seen=CURRENT_TIMESTAMP""",
                 (username, display_name, tournament_id),
             )
     finally:
@@ -76,7 +85,7 @@ def tds_on_duty(tournament_id: int) -> list[dict]:
         rows = conn.execute(
             """SELECT display_name, last_seen,
                       CAST(strftime('%s','now') - strftime('%s', last_seen) AS INTEGER) AS secs
-               FROM td_presence WHERE tournament_id = ?
+               FROM td_presence_events WHERE tournament_id = ?
                  AND datetime(last_seen) >= datetime('now','-10 minutes')
                ORDER BY last_seen DESC""",
             (tournament_id,),

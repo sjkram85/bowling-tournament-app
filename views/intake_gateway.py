@@ -156,8 +156,9 @@ def _get_active_tournament() -> dict | None:
             row = conn.execute("SELECT * FROM tournaments WHERE id = ?", (t_id,)).fetchone()
             if row:
                 return dict(row)
-        row = conn.execute("SELECT * FROM tournaments WHERE status = 'active' ORDER BY id DESC LIMIT 1").fetchone()
-        return dict(row) if row else None
+        # No choice on this device: only fall back when exactly one event is active.
+        rows = conn.execute("SELECT * FROM tournaments WHERE status = 'active'").fetchall()
+        return dict(rows[0]) if len(rows) == 1 else None
     finally:
         conn.close()
 
@@ -186,7 +187,7 @@ def render_intake_gateway() -> None:
     user = current_user() or {}
     td_name = user.get("display_name") or "Tournament Director"
 
-    active_tourney = _get_active_tournament()
+    active_tourney = None if st.session_state.get("intake_new_event") else _get_active_tournament()
 
     if not active_tourney:
         st.info("No active tournament squad is loaded. Select a CHUSBC Template or create a custom event below.")
@@ -197,6 +198,7 @@ def render_intake_gateway() -> None:
                         "Nothing in it is real, saved to the archive, exported, or sent to anyone.</p>", unsafe_allow_html=True)
             if st.button("🧪 Start Practice Tournament", key="start_practice", use_container_width=True):
                 st.session_state["active_tournament_id"] = create_practice_tournament()
+                st.session_state.pop("intake_new_event", None)
                 log_desk_action(td_name, "td", "Started a practice tournament")
                 st.rerun()
 
@@ -220,6 +222,7 @@ def render_intake_gateway() -> None:
             if st.button("🚀 Load Template & Unlock Intake", type="primary", use_container_width=True):
                 new_id = create_tournament_from_template(selected_tmpl_key, template_center, template_pin)
                 st.session_state["active_tournament_id"] = new_id
+                st.session_state.pop("intake_new_event", None)
                 log_desk_action(td_name, "td", f"Initialized tournament squad #{new_id} from template '{selected_tmpl_key}'")
                 st.success(f"Template loaded successfully as Tournament #{new_id}!")
                 st.rerun()
@@ -248,6 +251,7 @@ def render_intake_gateway() -> None:
                         )
                         new_id = cur.lastrowid
                     st.session_state["active_tournament_id"] = new_id
+                    st.session_state.pop("intake_new_event", None)
                     log_desk_action(td_name, "td", f"Created and initialized tournament squad #{new_id} '{t_name}'")
                     st.success(f"Squad #{new_id} successfully created!")
                     st.rerun()

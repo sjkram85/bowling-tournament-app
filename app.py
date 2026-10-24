@@ -93,13 +93,18 @@ def render_desk() -> None:
     # Render Prism A.I assistant into sidebar before page.run()
     render_prism_dock(current_view=page.title, view_state=collect_view_state(page.title))
 
+
+    from components.event_picker import staff_event_bar
+    if st.session_state.get("intake_new_event") and page.url_path != "intake":
+        st.switch_page(operations[0])
+    ready = staff_event_bar()
     from modules.td_team import heartbeat
     heartbeat(user.get("username") or user["display_name"], user["display_name"],
               st.session_state.get("active_tournament_id"))
     _heartbeat_tick(user)
-
     _practice_banner()
-    page.run()
+    if ready:
+        page.run()
 
 
 @st.fragment(run_every=30)
@@ -112,10 +117,10 @@ def _heartbeat_tick(user: dict) -> None:
 
 def _practice_banner() -> None:
     """Big, unmissable warning on every screen while a practice tournament is open."""
-    from modules.practice import active_practice_id, is_practice
+    from modules.practice import is_practice
 
     t_id = st.session_state.get("active_tournament_id")
-    if is_practice(t_id) or (not t_id and active_practice_id()):
+    if is_practice(t_id):
         st.markdown(
             '<div style="background:#B45309; color:#FFFFFF; font-size:26px; font-weight:800; text-align:center; '
             'padding:14px; border-radius:8px; margin-bottom:14px; letter-spacing:1px;">'
