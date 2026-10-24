@@ -215,6 +215,7 @@ def ensure_tournament_config_columns() -> None:
                 ("prize_fee", "REAL DEFAULT 20.0"),
                 ("lineage_fee", "REAL DEFAULT 12.0"),
                 ("expense_fee", "REAL DEFAULT 3.0"),
+                ("is_practice", "INTEGER DEFAULT 0"),
             ]
             for col_name, col_type in col_defs:
                 if col_name not in cols:

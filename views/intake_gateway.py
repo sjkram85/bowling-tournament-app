@@ -1,5 +1,6 @@
 """Intake Gateway — Squad initialization, CHUSBC Template Library, AI roster ingestion, manual entry, multi-event package registration, and concourse check-in."""
 
+from modules.practice import create_practice_tournament, delete_practice_tournament
 import base64
 import io
 import time
@@ -186,6 +187,15 @@ def render_intake_gateway() -> None:
     if not active_tourney:
         st.info("No active tournament squad is loaded. Select a CHUSBC Template or create a custom event below.")
 
+        with st.container(border=True):
+            st.markdown("### 🧪 Want to try things out first?")
+            st.markdown("<p style='font-size:18px;'>A practice tournament fills in 12 pretend bowlers and some scores so you can try every screen. "
+                        "Nothing in it is real, saved to the archive, exported, or sent to anyone.</p>", unsafe_allow_html=True)
+            if st.button("🧪 Start Practice Tournament", key="start_practice", use_container_width=True):
+                st.session_state["active_tournament_id"] = create_practice_tournament()
+                log_desk_action(td_name, "td", "Started a practice tournament")
+                st.rerun()
+
         # --- CHUSBC MASTER TOURNAMENT TEMPLATES ---
         with st.container(border=True):
             st.markdown("##### 🏆 CHUSBC Master Tournament Templates")
@@ -242,6 +252,13 @@ def render_intake_gateway() -> None:
     pin = active_tourney.get("pin_verifier", "6199")
 
     # Active event banner with Cancel / Purge Control
+    if active_tourney.get("is_practice"):
+        if st.button("🗑️ End & Delete Practice Tournament (removes all practice data)", key="end_practice", type="primary", use_container_width=True):
+            delete_practice_tournament(t_id)
+            log_desk_action(td_name, "td", "Ended and deleted the practice tournament")
+            st.session_state.pop("active_tournament_id", None)
+            st.rerun()
+
     col_banner_info, col_banner_action = st.columns([5, 1])
     with col_banner_info:
         st.markdown(

@@ -1,5 +1,6 @@
 """Finals closeout, prize payout audit, bracket/side-pot management, and USBC Rule 400 SMART compliance."""
 
+from modules.practice import is_practice
 import csv
 import io
 import pandas as pd
@@ -149,6 +150,9 @@ def render_finals_close() -> None:
         st.subheader("Official Audit Exports & Compliance Vault")
         st.caption("Generate raw data files, CDE BLS software bridge files, and USBC SMART scholarship upload spreadsheets.")
 
+        if is_practice(t_id):
+            st.warning("PRACTICE MODE: exports, certified results and archiving are turned off for practice tournaments.")
+            return
         # Fixed call: pass prize_pool explicitly to avoid missing argument TypeError
         smart_csv_data = build_smart_scholarship_csv(t_id, prize_pool=total_prize_fund)
         st.download_button(

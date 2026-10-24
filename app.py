@@ -93,7 +93,24 @@ def render_desk() -> None:
     # Render Prism A.I assistant into sidebar before page.run()
     render_prism_dock(current_view=page.title, view_state=collect_view_state(page.title))
 
+    _practice_banner()
     page.run()
+
+
+def _practice_banner() -> None:
+    """Big, unmissable warning on every screen while a practice tournament is open."""
+    from modules.practice import active_practice_id, is_practice
+
+    t_id = st.session_state.get("active_tournament_id")
+    if is_practice(t_id) or (not t_id and active_practice_id()):
+        st.markdown(
+            '<div style="background:#B45309; color:#FFFFFF; font-size:26px; font-weight:800; text-align:center; '
+            'padding:14px; border-radius:8px; margin-bottom:14px; letter-spacing:1px;">'
+            "🧪 PRACTICE MODE - not real data</div>"
+            '<div style="text-align:center; font-size:16px; color:#FDE68A; margin:-8px 0 12px;">'
+            "When you're done, go to Intake Gateway and press \"End &amp; Delete Practice Tournament\".</div>",
+            unsafe_allow_html=True,
+        )
 
 
 mode = st.query_params.get("mode")

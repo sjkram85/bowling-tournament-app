@@ -13,7 +13,7 @@ def pick_tournament(
         rows = query("SELECT * FROM tournaments WHERE id = ?", (tournament_id,))
         return rows[0] if rows else None
     marks = ",".join("?" * len(statuses))
-    rows = query(f"SELECT * FROM tournaments WHERE status IN ({marks}) ORDER BY id DESC", statuses)
+    rows = query(f"SELECT * FROM tournaments WHERE status IN ({marks}) AND COALESCE(is_practice, 0) = 0 ORDER BY id DESC", statuses)
     if not rows:
         st.info("No tournaments available.")
         return None
