@@ -16,6 +16,7 @@ from reportlab.platypus import HRFlowable, Image as RLImage, Paragraph, SimpleDo
 from modules.cde_bls_bridge import build_bls_streams, generate_bls_export
 from modules.constants import CENTERS, HOST_CENTERS
 from modules.db_state import checkpoint_db, get_connection
+from modules.practice import block_if_practice
 from modules.standings import (
     CUT_SEED,
     compute_standings,
@@ -83,6 +84,7 @@ def _get_full_bowler_records(tournament_id: int) -> list[dict]:
 
 def build_smart_scholarship_csv(tournament_id: int, prize_pool: float = 280.0) -> str:
     """SMART scholarship awards for the top 25% of the field with safe prize_pool default."""
+    block_if_practice(tournament_id, "exported")
     tournament = get_tournament(tournament_id)
     standings = compute_standings(tournament_id)
     if tournament is None or not standings:
@@ -105,6 +107,7 @@ def build_smart_scholarship_csv(tournament_id: int, prize_pool: float = 280.0) -
 
 def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
     """Generates an executive-grade, broadcast-standard certified tournament results sheet with CHUSBC branding."""
+    block_if_practice(tournament_id, "certified or exported")
     tournament = get_tournament(tournament_id)
     bowler_records = _get_full_bowler_records(tournament_id)
     scores_by_bowler = _get_detailed_tournament_scores(tournament_id)
@@ -369,6 +372,7 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
 
 def freeze_tournament(tournament_id: int) -> None:
     """Lock down tournament as frozen/archived."""
+    block_if_practice(tournament_id, "archived")
     conn = get_connection()
     try:
         with conn:

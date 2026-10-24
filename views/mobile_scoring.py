@@ -11,7 +11,7 @@ from modules.settings import ai_available, AI_OFF_MESSAGE
 def _get_active_tournament_for_scoring() -> dict | None:
     conn = get_connection()
     try:
-        row = conn.execute("SELECT * FROM tournaments WHERE status = 'active' ORDER BY id DESC LIMIT 1").fetchone()
+        row = conn.execute("SELECT * FROM tournaments WHERE status = 'active' ORDER BY COALESCE(is_practice, 0) ASC, id DESC LIMIT 1").fetchone()
         return dict(row) if row else None
     finally:
         conn.close()

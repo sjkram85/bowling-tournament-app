@@ -14,7 +14,7 @@ def _get_active_tournaments() -> list[dict]:
     try:
         rows = conn.execute(
             "SELECT id, name, host_center, status, game_count FROM tournaments "
-            "WHERE status = 'active' ORDER BY id DESC"
+            "WHERE status = 'active' AND COALESCE(is_practice, 0) = 0 ORDER BY id DESC"
         ).fetchall()
         return [dict(r) for r in rows]
     finally:

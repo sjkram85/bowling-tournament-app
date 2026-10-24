@@ -92,6 +92,8 @@ def build_bls_streams(tournament_id: int) -> dict[str, str]:
     Returns {"bits_csv", "autoscoring_dat", "autoscoring_txt"}: a BITS flat CSV,
     a fixed-width AutoScoring ASCII stream, and a tab-delimited .txt equivalent.
     """
+    from modules.practice import block_if_practice
+    block_if_practice(tournament_id, "exported to BLS/BTM")
     connection = get_connection()
     try:
         game_count_row = connection.execute(

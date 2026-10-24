@@ -38,6 +38,7 @@ def render_archive_vault() -> None:
         SELECT a.*, t.name, t.host_center, t.squad_format, t.game_count, t.created_at
         FROM tournament_archives a
         JOIN tournaments t ON t.id = a.tournament_id
+        WHERE COALESCE(t.is_practice, 0) = 0
         ORDER BY a.archived_at DESC
         """
     )

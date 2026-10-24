@@ -231,6 +231,9 @@ def dispatch_bowler_recap_email(bowler: dict, scores: list, totals: dict | None)
     to_email = bowler.get("email")
     if not to_email:
         return False
+    from modules.practice import is_practice
+    if bowler.get("tournament_id") and is_practice(bowler["tournament_id"]):
+        return False  # never email anyone about practice data
 
     totals = totals or {}
     name = escape(str(bowler.get("name", "Competitor")))
