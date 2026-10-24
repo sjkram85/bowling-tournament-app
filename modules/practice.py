@@ -94,21 +94,5 @@ def delete_practice_tournament(tournament_id: int) -> bool:
     """Remove a practice tournament and everything attached to it. Refuses real tournaments."""
     if not is_practice(tournament_id):
         return False
-    conn = get_connection()
-    try:
-        with conn:
-            tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-            bowler_ids = [r[0] for r in conn.execute("SELECT id FROM bowlers WHERE tournament_id = ?", (tournament_id,))]
-            for table in tables:
-                cols = [c[1] for c in conn.execute(f"PRAGMA table_info({table})")]
-                if "bowler_id" in cols and bowler_ids:
-                    marks = ",".join("?" * len(bowler_ids))
-                    conn.execute(f"DELETE FROM {table} WHERE bowler_id IN ({marks})", bowler_ids)
-            for table in tables:
-                cols = [c[1] for c in conn.execute(f"PRAGMA table_info({table})")]
-                if "tournament_id" in cols:
-                    conn.execute(f"DELETE FROM {table} WHERE tournament_id = ?", (tournament_id,))
-            conn.execute("DELETE FROM tournaments WHERE id = ?", (tournament_id,))
-        return True
-    finally:
-        conn.close()
+    from modules.event_delete import delete_event
+    return delete_event(tournament_id, "Practice cleanup")

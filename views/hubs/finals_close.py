@@ -23,11 +23,62 @@ def _get_active_tournaments() -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT id, name, host_center, status, game_count, squad_format FROM tournaments ORDER BY id DESC"
+            "SELECT id, name, host_center, status, game_count, squad_format, COALESCE(is_practice, 0) AS is_practice FROM tournaments ORDER BY id DESC"
         ).fetchall()
-        return [dict(r) for r in rows]
+        from modules.event_delete import hide_in_closeout
+        return [dict(r) for r in rows if not hide_in_closeout(dict(r))]
     finally:
         conn.close()
+
+
+def _render_hidden_practice_cleanup(td_name: str) -> None:
+    """Cancelled practice events are hidden from the picker; admins can clear them here in one go."""
+    from modules.auth import is_admin
+    from modules.event_delete import delete_event, hide_in_closeout
+    if not is_admin():
+        return
+    conn = get_connection()
+    try:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT id, name, status, COALESCE(is_practice, 0) AS is_practice FROM tournaments").fetchall()]
+    finally:
+        conn.close()
+    hidden = [r for r in rows if hide_in_closeout(r)]
+    if not hidden:
+        return
+    with st.expander(f"🗑️ {len(hidden)} cancelled practice event(s) hidden from this list"):
+        st.caption("Practice events are fake data. Removing them doesn't touch any real event.")
+        for r in hidden:
+            st.markdown(f"- {r['name']} (#{r['id']})")
+        sure = st.checkbox("Yes, delete these practice events", key="del_hidden_ok")
+        if st.button("Delete practice events", disabled=not sure, key="del_hidden_btn"):
+            for r in hidden:
+                delete_event(r["id"], td_name)
+            st.success("Practice events deleted.")
+            st.rerun()
+
+
+def _render_delete_box(t_id: int, tourney: dict, td_name: str) -> None:
+    """Admin-only. Practice events (any status) and cancelled real events only; two-step confirm."""
+    from modules.auth import is_admin
+    from modules.event_delete import delete_block_reason, delete_event
+    if not is_admin() or delete_block_reason(t_id):
+        return
+    with st.expander("🗑️ Delete this event"):
+        st.warning(f"This permanently removes **{tourney['name']}** (#{t_id}) and all its bowlers, scores, "
+                   "chat, logos, finals and brackets. It can't be undone. "
+                   "**Download a backup first** (Backup & Restore in the sidebar).")
+        typed = st.text_input("Type the event name to confirm", key=f"del_name_{t_id}")
+        sure = st.checkbox("Yes, delete this event for good", key=f"del_ok_{t_id}")
+        ok = sure and typed.strip().lower() == (tourney["name"] or "").strip().lower()
+        if st.button("Delete event", type="primary", disabled=not ok, key=f"del_btn_{t_id}"):
+            if delete_event(t_id, td_name):
+                if st.session_state.get("active_tournament_id") == t_id:
+                    st.session_state.pop("active_tournament_id", None)
+                st.success("Event deleted.")
+                st.rerun()
+            else:
+                st.error("This event can't be deleted.")
 
 
 def _get_final_standings(tournament_id: int) -> list[dict]:
@@ -53,6 +104,7 @@ def _get_final_standings(tournament_id: int) -> list[dict]:
 def render_finals_close() -> None:
     st.title("🏆 Tournament Closeout & Desk Ledger")
     tournaments = _get_active_tournaments()
+    _render_hidden_practice_cleanup((current_user() or {}).get("display_name") or "Tournament Director")
 
     if not tournaments:
         st.info("No tournament records available to close out.")
@@ -68,6 +120,7 @@ def render_finals_close() -> None:
 
     user = current_user() or {}
     td_name = user.get("display_name") or "Tournament Director"
+    _render_delete_box(t_id, tourney, td_name)
 
     tab_standings, tab_brackets, tab_audit = st.tabs(
         ["📋 Final Standings & Closeout", "🌿 Brackets & Side Pots Ledger", "🔒 Audit & Compliance Vault"]
