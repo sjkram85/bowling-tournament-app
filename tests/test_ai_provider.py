@@ -20,7 +20,7 @@ class FakeClient:
 
 @pytest.fixture(autouse=True)
 def env(monkeypatch):
-    for k in ("GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_RULES_MODEL"):
+    for k in ("GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_RULES_MODEL", "GEMINI_BACKUP_MODEL"):
         monkeypatch.delenv(k, raising=False)
     yield monkeypatch
 
@@ -91,3 +91,29 @@ def test_bad_key_message(env):
     c = FakeClient(exc=RuntimeError("403 PERMISSION_DENIED")); use(env, c)
     with pytest.raises(ap.AIError, match="refused the Gemini key"):
         ap.ask_text("hi")
+
+
+class BusyThenOK:
+    def __init__(self, err):
+        self.err, self.calls = err, []
+
+    def generate_content(self, model, contents, config=None):
+        self.calls.append(model)
+        if len(self.calls) == 1:
+            raise RuntimeError(self.err)
+        return type("R", (), {"text": "backup answer"})()
+
+
+@pytest.mark.parametrize("err", ["503 UNAVAILABLE high demand", "504 DEADLINE_EXCEEDED", "429 RESOURCE_EXHAUSTED limit: 0"])
+def test_busy_model_uses_backup_once(env, err):
+    m = BusyThenOK(err); c = type("C", (), {"models": m})(); use(env, c)
+    assert ap.ask_text("hi", purpose="rules") == "backup answer"
+    assert m.calls == ["gemini-4-argon", "gemini-3.6-flash"]
+    assert "backup model" in ap.LAST_STATUS["message"]
+
+
+def test_wrong_key_does_not_use_backup(env):
+    m = BusyThenOK("403 PERMISSION_DENIED api key"); c = type("C", (), {"models": m})(); use(env, c)
+    with pytest.raises(ap.AIError, match="refused"):
+        ap.ask_text("hi")
+    assert m.calls == ["gemini-3.8-flash"]
