@@ -311,7 +311,8 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
     if groups:
         rec_by_id = {r["id"]: r for r in bowler_records}
         segments = [(g["label"] + (f" — top {g['finalists']} to stepladder finals" if g["rows"] else ""),
-                     [{**rec_by_id.get(r["id"], r), **{k: r[k] for k in ("grand_total", "total_scratch")}, "_prize": r["prize"]}
+                     [{**rec_by_id.get(r["id"], r), **{k: r[k] for k in ("grand_total", "total_scratch")}, "_prize": r["prize"],
+                      "_finalist": r.get("finalist"), "_rolloff": r.get("rolloff"), "_tied": r.get("tied"), "_rank": r.get("rank")}
                       for r in g["rows"]]) for g in groups]
     else:
         segments = [("", bowler_records)]
@@ -342,8 +343,10 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
             avg_hdcp_str = f"{b['entering_avg'] or '—'} / +{hdcp_val}" if hdcp_val > 0 else f"{b['entering_avg'] or '—'} (Scratch)"
 
             row_cells = [
-                Paragraph(f"<b>#{idx}</b>", td_center),
-                Paragraph(f"<b>{escape(b['name'])}</b>" + (" <i>(Youth)</i>" if is_y else ""), td_style),
+                Paragraph(f"<b>#{'T' if b.get('_tied') else ''}{b.get('_rank') or idx}</b>", td_center),
+                Paragraph(f"<b>{escape(b['name'])}</b>" + (" <i>(Youth)</i>" if is_y else "")
+                          + (' <font color="#15803D"><b>FINALIST</b></font>' if b.get("_finalist") else "")
+                          + (' <font color="#C2410C"><b>TIE – ROLL-OFF</b></font>' if b.get("_rolloff") else ""), td_style),
                 Paragraph(escape(str(b["usbc_id"] or "—")), td_center),
                 Paragraph(avg_hdcp_str, td_center),
             ]

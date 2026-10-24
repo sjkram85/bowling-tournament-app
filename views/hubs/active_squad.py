@@ -307,6 +307,9 @@ def render_active_squad() -> None:
     from components.td_team_panel import render_td_team_panel
     render_td_team_panel(t_id)
 
+    from components.rolloff_box import render_rolloff_box
+    render_rolloff_box(t_id)
+
     st.markdown("---")
     bowlers = _get_squad_bowlers(t_id)
     if not bowlers:

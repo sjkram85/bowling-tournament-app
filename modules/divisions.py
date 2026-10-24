@@ -247,6 +247,8 @@ def grouped_results(tournament_id: int) -> list[dict]:
            GROUP BY b.id ORDER BY grand_total DESC, total_scratch DESC""",
         (tournament_id,),
     )
+    from modules.rolloff import apply_cut, winners
+    recorded = winners(tournament_id)
     out = []
     for name, members in group_standings(rows, t):
         base = name.partition(" – ")[0]
@@ -254,8 +256,9 @@ def grouped_results(tournament_id: int) -> list[dict]:
         n_final = finalists_count(len(members))
         for r in members:
             r["prize"] = float(first) if r["rank"] == 1 and r["games_bowled"] else 0.0
-            r["finalist"] = r["rank"] <= n_final and r["games_bowled"] > 0
             r["total"] = r["grand_total"]
             r["games"] = r["games_bowled"]
-        out.append({"group": name, "label": division_label(name, divs), "rows": members, "finalists": n_final})
+        rolloff = apply_cut(members, n_final, recorded.get(name))
+        out.append({"group": name, "label": division_label(name, divs), "rows": members, "finalists": n_final,
+                    "rolloff": rolloff})
     return out
