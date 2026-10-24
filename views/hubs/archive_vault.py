@@ -115,7 +115,8 @@ def render_archive_vault() -> None:
             unsafe_allow_html=True,
         )
 
-        name_slug = archive["name"].replace(" ", "_")
+        from modules.placement import event_slug
+        name_slug = event_slug(archive["name"])
         c1, c2, c3, c4 = st.columns(4)
 
         with c1:

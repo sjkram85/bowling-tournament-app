@@ -11,13 +11,14 @@ from xml.sax.saxutils import escape
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.platypus import HRFlowable, Image as RLImage, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import HRFlowable, Image as RLImage, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from modules.cde_bls_bridge import build_bls_streams, generate_bls_export
 from modules.constants import CENTERS, HOST_CENTERS
 from modules.db_state import checkpoint_db, get_connection
 from modules.practice import block_if_practice
 from modules.divisions import grouped_results
+from modules.placement import STATUS_FINAL, STATUS_LADDER_PENDING, STATUS_ROLLOFF_PENDING, event_slug, group_placement
 from modules.standings import (
     CUT_SEED,
     compute_standings,
@@ -93,6 +94,89 @@ def build_smart_scholarship_csv(tournament_id: int, prize_pool: float | None = N
     if get_tournament(tournament_id) is None:
         return ""
     return recipients_csv(build_smart_export(tournament_id))
+
+
+def _ordinal(n: int) -> str:
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+def certified_pdf_filename(tournament: dict | None) -> str:
+    """Same naming as the Archive Vault download."""
+    return f"{event_slug((tournament or {}).get('name'))}_certified_results.pdf"
+
+
+def rolloff_details(tournament_id: int) -> dict[str, list[dict]]:
+    """{group: [{bowler_id, total, decided_by}]} recorded cut roll-off winners."""
+    try:
+        rows = query("SELECT group_name, bowler_id, total, decided_by FROM cut_rolloffs WHERE tournament_id = ? ORDER BY id",
+                     (tournament_id,))
+    except Exception:
+        return {}
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        out.setdefault(r["group_name"], []).append(dict(r))
+    return out
+
+
+def _finals_section(tournament_id, groups, placements, sec_heading, th_style, td_style, td_center, small_style) -> list:
+    """Per-division stepladder matches, champion and cut roll-off notes."""
+    ro = rolloff_details(tournament_id)
+    out = [PageBreak(), Paragraph("STEPLADDER FINALS & ROLL-OFFS", sec_heading)]
+    for g in groups:
+        plc = placements[g["group"]]
+        names = {r["id"]: r["name"] for r in g["rows"]}
+        block = [Paragraph(f"<b>{escape(g['label'])}</b>", td_style), Spacer(1, 3)]
+        won = [w for w in ro.get(g["group"], []) if w["bowler_id"] in names]
+        if won or g.get("rolloff"):
+            tied_all = [r for r in g["rows"] if r.get("tied") and r["total"] == (won[0]["total"] if won else
+                        g["rolloff"]["bowlers"][0]["total"])]
+            tie_names = ", ".join(escape(r["name"]) for r in tied_all)
+            total = tied_all[0]["total"] if tied_all else ""
+            if g.get("rolloff"):
+                note = (f"Roll-off for the last finals spot: {tie_names} tied at {total}. "
+                        f"Roll-off not recorded yet, so these bowlers are not finalists and no awards are shown.")
+            else:
+                wn = ", ".join(escape(names[w["bowler_id"]]) for w in won)
+                losers = [escape(r["name"]) for r in tied_all if r["id"] not in {w["bowler_id"] for w in won}]
+                by = ", ".join(sorted({w["decided_by"] for w in won if w.get("decided_by")}))
+                note = (f"Roll-off for the last finals spot: {tie_names} tied at {total} after qualifying. "
+                        f"<b>{wn}</b> won the roll-off{f' (recorded by {escape(by)})' if by else ''} and advanced to the finals"
+                        + (f"; {', '.join(losers)} did not advance and are ranked by qualifying." if losers else "."))
+            block += [Paragraph(note, small_style), Spacer(1, 4)]
+        ms = plc["matches"]
+        if not ms:
+            block.append(Paragraph("No stepladder bowled for this division — awards follow qualifying order.", small_style))
+        else:
+            data = [[Paragraph(f"<b>{h}</b>", th_style) for h in ("Match", "Bowler", "Score", "Bowler", "Score", "Roll-off", "Winner")]]
+            for m in ms:
+                done = m["status"] == "completed"
+                rl = f"{m['rolloff_low']}–{m['rolloff_high']}" if done and m.get("rolloff_low") is not None and m["score_low"] == m["score_high"] else "—"
+                data.append([
+                    Paragraph(escape(m.get("match_name") or f"Match {m['match_number']}"), td_style),
+                    Paragraph(escape(m.get("low_name") or "TBD"), td_style),
+                    Paragraph(str(m["score_low"]) if done else "—", td_center),
+                    Paragraph(escape(m.get("high_name") or "TBD"), td_style),
+                    Paragraph(str(m["score_high"]) if done else "—", td_center),
+                    Paragraph(rl, td_center),
+                    Paragraph(f"<b>{escape(m.get('winner_name') or '')}</b>" if done else "Pending", td_style),
+                ])
+            t = Table(data, colWidths=[130, 100, 40, 100, 40, 40, 90])
+            t.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E293B")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            block.append(t)
+            block.append(Spacer(1, 3))
+            if plc["champion"]:
+                order = ", ".join(f"{_ordinal(r['place'])} {escape(r['name'])}" for r in plc["finalists"])
+                block.append(Paragraph(f'<font color="#15803D"><b>Champion: {escape(plc["champion"])}</b></font> &nbsp;|&nbsp; Finish: {order}', td_style))
+            else:
+                block.append(Paragraph("Finals not finished yet — no champion or awards shown.", small_style))
+        block.append(Spacer(1, 12))
+        out.append(KeepTogether(block))
+    return out
 
 
 def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
@@ -186,9 +270,13 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
         alignment=1,
     )
 
+    prize_template = [120.00, 80.00, 50.00, 30.00]
+    small_style = ParagraphStyle("Small", parent=td_style, fontSize=7.5, leading=9.5, textColor=colors.HexColor("#475569"))
     story = []
 
     tourney_name = tournament["name"] if tournament else "Tournament Results"
+    groups = grouped_results(tournament_id)
+    placements = {g["group"]: group_placement(tournament_id, g) for g in groups}
 
     logo_left = None
     if CHUSBC_LOGO_PATH.is_file():
@@ -197,179 +285,158 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
         except Exception:
             logo_left = None
 
+    fmt = f"{tournament.get('squad_format', 'Singles') if tournament else 'Singles'} ({game_count} Games)"
     center_text_flowables = [
         Paragraph("CECIL HARFORD UNITED STATES BOWLING CONGRESS", assoc_style),
         Spacer(1, 2),
         Paragraph(escape(tourney_name).upper(), title_style),
         Spacer(1, 3),
-        Paragraph(
-            f"<b>Official Certified Standing Sheet</b> &nbsp;|&nbsp; "
-            f"Host Center: <b>{escape(center_name)}</b> ({escape(center_address)}) &nbsp;|&nbsp; "
-            f"Format: <b>{tournament.get('squad_format', 'Singles')} ({game_count} Games)</b>",
-            meta_style,
-        ),
+        Paragraph(f"<b>Official Certified Standing Sheet</b> &nbsp;|&nbsp; Format: <b>{escape(fmt)}</b>", meta_style),
+        Paragraph(f"Host Center: <b>{escape(center_name)}</b> ({escape(center_address)})", meta_style),
     ]
-
-    header_row = [
-        logo_left or "",
-        center_text_flowables,
-    ]
-
-    t_header = Table([header_row], colWidths=[70, 470])
-    t_header.setStyle(
-        TableStyle(
-            [
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("ALIGN", (0, 0), (0, 0), "CENTER"),
-                ("ALIGN", (1, 0), (1, 0), "CENTER"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                ("TOPPADDING", (0, 0), (-1, -1), 0),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-            ]
-        )
-    )
+    t_header = Table([[logo_left or "", center_text_flowables]], colWidths=[70, 470])
+    t_header.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
     story.append(t_header)
     story.append(Spacer(1, 6))
     story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor("#1E3A8A"), spaceAfter=10))
 
-    prize_template = [120.00, 80.00, 50.00, 30.00]
+    # --- awards by FINAL placement (same logic as the SMART export) ---
+    awards: dict[int, float] = {}
+    places: dict[int, int] = {}
+    if groups:
+        from modules.divisions import get_divisions
+        from modules.smart_export import place_amounts
+        divs = {d["name"]: d for d in get_divisions(tournament)}
+        for g in groups:
+            plc = placements[g["group"]]
+            amounts = place_amounts(divs.get(g["group"].partition(" – ")[0], {}))
+            for r in plc["order"]:
+                if r.get("finalist") and plc["status"] == STATUS_FINAL:
+                    places[r["id"]] = r["place"]
+                if plc["awards_ok"] and amounts.get(r["place"]):
+                    awards[r["id"]] = amounts[r["place"]]
+    else:
+        for i, b in enumerate(bowler_records):
+            if i < len(prize_template):
+                awards[b["id"]] = prize_template[i]
+
     total_field = len(bowler_records)
     total_scratch_pins = sum(b["total_scratch"] for b in bowler_records)
-    total_prize_fund = sum(prize_template[:min(total_field, len(prize_template))])
-
-    smart_escrow = sum(
-        prize_template[i] for i, b in enumerate(bowler_records)
-        if i < len(prize_template) and b["is_youth"]
-    )
-    _groups_for_kpi = grouped_results(tournament_id)
-    if _groups_for_kpi:  # division tournaments: 1st-place SMART scholarships per group, no cash
-        total_prize_fund = smart_escrow = sum(r["prize"] for g in _groups_for_kpi for r in g["rows"])
+    youth_ids = {b["id"] for b in bowler_records if b["is_youth"]}
+    total_prize_fund = sum(awards.values())
+    smart_escrow = sum(v for k, v in awards.items() if k in youth_ids)
     adult_cash = total_prize_fund - smart_escrow
+    all_youth = bool(bowler_records) and len(youth_ids) == total_field
 
-    kpi_data = [
-        [
-            Paragraph("<b>TOTAL FIELD</b>", th_style),
-            Paragraph("<b>TOTAL PINS KNOCKED DOWN</b>", th_style),
-            Paragraph("<b>TOTAL PRIZE POOL</b>", th_style),
-            Paragraph("<b>ADULT CASH PAYOUT</b>", th_style),
-            Paragraph("<b>USBC SMART ESCROW</b>", th_style),
-        ],
-        [
-            Paragraph(f"<b>{total_field}</b> Bowlers", td_center),
-            Paragraph(f"<b>{total_scratch_pins:,}</b> Pins", td_center),
-            Paragraph(f"<b>${total_prize_fund:.2f}</b>", td_center),
-            Paragraph(f"<b>${adult_cash:.2f}</b>", td_center),
-            Paragraph(f"<b>${smart_escrow:.2f}</b>", td_center),
-        ],
-    ]
-    t_kpi = Table(kpi_data, colWidths=[108, 118, 104, 105, 105])
-    t_kpi.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E293B")),
-                ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#F1F5F9")),
-                ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#CBD5E1")),
-                ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
-                ("TOPPADDING", (0, 0), (-1, -1), 5),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-            ]
-        )
-    )
+    kpis = [("FIELD", f"<b>{total_field}</b> Bowlers"), ("TOTAL PINS", f"<b>{total_scratch_pins:,}</b>"),
+            ("PRIZE POOL", f"<b>${total_prize_fund:,.2f}</b>")]
+    if adult_cash > 0:
+        kpis.append(("ADULT CASH", f"<b>${adult_cash:,.2f}</b>"))
+    kpis.append(("USBC SMART SCHOLARSHIPS", f"<b>${smart_escrow:,.2f}</b>"))
+    w = 540 / len(kpis)
+    t_kpi = Table([[Paragraph(f"<b>{k}</b>", th_style) for k, _ in kpis],
+                   [Paragraph(v, td_center) for _, v in kpis]], colWidths=[w] * len(kpis))
+    t_kpi.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E293B")),
+        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#F1F5F9")),
+        ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#CBD5E1")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+        ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
     story.append(t_kpi)
     story.append(Spacer(1, 14))
-
     story.append(Paragraph("OFFICIAL QUALIFYING & FINAL STANDINGS", sec_heading))
+    if groups:
+        story.append(Paragraph("<b>Qual</b> = qualifying rank (T = tie). <b>Final</b> = finish in the stepladder finals. "
+                               "Awards follow the final finish.", small_style))
+        story.append(Spacer(1, 6))
 
-    headers = [
-        Paragraph("<b>Rank</b>", th_style),
-        Paragraph("<b>Bowler Name</b>", th_style),
-        Paragraph("<b>USBC ID</b>", th_style),
-        Paragraph("<b>Avg / HDCP</b>", th_style),
-    ]
-    for g in range(1, game_count + 1):
-        headers.append(Paragraph(f"<b>Gm {g}</b>", th_style))
-    headers.extend([
-        Paragraph("<b>Scratch</b>", th_style),
-        Paragraph("<b>HDCP Total</b>", th_style),
-        Paragraph("<b>Award</b>", th_style),
-        Paragraph("<b>Payout Type</b>", th_style),
-    ])
+    headers = [Paragraph(f"<b>{h}</b>", th_style) for h in
+               ["Qual", "Final", "Bowler Name", "USBC ID", "Avg / HDCP"]
+               + [f"Gm {g}" for g in range(1, game_count + 1)] + ["Scratch", "HDCP Total", "Award", "Type"]]
+    game_w = 30
+    name_w = max(80, 540 - (26 + 30 + 58 + 50 + 38 + 40 + 46 + 34) - game_w * game_count)
+    col_widths = [26, 30, name_w, 58, 50] + [game_w] * game_count + [38, 40, 46, 34]
 
-    groups = grouped_results(tournament_id)
     if groups:
         rec_by_id = {r["id"]: r for r in bowler_records}
-        segments = [(g["label"] + (f" — top {g['finalists']} to stepladder finals" if g["rows"] else ""),
-                     [{**rec_by_id.get(r["id"], r), **{k: r[k] for k in ("grand_total", "total_scratch")}, "_prize": r["prize"],
-                      "_finalist": r.get("finalist"), "_rolloff": r.get("rolloff"), "_tied": r.get("tied"), "_rank": r.get("rank")}
-                      for r in g["rows"]]) for g in groups]
+        segments = []
+        for g in groups:
+            plc = placements[g["group"]]
+            qual_rows = sorted((r for r in g["rows"]), key=lambda r: r["rank"])
+            title = g["label"] + (f" — top {g['finalists']} to stepladder finals" if g["rows"] else "")
+            if plc["status"] == STATUS_ROLLOFF_PENDING:
+                title += " (roll-off not recorded yet — no awards shown)"
+            elif plc["status"] == STATUS_LADDER_PENDING:
+                title += " (finals not finished — no awards shown)"
+            segments.append((title, [{**rec_by_id.get(r["id"], r), **{k: r[k] for k in ("grand_total", "total_scratch")},
+                                      "_finalist": r.get("finalist"), "_rolloff": r.get("rolloff"),
+                                      "_tied": r.get("tied"), "_rank": r.get("rank")} for r in qual_rows]))
     else:
         segments = [("", bowler_records)]
+
     for seg_title, seg_rows in segments:
+        block = []
         if seg_title:
-            story.append(Paragraph(f"<b>{escape(seg_title)}</b>", td_style))
-            story.append(Spacer(1, 4))
+            block += [Paragraph(f"<b>{escape(seg_title)}</b>", td_style), Spacer(1, 4)]
         if groups and not seg_rows:
-            story.append(Paragraph("No bowlers in this group.", td_style))
-            story.append(Spacer(1, 10))
+            block += [Paragraph("No bowlers in this group.", td_style), Spacer(1, 10)]
+            story.append(KeepTogether(block))
             continue
         table_data = [headers]
-
         for idx, b in enumerate(seg_rows, start=1):
-            b_id = b["id"]
-            g_scores = scores_by_bowler.get(b_id, {})
-            prize = b["_prize"] if groups else (prize_template[idx - 1] if idx <= len(prize_template) else 0.0)
+            g_scores = scores_by_bowler.get(b["id"], {})
+            prize = awards.get(b["id"], 0.0)
             is_y = bool(b["is_youth"])
-
-            if is_y and prize > 0:
-                routing_txt = "SMART"
-            elif prize > 0:
-                routing_txt = "Cash"
-            else:
-                routing_txt = "—"
-
+            routing_txt = ("SMART" if is_y else "Cash") if prize > 0 else "—"
             hdcp_val = b["handicap"] or 0
-            avg_hdcp_str = f"{b['entering_avg'] or '—'} / +{hdcp_val}" if hdcp_val > 0 else f"{b['entering_avg'] or '—'} (Scratch)"
-
+            avg_hdcp_str = f"{b['entering_avg'] or '—'} / +{hdcp_val}" if hdcp_val > 0 else f"{b['entering_avg'] or '—'} (S)"
+            if b.get("_rolloff"):
+                final_txt = '<font color="#C2410C"><b>RO</b></font>'
+            elif b["id"] in places:
+                final_txt = f'<font color="#15803D"><b>{_ordinal(places[b["id"]])}</b></font>'
+            elif b.get("_finalist"):
+                final_txt = '<font color="#15803D"><b>F</b></font>'
+            else:
+                final_txt = "—"
+            name_txt = f"<b>{escape(b['name'])}</b>" + (" <i>(Y)</i>" if is_y and not all_youth else "")
             row_cells = [
-                Paragraph(f"<b>#{'T' if b.get('_tied') else ''}{b.get('_rank') or idx}</b>", td_center),
-                Paragraph(f"<b>{escape(b['name'])}</b>" + (" <i>(Youth)</i>" if is_y else "")
-                          + (' <font color="#15803D"><b>FINALIST</b></font>' if b.get("_finalist") else "")
-                          + (' <font color="#C2410C"><b>TIE – ROLL-OFF</b></font>' if b.get("_rolloff") else ""), td_style),
+                Paragraph(f"<b>{'T' if b.get('_tied') else ''}{b.get('_rank') or idx}</b>", td_center),
+                Paragraph(final_txt, td_center),
+                Paragraph(name_txt, td_style),
                 Paragraph(escape(str(b["usbc_id"] or "—")), td_center),
                 Paragraph(avg_hdcp_str, td_center),
             ]
-
             for g in range(1, game_count + 1):
-                score_val = g_scores.get(g, 0)
-                row_cells.append(Paragraph(str(score_val) if score_val > 0 else "—", td_center))
-
+                v = g_scores.get(g, 0)
+                row_cells.append(Paragraph(str(v) if v > 0 else "—", td_center))
             row_cells.extend([
                 Paragraph(str(b["total_scratch"]), td_center),
                 Paragraph(f"<b>{b['grand_total']}</b>", td_center),
-                Paragraph(f"${prize:.2f}" if prize > 0 else "—", td_center),
+                Paragraph(f"${prize:,.2f}" if prize > 0 else "—", td_center),
                 Paragraph(routing_txt, td_center),
             ])
             table_data.append(row_cells)
+        t_standings = Table(table_data, colWidths=col_widths, repeatRows=1)
+        t_standings.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E293B")),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        block += [t_standings, Spacer(1, 14)]
+        story.append(KeepTogether(block))
 
-        base_cols = [38, 120, 68, 70]
-        game_cols = [36] * game_count
-        end_cols = [46, 52, 52, 58]
-        t_standings = Table(table_data, colWidths=base_cols + game_cols + end_cols)
-        t_standings.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E293B")),
-                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ]
-            )
-        )
-        story.append(t_standings)
-        story.append(Spacer(1, 16))
+    if groups:
+        story += _finals_section(tournament_id, groups, placements, sec_heading, th_style, td_style, td_center, small_style)
 
+    story.append(Spacer(1, 6))
     story.append(
         Paragraph(
             f"Certified and verified by: <b>{escape(certified_by)}</b>, Tournament Director &nbsp;|&nbsp; "
