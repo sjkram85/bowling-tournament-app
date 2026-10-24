@@ -55,7 +55,7 @@ def test_current_lite_not_blocked(env):
 def test_rules_uses_rules_model(env):
     c = FakeClient(text="Rule answer"); use(env, c)
     out = prism_ai.get_prism_ai_guidance({"view": "USBC Rules Engine"}, user_prompt="wrong lane?")
-    assert out == "Rule answer" and c.models.calls[0][0] == "gemini-4-argon"
+    assert out.startswith("Rule answer") and "Sections checked: Rule 9" in out and c.models.calls[0][0] == "gemini-4-argon"
     assert ap.LAST_STATUS["ok"] is True
 
 
