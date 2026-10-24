@@ -5,6 +5,7 @@ emails, public screens and real standings lists. "End & Delete" removes every ro
 """
 
 from __future__ import annotations
+import sqlite3
 
 from modules.db_state import get_connection
 
@@ -24,7 +25,10 @@ def is_practice(tournament_id) -> bool:
         return False
     conn = get_connection()
     try:
-        row = conn.execute("SELECT COALESCE(is_practice, 0) FROM tournaments WHERE id = ?", (tournament_id,)).fetchone()
+        try:
+            row = conn.execute("SELECT COALESCE(is_practice, 0) FROM tournaments WHERE id = ?", (tournament_id,)).fetchone()
+        except sqlite3.OperationalError:
+            return False  # older database without practice columns yet
         return bool(row and row[0])
     finally:
         conn.close()
@@ -38,9 +42,12 @@ def block_if_practice(tournament_id, action: str = "used") -> None:
 def active_practice_id() -> int | None:
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT id FROM tournaments WHERE COALESCE(is_practice, 0) = 1 AND status = 'active' ORDER BY id DESC LIMIT 1"
-        ).fetchone()
+        try:
+            row = conn.execute(
+                "SELECT id FROM tournaments WHERE COALESCE(is_practice, 0) = 1 AND status = 'active' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None  # older database without practice columns yet
         return row[0] if row else None
     finally:
         conn.close()
