@@ -33,13 +33,13 @@ def _verify_queue(t_id: int) -> None:
     if not queue:
         st.success("All scores are verified.")
     for s in queue[:15]:
-        c1, c2, c3, c4 = st.columns([3, 1.2, 1, 1])
+        c1, c2, c3, c4 = st.columns([2.6, 1.1, 1, 0.9])
         c1.markdown(f"**{escape(s['name'])}** · Lane {s['lane_assignment']} · Game {s['game_number']}"
                     f"<br><span style='font-size:12px;opacity:.7'>entered by {escape(s['recorded_by'] or 'floor')}</span>",
                     unsafe_allow_html=True)
         new = c2.number_input("Score", 0, 300, int(s["scratch_score"]), key=f"vq_n_{s['id']}",
                               label_visibility="collapsed")
-        if c3.button("Verified", key=f"vq_ok_{s['id']}", type="primary", use_container_width=True):
+        if c3.button("Verify", key=f"vq_ok_{s['id']}", type="primary", use_container_width=True):
             td_team.verify_score(s["id"], me)
             st.rerun(scope="fragment")
         if c4.button("Fix", key=f"vq_fix_{s['id']}", use_container_width=True,
@@ -83,7 +83,7 @@ def render_td_team_panel(t_id: int) -> None:
         return
     with st.container(border=True):
         _on_duty(t_id)
-        left, right = st.columns([3, 2])
+        left, right = st.columns([3.2, 2])
         with left:
             _verify_queue(t_id)
         with right:

@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
-ROWS_PER_PAGE = 20
+ROWS_PER_PAGE = 8   # rows per group block; fits an 800px-tall laptop
+GROUPS_PER_PAGE = 2  # one row of two side-by-side tables
 
 
 def parse_tournament_id(params) -> int | None:
@@ -51,22 +52,19 @@ def load_board(tournament_id: int) -> dict | None:
             log.warning("kiosk standings failed: %s", exc)
             rows = []
         groups = [{"label": "Standings", "rows": rows}]
-    return {"name": t.get("name") or "Tournament", "center": t.get("host_center") or "",
+    from modules.events import center_name
+    return {"name": t.get("name") or "Tournament", "center": center_name(t.get("host_center") or ""),
             "practice": bool(t.get("is_practice")), "groups": groups}
 
 
-def paginate(groups: list[dict], rows_per_page: int = ROWS_PER_PAGE) -> list[list[dict]]:
-    """Pack groups onto pages; a group longer than a page is split into parts."""
-    pages, page, used = [], [], 0
+def paginate(groups: list[dict], rows_per_page: int = ROWS_PER_PAGE,
+             groups_per_page: int = GROUPS_PER_PAGE) -> list[list[dict]]:
+    """Split groups into blocks of <= rows_per_page rows, then put <= groups_per_page blocks on a page."""
+    blocks = []
     for g in groups:
         rows = g["rows"] or []
         chunks = [rows[i:i + rows_per_page] for i in range(0, len(rows), rows_per_page)] or [[]]
         for n, chunk in enumerate(chunks):
-            label = g["label"] + (f" (cont.)" if n else "")
-            need = max(len(chunk), 1) + 2  # heading space
-            if page and used + need > rows_per_page + 4:
-                pages.append(page); page, used = [], 0
-            page.append({"label": label, "rows": chunk}); used += need
-    if page:
-        pages.append(page)
+            blocks.append({"label": g["label"] + (" (cont.)" if n else ""), "rows": chunk})
+    pages = [blocks[i:i + groups_per_page] for i in range(0, len(blocks), groups_per_page)]
     return pages or [[]]

@@ -22,10 +22,11 @@ _CSS = """<style>
 .k-practice {background:#B45309; color:#fff; font-size:34px; font-weight:800; text-align:center; padding:10px; border-radius:8px; margin:10px 0;}
 .k-grid {display:flex; flex-wrap:wrap; gap:28px; margin-top:14px;}
 .k-group {flex:1 1 560px;}
-.k-glabel {color:#FACC15; font-size:32px; font-weight:800; margin-bottom:6px;}
-.k-table {width:100%; border-collapse:collapse; color:#fff; font-size:30px;}
+.k-glabel {color:#FACC15; font-size:30px; font-weight:800; line-height:1.15;}
+.k-gsub {color:#FDE68A; font-size:18px; margin-bottom:6px;}
+.k-table {width:100%; border-collapse:collapse; color:#fff; font-size:28px;}
 .k-table th {color:#9CA3AF; font-size:20px; text-align:left; border-bottom:2px solid #374151; padding:4px 8px;}
-.k-table td {padding:6px 8px; border-bottom:1px solid #1F2937;}
+.k-table td {padding:4px 8px; border-bottom:1px solid #1F2937;}
 .k-table td.n {text-align:right; font-variant-numeric:tabular-nums;}
 .k-table th.n {text-align:right;}
 .k-fin td {background:#052e16;}
@@ -41,7 +42,9 @@ def _group_html(g: dict) -> str:
         f"<td class='n'>{r['games']}</td><td class='n'>{r['total']}</td></tr>"
         for r in g["rows"]
     ) or "<tr><td colspan=4>No bowlers yet</td></tr>"
-    return (f"<div class='k-group'><div class='k-glabel'>{escape(g['label'])}</div><table class='k-table'>"
+    title, _, sub = g["label"].partition(" · ")
+    return (f"<div class='k-group'><div class='k-glabel'>{escape(title)}</div>"
+            f"<div class='k-gsub'>{escape(sub) or '&nbsp;'}</div><table class='k-table'>"
             "<tr><th class='n'>#</th><th>Bowler</th><th class='n'>Games</th><th class='n'>Total</th></tr>"
             f"{body}</table></div>")
 
