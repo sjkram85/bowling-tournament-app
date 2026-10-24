@@ -6,7 +6,8 @@ from modules.ai_provider import AIError
 OCR_PROMPT = (
     "Analyze this bowling overhead scoring monitor display. Extract each bowler's name and their final "
     "scratch game score. Output JSON matching this format: "
-    '{"bowlers": [{"name": "string", "game_score": integer}]}'
+    '{"bowlers": [{"name": "string", "game_score": integer, "confidence": number 0-1}]}. '
+    "If a score is unreadable, use null for game_score. Never guess."
 )
 
 

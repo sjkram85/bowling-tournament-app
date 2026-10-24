@@ -215,19 +215,92 @@ def render_mobile_scoring() -> None:
 
     # --- TAB 2: AI OVERHEAD OCR CAMERA SNAP ---
     with tab_camera:
-        st.subheader("Overhead Monitor Photo Ingest")
-        st.caption("Take a photo of the lane monitor. Prism A.I will read the scores and queue them for verification.")
+        _render_photo_tab(tourney, active_lanes, verifier_name)
 
-        if not ai_available():
-            st.info(AI_OFF_MESSAGE + " Please use the 10-Key Manual Input tab.")
-        uploaded_img = st.camera_input("Snap Monitor Screen", disabled=not ai_available())
-        if uploaded_img is not None:
-            if st.button("Transcribe Monitor via Gemini Vision", type="primary", use_container_width=True):
-                with st.spinner("Prism A.I Vision reading overhead frames..."):
-                    result = extract_scores_from_overhead_photo(uploaded_img.getvalue())
-                    if result["status"] == "error":
-                        st.error(result["message"])
-                    else:
-                        st.success("Scores Extracted Successfully!")
-                        for item in result["extracted_data"]:
-                            st.write(f"🎳 **{item.get('name')}**: Score **{item.get('game_score')}**")
+
+PHOTO_FAIL_MESSAGE = "Prism A.I. couldn't read this photo. Please type the scores in the 10-Key Manual Input tab."
+
+
+def read_photo(image: bytes, lane_bowlers: list[dict]) -> dict | None:
+    """A.I. read -> review dict, or None if the A.I. failed or read nothing. Never raises, never saves."""
+    from modules.photo_review import build_review
+    try:
+        result = extract_scores_from_overhead_photo(image)
+    except Exception:
+        return None
+    if result.get("status") != "success" or not result.get("extracted_data"):
+        return None
+    return build_review(lane_bowlers, result["extracted_data"])
+
+
+def _render_photo_tab(tourney: dict, active_lanes: list[int], verifier_name: str) -> None:
+    """Photo -> A.I. read -> 'Does this look right?' review -> 'Save these scores'. Never saves directly."""
+
+    st.subheader("Overhead Monitor Photo")
+    st.caption("Take a photo of the lane monitor. Prism A.I. reads it, you check the numbers, then save.")
+    c1, c2 = st.columns(2)
+    lane = c1.selectbox("Lane", active_lanes, format_func=lambda l: f"Lane {l}", key="photo_lane")
+    game = c2.selectbox("Game", list(range(1, tourney["game_count"] + 1)), format_func=lambda g: f"Game {g}",
+                        key="photo_game")
+    if not ai_available():
+        st.info(AI_OFF_MESSAGE + " Please use the 10-Key Manual Input tab.")
+        return
+    img = st.camera_input("Snap Monitor Screen", key="photo_cam")
+    if img is None:
+        return
+    key = (tourney["id"], int(lane), int(game), hash(img.getvalue()))
+    if st.session_state.get("photo_key") != key:
+        st.session_state.pop("photo_review", None)
+    if "photo_review" not in st.session_state:
+        if not st.button("Read scores from photo", type="primary", use_container_width=True):
+            return
+        with st.spinner("Prism A.I. is reading the photo..."):
+            review = read_photo(img.getvalue(), _get_lane_bowlers(tourney["id"], int(lane)))
+        if review is None:
+            st.error(PHOTO_FAIL_MESSAGE)
+            return
+        st.session_state["photo_review"] = review
+        st.session_state["photo_key"] = key
+    _render_photo_review(tourney, int(lane), int(game), img.getvalue(), st.session_state["photo_review"],
+                         verifier_name)
+
+
+def _render_photo_review(tourney: dict, lane: int, game: int, image: bytes, review: dict, verifier_name: str) -> None:
+    from html import escape
+    from modules.photo_review import check_value, save_errors
+
+    st.markdown("### Does this look right?")
+    st.caption("Fix any number that is wrong. Yellow = please check. Leave 0 to skip a bowler.")
+    left, right = st.columns([1, 1])
+    left.image(image, caption=f"Lane {lane} · Game {game}", use_container_width=True)
+    values = {}
+    with right:
+        for r in review["rows"]:
+            k = f"photo_val_{r['bowler_id']}_{game}"
+            v = st.number_input(r["name"], min_value=0, max_value=999, value=int(r["value"] or 0), step=1, key=k)
+            values[r["bowler_id"]] = int(v)
+            flags = check_value(v) + [f for f in r["flags"] if f == "low confidence"]
+            if flags:
+                read = f" (photo said: {escape(str(r['read_name']))})" if r["read_name"] else ""
+                st.markdown(f"<div style='background:#713F12;color:#FEF08A;padding:4px 8px;border-radius:6px;"
+                            f"font-size:13px'>⚠️ Please check: {', '.join(flags)}{read}</div>",
+                            unsafe_allow_html=True)
+        if review["unmatched"]:
+            st.caption("Names on the photo not on this lane: " + ", ".join(escape(n) for n in review["unmatched"]))
+    errors = save_errors(values)
+    for e in errors:
+        st.error(e)
+    b1, b2 = st.columns(2)
+    if b1.button("Save these scores", type="primary", use_container_width=True, disabled=bool(errors),
+                 key="photo_save"):
+        handicaps = {r["bowler_id"]: r["handicap"] for r in review["rows"]}
+        n = 0
+        for bid, v in values.items():
+            if v > 0:
+                _record_score(tourney["id"], bid, game, v, handicaps.get(bid, 0), f"{verifier_name} (photo)")
+                n += 1
+        st.session_state.pop("photo_review", None)
+        st.success(f"Saved {n} score{'s' if n != 1 else ''}. They are waiting in the TD Verify list.")
+    if b2.button("Cancel", use_container_width=True, key="photo_cancel"):
+        st.session_state.pop("photo_review", None)
+        st.rerun()
