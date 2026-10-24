@@ -196,6 +196,8 @@ def init_db() -> None:
             ensure_team_tables(conn)
             from modules.rolloff import ensure_rolloff_table
             ensure_rolloff_table(conn)
+            from modules.score_history import ensure_history_table
+            ensure_history_table(conn)
         except Exception:
             pass
 
