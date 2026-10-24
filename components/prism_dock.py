@@ -2,7 +2,8 @@
 
 import html
 import streamlit as st
-from modules.prism_ai import get_prism_ai_guidance
+from modules.prism_ai import get_prism_ai_guidance, answer_rule_question
+from modules.screen_context import build_screen_context
 
 
 def _rolling_ball_loader(label: str = "Analyzing operations...") -> None:
@@ -60,10 +61,11 @@ def _stream_response(full_text: str) -> None:
 
 def collect_view_state(current_view: str) -> dict:
     """Collect lightweight operational context for the active screen."""
+    t_id = st.session_state.get("active_tournament_id")
     return {
         "view": current_view,
-        "active_tournament_id": st.session_state.get("active_tournament_id"),
-        "intake_summary": st.session_state.get("intake_summary", {}),
+        "active_tournament_id": t_id,
+        "screen_context": build_screen_context(current_view, t_id),
     }
 
 
@@ -164,8 +166,5 @@ def render_prism_dock(current_view: str = "Active Squad Hub", view_state: dict |
         if st.button("Arbitrate USBC Rule", key="rulebook_submit", use_container_width=True):
             if rule_query.strip():
                 _rolling_ball_loader("Sifting USBC rules...")
-                rule_answer = get_prism_ai_guidance(
-                    {"view": "USBC Rules Engine"},
-                    user_prompt=f"USBC Rule Arbitration Query: {rule_query.strip()}",
-                )
+                rule_answer = answer_rule_question(rule_query.strip())
                 _stream_response(rule_answer)

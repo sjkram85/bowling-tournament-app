@@ -60,7 +60,7 @@ def _client():
         http_options=types.HttpOptions(
             timeout=TIMEOUT_MS,
             retry_options=types.HttpRetryOptions(
-                attempts=2, initial_delay=1.0, http_status_codes=[408, 429, 500, 502, 503, 504]
+                attempts=1, initial_delay=1.0, http_status_codes=[408, 429, 500, 502, 503, 504]
             ),
         ),
     )
@@ -73,11 +73,20 @@ def _friendly_error(exc: Exception, model: str) -> str:
                 f"Change GEMINI_MODEL to {DEFAULT_MODEL}.")
     if "401" in text or "403" in text or "api key" in text or "permission" in text:
         return "Google refused the Gemini key. Check that GEMINI_API_KEY is correct and active."
+    if "503" in text or "unavailable" in text or "high demand" in text or "overloaded" in text:
+        return "Google's A.I. is very busy right now. Please try again in a minute."
     if "429" in text or "quota" in text or "resource_exhausted" in text:
         return "Prism A.I. is temporarily over its usage limit. Wait a minute and try again."
     if "timeout" in text or "timed out" in text or "deadline" in text:
         return "Prism A.I. took too long to answer (over 15 seconds). Please try again."
     return "Prism A.I. couldn't complete the request. Please try again in a moment."
+
+
+def _is_busy(exc: Exception) -> bool:
+    """Overloaded, too slow, or over the usage limit: worth one try on the backup model."""
+    text = str(exc).lower()
+    return any(k in text for k in ("503", "504", "429", "unavailable", "deadline", "timeout", "timed out",
+                                   "resource_exhausted", "quota", "high demand", "overloaded"))
 
 
 def _generate(contents, purpose: str, system: str | None = None, want_json: bool = False,
@@ -105,6 +114,18 @@ def _generate(contents, purpose: str, system: str | None = None, want_json: bool
         text = (getattr(response, "text", None) or "").strip()
     except Exception as exc:
         msg = _friendly_error(exc, model)
+        backup = model_name("backup")
+        if _is_busy(exc) and backup and backup != model and not is_retired(backup):
+            try:
+                response = client.models.generate_content(model=backup, contents=contents, config=config)
+                text = (getattr(response, "text", None) or "").strip()
+            except Exception as exc2:
+                msg = _friendly_error(exc2, backup)
+                _record(backup, False, msg)
+                raise AIError(msg) from exc2
+            if text:
+                _record(backup, True, f"Last request succeeded using the backup model ({model} was busy or over its limit).")
+                return text
         _record(model, False, msg)
         raise AIError(msg) from exc
     if not text:
