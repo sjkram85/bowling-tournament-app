@@ -132,6 +132,15 @@ def recently_verified(tournament_id: int, limit: int = 5) -> list[dict]:
 @_safe(False)
 def verify_score(score_id: int, td_name: str, new_scratch: int | None = None) -> bool:
     """Mark a score verified. If new_scratch is given, fix the number first (handicap is kept)."""
+    before = None
+    if new_scratch is not None:
+        conn = get_connection()
+        try:
+            before = conn.execute("SELECT tournament_id, bowler_id, game_number, scratch_score, hdcp_score, total_score,"
+                                  " verified FROM scores WHERE id = ?", (score_id,)).fetchone()
+            before = dict(before) if before else None
+        finally:
+            conn.close()
     conn = get_connection()
     try:
         with conn:
@@ -146,9 +155,14 @@ def verify_score(score_id: int, td_name: str, new_scratch: int | None = None) ->
                    WHERE id = ?""",
                 (td_name, score_id),
             )
-        return cur.rowcount == 1
+        ok = cur.rowcount == 1
     finally:
         conn.close()
+    if ok and before:
+        from modules.score_history import log_change
+        log_change(before["tournament_id"], before["bowler_id"], before["game_number"], before, int(new_scratch),
+                   "verify-fix", td_name)
+    return ok
 
 
 # ---------- TD chat ----------

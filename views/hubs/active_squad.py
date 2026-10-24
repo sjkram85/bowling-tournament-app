@@ -100,7 +100,9 @@ def _get_total_games_completed_count(tournament_id: int) -> int:
         conn.close()
 
 
-def _save_score(tournament_id: int, bowler_id: int, game_number: int, scratch: int, hdcp: int, user_name: str) -> None:
+def _save_score(tournament_id: int, bowler_id: int, game_number: int, scratch: int, hdcp: int, user_name: str) -> int | None:
+    from modules import score_history
+    before = score_history.current(tournament_id, bowler_id, game_number)
     conn = get_connection()
     total = scratch + hdcp
     try:
@@ -119,9 +121,10 @@ def _save_score(tournament_id: int, bowler_id: int, game_number: int, scratch: i
                 """,
                 (tournament_id, bowler_id, game_number, scratch, total, user_name, user_name),
             )
-        log_desk_action(user_name, "td", f"Logged Game {game_number} score {scratch} (HDCP +{hdcp}) for Bowler #{bowler_id}")
     finally:
         conn.close()
+    log_desk_action(user_name, "td", f"Logged Game {game_number} score {scratch} (HDCP +{hdcp}) for Bowler #{bowler_id}")
+    return score_history.log_change(tournament_id, bowler_id, game_number, before, scratch, "desk", user_name)
 
 
 def _calculate_lane_movement(starting_lane: int, current_game: int, total_lanes: int) -> int:
@@ -224,15 +227,22 @@ def _render_live_scoring_matrix(t_id: int, active_game: int, total_lanes: int, b
 
     if st.button(f"💾 Save Desk Score Adjustments for Game {active_game}", type="primary", use_container_width=True):
         count_updated = 0
+        changed = []
         for row in edited_scores.itertuples():
             b_id = row._1  # Bowler ID
             scratch = int(row.Scratch)
             hdcp = int(row.HDCP)
             if scratch > 0:
-                _save_score(t_id, b_id, active_game, scratch, hdcp, td_name)
+                hid = _save_score(t_id, b_id, active_game, scratch, hdcp, td_name)
+                if hid:
+                    changed.append(hid)
                 count_updated += 1
+        st.session_state[f"desk_undo_{t_id}"] = changed
         st.success(f"Successfully recorded and audited {count_updated} scores for Game {active_game}!")
         st.rerun()
+
+    from components.undo_box import saved_undo_button
+    saved_undo_button(f"desk_undo_{t_id}", td_name)
 
     # =========================================================
     # SQUAD COMPLETION & FINALS CLOSEOUT CALLOUT
@@ -310,6 +320,9 @@ def render_active_squad() -> None:
     from modules.auth import is_admin
     if is_admin():
         st.caption("💾 Reminder: after each squad, download a backup (Backup & Restore in the sidebar).")
+    from components.undo_box import render_undo_box
+    _u = current_user() or {}
+    render_undo_box(t_id, _u.get("display_name") or _u.get("username") or "TD")
     from components.rolloff_box import render_rolloff_box
     render_rolloff_box(t_id)
 
@@ -319,4 +332,4 @@ def render_active_squad() -> None:
         st.warning("No bowlers loaded on this squad roster yet. Go to the Intake Gateway to import competitors.")
         return
 
-    _render_live_scoring_matrix(t_id, active_game, total_lanes, bowlers, "Tournament Director", tourney["game_count"])
+    _render_live_scoring_matrix(t_id, active_game, total_lanes, bowlers, (current_user() or {}).get("display_name") or "Tournament Director", tourney["game_count"])

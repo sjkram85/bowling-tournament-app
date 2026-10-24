@@ -58,7 +58,10 @@ def _get_existing_lane_scores(tournament_id: int, game_num: int) -> dict[int, di
         conn.close()
 
 
-def _record_score(tournament_id: int, bowler_id: int, game_num: int, scratch: int, hdcp: int, verifier_name: str) -> None:
+def _record_score(tournament_id: int, bowler_id: int, game_num: int, scratch: int, hdcp: int, verifier_name: str,
+                  source: str = "floor", device: str | None = None) -> int | None:
+    from modules import score_history
+    before = score_history.current(tournament_id, bowler_id, game_num)
     conn = get_connection()
     total = scratch + hdcp
     try:
@@ -77,9 +80,10 @@ def _record_score(tournament_id: int, bowler_id: int, game_num: int, scratch: in
                 """,
                 (tournament_id, bowler_id, game_num, scratch, hdcp, total, verifier_name),
             )
-        log_desk_action(verifier_name, "floor_verifier", f"Entered Game {game_num} score {scratch} (Total {total}) for Bowler #{bowler_id}")
     finally:
         conn.close()
+    log_desk_action(verifier_name, "floor_verifier", f"Entered Game {game_num} score {scratch} (Total {total}) for Bowler #{bowler_id}")
+    return score_history.log_change(tournament_id, bowler_id, game_num, before, scratch, source, verifier_name, device)
 
 
 def render_mobile_scoring() -> None:
@@ -120,6 +124,10 @@ def render_mobile_scoring() -> None:
         return
 
     verifier_name = st.session_state.get("verifier_name", "Floor Verifier")
+    if "floor_device" not in st.session_state:
+        import uuid
+        st.session_state["floor_device"] = uuid.uuid4().hex
+    device = st.session_state["floor_device"]
 
     # Header status badge
     st.markdown(
@@ -206,12 +214,20 @@ def render_mobile_scoring() -> None:
                 btn_label = f"Update Lane {lane} Game {game} Scores" if all_recorded else f"Submit Lane {lane} Game {game} Scores"
                 submitted = st.form_submit_button(btn_label, type="primary", use_container_width=True)
                 if submitted:
+                    changed = []
                     for b in bowlers:
                         val = st.session_state.get(f"scratch_{b['id']}_g{game}", 0)
                         if val > 0:
-                            _record_score(tourney["id"], b["id"], game, val, b["handicap"], verifier_name)
+                            hid = _record_score(tourney["id"], b["id"], game, val, b["handicap"], verifier_name,
+                                                device=device)
+                            if hid:
+                                changed.append(hid)
+                    st.session_state["floor_undo"] = changed
                     st.success(f"Scores for Lane {lane} Game {game} recorded!")
                     st.rerun()
+
+        from components.undo_box import saved_undo_button
+        saved_undo_button("floor_undo", verifier_name, device=device)
 
     # --- TAB 2: AI OVERHEAD OCR CAMERA SNAP ---
     with tab_camera:
