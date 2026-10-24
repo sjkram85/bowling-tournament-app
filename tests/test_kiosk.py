@@ -57,6 +57,9 @@ def test_pagination_rotates():
 
 
 def test_practice_banner_and_missing_things_never_crash(db, tmp_path, monkeypatch):
+    import os, pytest
+    if os.environ.get("PRISM_TEST_TURSO_URL"):
+        pytest.skip("swaps the local file, which Turso mode ignores")
     t = practice.create_practice_tournament()
     assert "PRACTICE" in build_html(kiosk_data.load_board(t), 0, "t")
     assert kiosk_data.load_board(9999) is None
