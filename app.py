@@ -93,8 +93,21 @@ def render_desk() -> None:
     # Render Prism A.I assistant into sidebar before page.run()
     render_prism_dock(current_view=page.title, view_state=collect_view_state(page.title))
 
+    from modules.td_team import heartbeat
+    heartbeat(user.get("username") or user["display_name"], user["display_name"],
+              st.session_state.get("active_tournament_id"))
+    _heartbeat_tick(user)
+
     _practice_banner()
     page.run()
+
+
+@st.fragment(run_every=30)
+def _heartbeat_tick(user: dict) -> None:
+    """Keeps this TD showing as 'on duty' while the screen is open."""
+    from modules.td_team import heartbeat
+    heartbeat(user.get("username") or user["display_name"], user["display_name"],
+              st.session_state.get("active_tournament_id"))
 
 
 def _practice_banner() -> None:

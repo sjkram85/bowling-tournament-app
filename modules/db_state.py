@@ -190,6 +190,13 @@ def init_db() -> None:
         if "recorded_by" not in score_cols:
             conn.execute("ALTER TABLE scores ADD COLUMN recorded_by TEXT;")
 
+        # Multi-TD tables/columns (presence, chat, verification). Never let this block startup.
+        try:
+            from modules.td_team import ensure_team_tables
+            ensure_team_tables(conn)
+        except Exception:
+            pass
+
     finally:
         conn.close()
 
