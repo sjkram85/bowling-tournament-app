@@ -27,3 +27,14 @@ def get_secret(key: str, default=None):
 def ai_available() -> bool:
     """True when a Gemini API key is configured."""
     return bool(get_secret("GEMINI_API_KEY"))
+
+
+DEFAULT_MODEL = "gemini-3.8-flash"
+DEFAULT_RULES_MODEL = "gemini-4-argon"
+
+
+def model_name(purpose: str = "general") -> str:
+    """The one place the A.I. model is chosen. 'rules' is the USBC Rule Arbitrator."""
+    if purpose == "rules":
+        return str(get_secret("GEMINI_RULES_MODEL") or DEFAULT_RULES_MODEL).strip()
+    return str(get_secret("GEMINI_MODEL") or DEFAULT_MODEL).strip()

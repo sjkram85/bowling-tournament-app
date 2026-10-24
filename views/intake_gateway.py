@@ -10,16 +10,12 @@ import streamlit as st
 # Safe import with fallback to prevent top-level app.py crash
 try:
     from modules.ai_roster import (
-        get_best_available_model,
-        get_gemini_client,
         parse_roster_text_with_gemini,
         parse_roster_with_gemini,
     )
     AI_MODULE_LOADED = True
 except Exception:
     AI_MODULE_LOADED = False
-    get_best_available_model = lambda client=None: "gemini-3.8-flash"
-    get_gemini_client = lambda: None
     parse_roster_text_with_gemini = lambda text: []
     parse_roster_with_gemini = lambda b, fn: []
 
@@ -28,7 +24,7 @@ from modules.constants import CENTERS, HOST_CENTERS
 from modules.db_state import get_connection, log_desk_action
 from modules import roster_import
 from modules.tournament_templates import CHUSBC_TEMPLATES, create_tournament_from_template, save_tournament_as_template
-from modules.settings import get_secret, ai_available, AI_OFF_MESSAGE
+from modules.settings import get_secret, ai_available, AI_OFF_MESSAGE, model_name
 
 # Pure SVG bowling ball with 3D gradient & finger holes
 BOWLING_BALL_SVG = (
@@ -352,8 +348,7 @@ def render_intake_gateway() -> None:
 
     # --- TAB 2: ADD COMPETITORS (MULTI-EVENT PACKAGE & TEMPLATE) ---
     with tab_entry:
-        client = get_gemini_client() if AI_MODULE_LOADED else None
-        active_model = get_best_available_model(client) if client else "gemini-3.8-flash"
+        active_model = model_name()
 
         st.markdown("##### 🏆 Multi-Event Package Registration")
         st.caption("Select which events this roster entry applies to simultaneously (avoids importing separate files for Singles, Doubles, Team, and All-Events):")
@@ -379,7 +374,7 @@ def render_intake_gateway() -> None:
 
         # OPTION A: FILE UPLOAD + CSV TEMPLATE DOWNLOAD
         if intake_mode.startswith("📁"):
-            st.caption(f"Upload your roster document or spreadsheet. Processed by **{active_model}**.")
+            st.caption(f"Upload your roster document or spreadsheet. PDFs and photos are read by Prism A.I. ({active_model})." if ai_available() else "Upload your roster spreadsheet.")
             
             st.markdown(
                 "**Fastest:** download the template, fill in one row per bowler, and upload it. "
@@ -456,7 +451,7 @@ def render_intake_gateway() -> None:
                             st.session_state["parsed_ai_roster"] = roster_import.validate_rows(extracted)
                             st.success(f"Extracted {len(extracted)} bowler(s)!")
                     except Exception as e:
-                        st.error(f"AI Extraction failed: {e}")
+                        st.error(str(e))
 
         # OPTION B: COPY & PASTE TEXT WITH FORMAT GUIDE
         elif intake_mode.startswith("📋"):
@@ -495,7 +490,7 @@ def render_intake_gateway() -> None:
                             st.session_state["parsed_ai_roster"] = roster_import.validate_rows(extracted)
                             st.success(f"Extracted {len(extracted)} bowler(s)!")
                     except Exception as e:
-                        st.error(f"AI Parsing failed: {e}")
+                        st.error(str(e))
 
         # OPTION C: MANUAL ENTRY FORM
         else:
