@@ -291,6 +291,12 @@ def render_active_squad() -> None:
             generate_eight_person_brackets(t_id)
             st.success("Brackets verified/generated!")
 
+    with st.expander("📺 Open kiosk for this event"):
+        kiosk_url = f"{_get_base_url().rstrip('/')}/?mode=kiosk&t={t_id}"
+        st.caption("Open this link on the lobby laptop, then press F11 for full screen.")
+        st.code(kiosk_url, language=None)
+        st.link_button("Open kiosk in a new tab", kiosk_url)
+
     from components.td_team_panel import render_td_team_panel
     render_td_team_panel(t_id)
 
