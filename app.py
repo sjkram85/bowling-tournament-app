@@ -9,6 +9,7 @@ st.set_page_config(page_title="Prism Tournament Control Center (PTCC)", layout="
 from components.about_dialog import show_about_dialog
 from components.header import CHUSBC_LOGO, _logo_tag
 from components.prism_dock import collect_view_state, render_prism_dock
+from components.hide_chrome import hide_streamlit_chrome
 from components.styles import apply_clean_theme
 from modules import auth
 from modules.constants import CENTERS
@@ -24,6 +25,7 @@ from views.mobile_scoring import render_mobile_scoring
 
 init_db()
 apply_clean_theme()
+hide_streamlit_chrome()
 
 PUBLIC_MODES = {
     "score": render_mobile_scoring,
