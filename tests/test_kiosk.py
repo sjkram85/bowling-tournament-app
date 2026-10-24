@@ -48,9 +48,9 @@ def test_pagination_rotates():
     groups = [{"label": f"G{i}", "rows": [{"rank": 1, "name": "x", "games": 0, "total": 0, "finalist": False}] * 12}
               for i in range(6)]
     pages = kiosk_data.paginate(groups)
-    assert len(pages) > 1 and sum(len(p) for p in pages) == 6
+    assert len(pages) > 1 and all(len(p) <= 2 for p in pages)
     big = kiosk_data.paginate([{"label": "All", "rows": [{}] * 45}])
-    assert len(big) == 3
+    assert len(big) == 3 and all(len(b["rows"]) <= 8 for pg in big for b in pg)  # 45 rows -> 6 blocks -> 3 pages
     board = {"name": "E", "center": "C", "practice": False, "groups": groups}
     assert "Page 1 of" in build_html(board, 0, "t") and "Page 2 of" in build_html(board, 1, "t")
 
@@ -63,3 +63,9 @@ def test_practice_banner_and_missing_things_never_crash(db, tmp_path, monkeypatc
     sqlite3.connect(bad).close()
     monkeypatch.setattr(db_state, "DB_PATH", bad)
     assert kiosk_data.load_board(1) is None
+
+
+def test_center_full_name(db):
+    from modules.tournament_templates import ROSE_MURPHY_KEY, create_tournament_from_template
+    tid = create_tournament_from_template(ROSE_MURPHY_KEY, "ANY")
+    assert kiosk_data.load_board(tid)["center"] == "Forest Hill Lanes"

@@ -44,17 +44,17 @@ def staff_event_bar(allow_no_event: bool = False) -> bool:
         st.session_state.pop(KEY, None)
         return True  # no active events: intake shows its create screen
     st.session_state[KEY] = event["id"]
-    a, b, c = st.columns([6, 1.3, 1.3])
+    a, b, c = st.columns([5, 1.6, 1.4])
     a.markdown(
         f"<div style='background:#1E3A8A;color:#fff;padding:10px 16px;border-radius:8px'>"
         f"<span style='font-size:14px;opacity:.85'>NOW WORKING ON</span><br>"
         f"<span style='font-size:26px;font-weight:800'>{escape(event['name'])}</span>"
         f"<span style='font-size:18px;opacity:.85'> · {escape(center_name(event['host_center']))}</span></div>",
         unsafe_allow_html=True)
-    if len(events) > 1 and b.button("🔁 Switch event", key="switch_event", use_container_width=True):
+    if len(events) > 1 and b.button("🔁 Switch", key="switch_event", use_container_width=True):
         st.session_state["switching_event"] = True
         st.rerun()
-    if c.button("➕ New event", key="bar_new_event", use_container_width=True):
+    if c.button("➕ New", key="bar_new_event", use_container_width=True):
         st.session_state["intake_new_event"] = True
         st.rerun()
     return True
