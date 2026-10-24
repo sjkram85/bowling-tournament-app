@@ -79,6 +79,8 @@ def render_desk() -> None:
     management = [st.Page(render_archive_vault, title="Historical Archive Vault", icon="🗄️", url_path="archive")]
     if auth.is_admin():
         management.append(st.Page(render_staff_accounts, title="Staff Accounts", icon="👥", url_path="staff"))
+        from views.hubs.backup_restore import render_backup_restore
+        management.append(st.Page(render_backup_restore, title="Backup & Restore", icon="💾", url_path="backup"))
     page = st.navigation(operations + management, position="hidden")
 
     _sidebar_brand()
@@ -103,7 +105,7 @@ def render_desk() -> None:
               st.session_state.get("active_tournament_id"))
     _heartbeat_tick(user)
     _practice_banner()
-    if ready:
+    if ready or page.url_path == "backup":  # restore must work even when no events exist
         page.run()
 
 

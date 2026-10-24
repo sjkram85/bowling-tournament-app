@@ -307,6 +307,9 @@ def render_active_squad() -> None:
     from components.td_team_panel import render_td_team_panel
     render_td_team_panel(t_id)
 
+    from modules.auth import is_admin
+    if is_admin():
+        st.caption("💾 Reminder: after each squad, download a backup (Backup & Restore in the sidebar).")
     from components.rolloff_box import render_rolloff_box
     render_rolloff_box(t_id)
 

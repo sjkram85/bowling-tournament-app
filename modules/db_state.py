@@ -279,3 +279,86 @@ def log_desk_action(user_name: str, role: str, action_description: str) -> None:
             )
     finally:
         conn.close()
+
+# --- Backup & restore (all callers go through these helpers so the storage backend can change) ---
+BACKUP_REQUIRED_TABLES = ("tournaments", "bowlers", "scores", "staff_users")
+SAFETY_DIR_NAME = "backups"
+
+
+def backup_filename(now=None) -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now = now or datetime.now(ZoneInfo("America/New_York"))
+    return f"prism-backup-{now.strftime('%Y-%m-%d-%H%M')}-ET.db"
+
+
+def _snapshot_to(path: Path) -> None:
+    """Consistent copy of the live database into a file, via the SQLite backup API."""
+    src = get_connection()
+    dst = sqlite3.connect(str(path))
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+
+
+def backup_bytes() -> bytes:
+    """A consistent snapshot of the whole database as bytes (safe while TDs are scoring)."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "snap.db"
+        _snapshot_to(p)
+        return p.read_bytes()
+
+
+def inspect_backup(data: bytes) -> dict:
+    """Check uploaded bytes are a Prism database. Returns counts; raises ValueError with a plain message."""
+    import tempfile
+    if not data or not data.startswith(b"SQLite format 3\x00"):
+        raise ValueError("This is not a Prism backup file.")
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "upload.db"
+        p.write_bytes(data)
+        conn = sqlite3.connect(str(p))
+        try:
+            if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise ValueError("This backup file is damaged.")
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            missing = [t for t in BACKUP_REQUIRED_TABLES if t not in tables]
+            if missing:
+                raise ValueError("This is not a Prism backup file (missing: " + ", ".join(missing) + ").")
+            count = lambda t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            events = [r[0] for r in conn.execute("SELECT name FROM tournaments ORDER BY id")]
+            return {"events": count("tournaments"), "event_names": events, "bowlers": count("bowlers"),
+                    "scores": count("scores"), "staff": count("staff_users")}
+        except sqlite3.DatabaseError as exc:
+            raise ValueError("This is not a Prism backup file.") from exc
+        finally:
+            conn.close()
+
+
+def restore_from_bytes(data: bytes) -> Path:
+    """Validate, save a safety copy of the current data, replace it with the backup, then migrate.
+
+    Returns the safety-copy path.
+    """
+    import tempfile
+    inspect_backup(data)
+    safety_dir = Path(DB_PATH).parent / SAFETY_DIR_NAME
+    safety_dir.mkdir(exist_ok=True)
+    safety = safety_dir / ("pre-restore-" + backup_filename().removeprefix("prism-backup-"))
+    _snapshot_to(safety)
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "restore.db"
+        p.write_bytes(data)
+        src = sqlite3.connect(str(p))
+        dst = get_connection()
+        try:
+            src.backup(dst)
+        finally:
+            src.close()
+            dst.close()
+    init_db()  # bring older backups up to the current schema
+    log_desk_action("Admin", "admin", f"Restored database from backup (safety copy: {safety.name})")
+    return safety
