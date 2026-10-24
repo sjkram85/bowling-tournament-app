@@ -1,6 +1,6 @@
 """Prism A.I Operational Assistant & Dedicated USBC Rule Arbitrator."""
 
-import time
+import html
 import streamlit as st
 from modules.prism_ai import get_prism_ai_guidance
 
@@ -43,30 +43,19 @@ def _rolling_ball_loader(label: str = "Analyzing operations...") -> None:
     )
 
 
-def _stream_response(full_text: str):
-    """Chunk the response data to show up on screen instantly in streaming style."""
-    placeholder = st.empty()
-    words = full_text.split(" ")
-    streamed_text = ""
-    for word in words:
-        streamed_text += word + " "
-        placeholder.markdown(
-            f"""
-            <div style="background:#1E293B; border-left:3px solid #38BDF8; border-radius:6px; padding:8px 10px; color:#E2E8F0; font-size:12px; margin-bottom:10px; line-height:1.4;">
-                {streamed_text}▒
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        time.sleep(0.01)
-    placeholder.markdown(
-        f"""
-        <div style="background:#1E293B; border-left:3px solid #38BDF8; border-radius:6px; padding:8px 10px; color:#E2E8F0; font-size:12px; margin-bottom:10px; line-height:1.4;">
-            {full_text}
-        </div>
-        """,
+def _answer_box(text: str) -> None:
+    """Show an A.I. answer as plain, escaped text in a large readable box."""
+    st.markdown(
+        '<div style="background:#1E293B; border-left:3px solid #38BDF8; border-radius:6px; '
+        'padding:10px 12px; color:#F1F5F9; font-size:15px; margin-bottom:10px; line-height:1.5; '
+        f'white-space:pre-wrap;">{html.escape(text or "")}</div>',
         unsafe_allow_html=True,
     )
+
+
+def _stream_response(full_text: str) -> None:
+    """Show the whole answer at once (easier to read than word-by-word animation)."""
+    _answer_box(full_text)
 
 
 def collect_view_state(current_view: str) -> dict:
@@ -146,14 +135,7 @@ def render_prism_dock(current_view: str = "Active Squad Hub", view_state: dict |
                 st.session_state[cache_key] = guidance_text
                 st.rerun()
         else:
-            st.markdown(
-                f"""
-                <div style="background:#1E293B; border-left:3px solid #38BDF8; border-radius:6px; padding:8px 10px; color:#E2E8F0; font-size:12px; margin-bottom:10px; line-height:1.4;">
-                    {guidance_text}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            _answer_box(guidance_text)
 
         st.markdown("<p style='font-size:11px; font-weight:600; color:#94A3B8; margin-bottom:4px;'>Ask Prism about this screen:</p>", unsafe_allow_html=True)
         td_query = st.text_input(

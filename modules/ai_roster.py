@@ -1,40 +1,14 @@
-"""AI Roster Ingestion Engine targeting gemini-3.8-flash with strict HTTP timeouts and zero-hang fallback."""
+"""Roster ingestion: Gemini extraction (via modules.ai_provider) plus the built-in line reader."""
 
 import io
 import json
-import os
 import re
+
 import pandas as pd
-import streamlit as st
-from google import genai
-from google.genai import types
-from modules.settings import get_secret
 
-# Use gemini-3.8-flash as the primary engine
-PRIMARY_MODEL = "gemini-3.8-flash"
-
-
-def get_gemini_client() -> genai.Client | None:
-    """Initialize GenAI client with strict 15-second timeout and no silent multi-minute backoff hangs."""
-    api_key = get_secret("GEMINI_API_KEY")
-    if not api_key:
-        return None
-    return genai.Client(
-        api_key=api_key,
-        http_options=types.HttpOptions(
-            timeout=15_000,  # 15,000 ms (15 seconds) hard ceiling
-            retry_options=types.HttpRetryOptions(
-                attempts=2,
-                initial_delay=1.0,
-                http_status_codes=[408, 429, 500, 502, 503, 504],
-            ),
-        ),
-    )
-
-
-def get_best_available_model(client: genai.Client = None) -> str:
-    """Return active model without blocking catalog enumeration."""
-    return get_secret("GEMINI_MODEL", PRIMARY_MODEL)
+from modules import ai_provider
+from modules.ai_provider import AIError
+from modules.settings import ai_available
 
 
 EXTRACTION_PROMPT = (
@@ -171,85 +145,32 @@ def _fast_structured_text_parser(text: str) -> list[dict]:
     return bowlers
 
 
+def _as_records(data) -> list[dict]:
+    if isinstance(data, dict):
+        for key in ("bowlers", "roster", "competitors", "players", "data"):
+            if isinstance(data.get(key), list):
+                return data[key]
+        return [data]
+    return data if isinstance(data, list) else []
+
+
+_MIME = {".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
+
+
 def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
-    """Ingest uploaded document via Gemini with 15s timeout and local fallback."""
-    client = get_gemini_client()
+    """Read an uploaded document with Prism A.I. Raises AIError (plain English) on any problem."""
     extracted_text = _extract_text_from_file(file_bytes, file_name)
-
-    if not client:
-        if extracted_text:
-            return _fast_structured_text_parser(extracted_text)
-        raise ValueError("GEMINI_API_KEY is missing from Streamlit secrets.")
-
-    model_name = get_best_available_model(client)
-
     if extracted_text:
-        contents = [EXTRACTION_PROMPT, f"--- DOCUMENT DATA ({file_name}) ---\n{extracted_text}"]
+        data = ai_provider.extract_json(EXTRACTION_PROMPT, data=f"--- DOCUMENT DATA ({file_name}) ---\n{extracted_text}")
     else:
-        fn_lower = file_name.lower()
-        if fn_lower.endswith(".pdf"):
-            mime = "application/pdf"
-        elif fn_lower.endswith(".png"):
-            mime = "image/png"
-        elif fn_lower.endswith((".jpg", ".jpeg")):
-            mime = "image/jpeg"
-        else:
-            mime = "application/octet-stream"
-
-        part = types.Part.from_bytes(data=file_bytes, mime_type=mime)
-        contents = [EXTRACTION_PROMPT, part]
-
-    config = types.GenerateContentConfig(
-        response_mime_type="application/json",
-        temperature=0.1,
-    )
-
-    try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=contents,
-            config=config,
-        )
-        records = _format_records(response.text)
-        if records:
-            return records
-    except Exception as exc:
-        if extracted_text:
-            fallback_records = _fast_structured_text_parser(extracted_text)
-            if fallback_records:
-                return fallback_records
-        raise RuntimeError(f"Model {model_name} error: {exc}")
-
-    return _fast_structured_text_parser(extracted_text) if extracted_text else []
+        ext = "." + file_name.lower().rsplit(".", 1)[-1]
+        data = ai_provider.extract_json(EXTRACTION_PROMPT, file_bytes=file_bytes, mime_type=_MIME.get(ext, "application/octet-stream"))
+    return _as_records(data)
 
 
 def parse_roster_text_with_gemini(raw_text_input: str) -> list[dict]:
-    """Ingest pasted text via Gemini with 15s timeout and instant fallback on errors."""
-    client = get_gemini_client()
-    if not client:
+    """Read pasted text. Uses Prism A.I. when it's set up; otherwise the built-in line reader."""
+    if not ai_available():
         return _fast_structured_text_parser(raw_text_input)
-
-    model_name = get_best_available_model(client)
-    contents = [EXTRACTION_PROMPT, f"--- PASTED ROSTER TEXT ---\n{raw_text_input}"]
-
-    config = types.GenerateContentConfig(
-        response_mime_type="application/json",
-        temperature=0.1,
-    )
-
-    try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=contents,
-            config=config,
-        )
-        records = _format_records(response.text)
-        if records:
-            return records
-    except Exception:
-        fallback_records = _fast_structured_text_parser(raw_text_input)
-        if fallback_records:
-            return fallback_records
-        raise
-
-    return _fast_structured_text_parser(raw_text_input)
+    data = ai_provider.extract_json(EXTRACTION_PROMPT, data=f"--- PASTED ROSTER TEXT ---\n{raw_text_input}")
+    return _as_records(data)
