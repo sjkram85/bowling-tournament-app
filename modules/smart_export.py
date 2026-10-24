@@ -72,24 +72,6 @@ def _update(tournament_id: int, **fields) -> None:
         conn.close()
 
 
-def _ladder_places(tournament_id: int, group: str, finalists: list[dict]):
-    """(ordered finalists best-first, problem). Uses stepladder results when a ladder exists."""
-    from modules.stepladder import get_stepladder_state
-    matches = get_stepladder_state(tournament_id, group)
-    if not matches:
-        return finalists, None
-    if any(m["status"] != "completed" for m in matches):
-        return None, "stepladder finals not finished yet"
-    by_id = {r["id"]: r for r in finalists}
-    order = [matches[-1]["winner_id"]]
-    for m in reversed(matches):  # loser of the last match is 2nd, and so on down
-        loser = m["bowler_high_id"] if m["winner_id"] == m["bowler_low_id"] else m["bowler_low_id"]
-        order.append(loser)
-    ranked = [by_id[i] for i in order if i in by_id]
-    ranked += [r for r in finalists if r not in ranked]
-    return ranked, None
-
-
 def build_smart_export(tournament_id: int) -> dict:
     """{'header': {...}, 'rows': [...], 'warnings': [...]}."""
     t = get_tournament(tournament_id) or {}
@@ -109,11 +91,12 @@ def build_smart_export(tournament_id: int) -> dict:
         if g.get("rolloff"):
             warnings.append(f"{name}: roll-off for the last finals spot isn't recorded yet, so no awards are listed for this group.")
             continue
-        finalists = sorted((r for r in g["rows"] if r.get("finalist")), key=lambda r: r["rank"])
-        ranked, problem = _ladder_places(tournament_id, name, finalists)
-        if problem:
-            warnings.append(f"{name}: {problem}, so no awards are listed for this group.")
+        from modules.placement import STATUS_LADDER_PENDING, group_placement
+        plc = group_placement(tournament_id, g)
+        if plc["status"] == STATUS_LADDER_PENDING:
+            warnings.append(f"{name}: stepladder finals not finished yet, so no awards are listed for this group.")
             continue
+        ranked = plc["finalists"]
         amounts = place_amounts(divs.get(name.partition(" – ")[0], {}))
         for place, r in enumerate(ranked, start=1):
             amt = amounts.get(place)

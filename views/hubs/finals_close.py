@@ -2,6 +2,7 @@
 
 from modules.practice import is_practice
 from modules.divisions import grouped_results
+from modules.standings import get_tournament as _get_t
 import csv
 import io
 import pandas as pd
@@ -13,6 +14,7 @@ from modules.cde_bls_bridge import build_bls_streams
 from modules.db_state import get_connection, log_desk_action
 from modules.reports import (
     build_certified_pdf,
+    certified_pdf_filename,
     freeze_tournament,
 )
 
@@ -182,7 +184,7 @@ def render_finals_close() -> None:
                     st.download_button(
                         label="⬇️ Download Certified PDF",
                         data=pdf_bytes,
-                        file_name=f"certified_standings_t{t_id}.pdf",
+                        file_name=certified_pdf_filename(_get_t(t_id)),
                         mime="application/pdf",
                         use_container_width=True,
                     )
