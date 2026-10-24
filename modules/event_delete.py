@@ -75,6 +75,11 @@ def delete_event(tournament_id: int, td_name: str) -> bool:
         conn.close()
     log_desk_action(td_name, "admin", f"Deleted event #{tournament_id} ({t.get('name', '')}, "
                     f"{'practice' if t.get('is_practice') else t.get('status', '')})")
+    try:
+        from modules.event_logos import clear_logo_cache
+        clear_logo_cache(tournament_id)
+    except Exception:
+        pass
     return True
 
 

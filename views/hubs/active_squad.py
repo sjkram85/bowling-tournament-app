@@ -32,14 +32,15 @@ def _generate_qr_base64(url: str) -> str:
 
 
 def _get_active_tournament() -> dict | None:
+    from modules.standings import get_tournament
+    t_id = st.session_state.get("active_tournament_id")
+    if t_id:
+        row = get_tournament(t_id)
+        if row:
+            return row
+    # No choice on this device: only fall back when exactly one event is active.
     conn = get_connection()
     try:
-        t_id = st.session_state.get("active_tournament_id")
-        if t_id:
-            row = conn.execute("SELECT * FROM tournaments WHERE id = ?", (t_id,)).fetchone()
-            if row:
-                return dict(row)
-        # No choice on this device: only fall back when exactly one event is active.
         rows = conn.execute("SELECT * FROM tournaments WHERE status = 'active'").fetchall()
         return dict(rows[0]) if len(rows) == 1 else None
     finally:
@@ -64,40 +65,40 @@ def _get_squad_bowlers(tournament_id: int) -> list[dict]:
         conn.close()
 
 
-def _get_game_scores(tournament_id: int, game_number: int) -> dict[int, dict]:
+def _matrix_snapshot(tournament_id: int, game_number: int) -> tuple[dict[int, dict], int]:
+    """Scores for one game, plus how many bowlers have finished every game. One round trip."""
     conn = get_connection()
     try:
         rows = conn.execute(
             """
-            SELECT bowler_id, scratch_score, total_score, recorded_by 
+            SELECT 'score' AS kind, bowler_id, scratch_score, total_score, recorded_by, NULL AS done
             FROM scores WHERE tournament_id = ? AND game_number = ?
-            """,
-            (tournament_id, game_number),
-        ).fetchall()
-        return {r["bowler_id"]: dict(r) for r in rows}
-    finally:
-        conn.close()
-
-
-def _get_total_games_completed_count(tournament_id: int) -> int:
-    """Returns how many bowlers have completed all required games."""
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            """
-            SELECT COUNT(*) as count FROM (
-                SELECT b.id FROM bowlers b
-                JOIN scores s ON b.id = s.bowler_id
-                WHERE b.tournament_id = ? AND b.is_pacer = 0 AND s.scratch_score > 0
-                GROUP BY b.id
-                HAVING COUNT(DISTINCT s.game_number) >= (SELECT game_count FROM tournaments WHERE id = ?)
+            UNION ALL
+            SELECT 'done', NULL, NULL, NULL, NULL, (
+                SELECT COUNT(*) FROM (
+                    SELECT b.id FROM bowlers b
+                    JOIN scores s ON b.id = s.bowler_id
+                    WHERE b.tournament_id = ? AND b.is_pacer = 0 AND s.scratch_score > 0
+                    GROUP BY b.id
+                    HAVING COUNT(DISTINCT s.game_number) >= (SELECT game_count FROM tournaments WHERE id = ?)
+                )
             )
             """,
-            (tournament_id, tournament_id),
-        ).fetchone()
-        return row["count"] if row else 0
+            (tournament_id, game_number, tournament_id, tournament_id),
+        ).fetchall()
     finally:
         conn.close()
+    scores: dict[int, dict] = {}
+    done = 0
+    for r in rows:
+        if r["kind"] == "score":
+            scores[r["bowler_id"]] = {
+                "bowler_id": r["bowler_id"], "scratch_score": r["scratch_score"],
+                "total_score": r["total_score"], "recorded_by": r["recorded_by"],
+            }
+        else:
+            done = int(r["done"] or 0)
+    return scores, done
 
 
 def _save_score(tournament_id: int, bowler_id: int, game_number: int, scratch: int, hdcp: int, user_name: str) -> int | None:
@@ -142,7 +143,7 @@ def _calculate_lane_movement(starting_lane: int, current_game: int, total_lanes:
 @st.fragment(run_every="8s")
 def _render_live_scoring_matrix(t_id: int, active_game: int, total_lanes: int, bowlers: list[dict], td_name: str, tourney_game_count: int) -> None:
     """Auto-polling fragment executing every 8 seconds to reflect floor submissions in real time."""
-    scores_map = _get_game_scores(t_id, active_game)
+    scores_map, fully_completed_count = _matrix_snapshot(t_id, active_game)
 
     # =========================================================
     # BIRDS-EYE HEATMAP MATRIX
@@ -248,7 +249,6 @@ def _render_live_scoring_matrix(t_id: int, active_game: int, total_lanes: int, b
     # SQUAD COMPLETION & FINALS CLOSEOUT CALLOUT
     # =========================================================
     active_field_count = sum(1 for b in bowlers if not b.get("is_pacer"))
-    fully_completed_count = _get_total_games_completed_count(t_id)
 
     if fully_completed_count >= active_field_count and active_field_count > 0:
         st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)

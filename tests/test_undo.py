@@ -43,6 +43,7 @@ def test_change_undo_restores_old_value_into_verify_queue(ev):
     s = _score(ev)
     assert s["scratch_score"] == 200 and s["total_score"] == 210 and s["verified"] == 0
     assert any(r["scratch_score"] == 200 for r in td_team.needs_verifying(ev))
+    assert any(r["scratch_score"] == 200 for r in td_team.verification_board(ev)[0])
 
 
 def test_floor_phone_only_own_last_change(ev):

@@ -114,9 +114,8 @@ def render_desk() -> None:
     if st.session_state.get("intake_new_event") and page.url_path != "intake":
         st.switch_page(operations[0])
     ready = staff_event_bar()
-    from modules.td_team import heartbeat
-    heartbeat(user.get("username") or user["display_name"], user["display_name"],
-              st.session_state.get("active_tournament_id"))
+    # The fragment heartbeats on this run and again every 30s. A second write here
+    # was a Turso round trip on every click and did not change who shows as on duty.
     _heartbeat_tick(user)
     _practice_banner()
     if ready or page.url_path == "backup":  # restore must work even when no events exist

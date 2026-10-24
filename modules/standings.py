@@ -20,8 +20,15 @@ def query(sql: str, params: tuple = ()) -> list[dict]:
 
 
 def get_tournament(tournament_id: int) -> dict | None:
-    rows = query("SELECT * FROM tournaments WHERE id = ?", (tournament_id,))
-    return rows[0] if rows else None
+    """Full tournament row. Reused for the rest of this Streamlit run (a fragment poll is its own run)."""
+    from modules.run_memo import memo
+
+    def load():
+        rows = query("SELECT * FROM tournaments WHERE id = ?", (tournament_id,))
+        return rows[0] if rows else None
+
+    row = memo(("tournament", str(tournament_id)), load)
+    return dict(row) if row else None
 
 
 def now_iso() -> str:

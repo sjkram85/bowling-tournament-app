@@ -28,7 +28,7 @@ def _on_duty(t_id: int) -> None:
 @st.fragment(run_every=8)
 def _verify_queue(t_id: int) -> None:
     me = _me()
-    queue = td_team.needs_verifying(t_id)
+    queue, done = td_team.verification_board(t_id)
     st.markdown(f"### ✅ Needs verifying ({len(queue)})")
     if not queue:
         st.success("All scores are verified.")
@@ -48,7 +48,6 @@ def _verify_queue(t_id: int) -> None:
             st.rerun(scope="fragment")
     if len(queue) > 15:
         st.caption(f"…and {len(queue) - 15} more.")
-    done = td_team.recently_verified(t_id)
     if done:
         st.caption("Recently verified: " + "; ".join(
             f"{d['name']} G{d['game_number']} {d['scratch_score']} by {d['verified_by']}" for d in done))

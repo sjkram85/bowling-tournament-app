@@ -129,6 +129,61 @@ def recently_verified(tournament_id: int, limit: int = 5) -> list[dict]:
         conn.close()
 
 
+def verification_board(tournament_id: int, limit: int = 5) -> tuple[list[dict], list[dict]]:
+    """Needs-verifying rows and the recent verified rows, in one round trip.
+
+    Same rows as needs_verifying() and recently_verified(). One statement so the
+    8-second refresh is a single Turso call.
+    """
+    try:
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                """
+                SELECT kind, id, game_number, scratch_score, hdcp_score, recorded_by, name,
+                       lane_assignment, verified_by, verified_at
+                FROM (
+                    SELECT 'need' AS kind, s.id AS id, s.game_number AS game_number,
+                           s.scratch_score AS scratch_score, s.hdcp_score AS hdcp_score,
+                           s.recorded_by AS recorded_by, b.name AS name,
+                           b.lane_assignment AS lane_assignment,
+                           NULL AS verified_by, NULL AS verified_at,
+                           ROW_NUMBER() OVER (ORDER BY b.lane_assignment, b.name, s.game_number) AS ord
+                    FROM scores s JOIN bowlers b ON b.id = s.bowler_id
+                    WHERE s.tournament_id = ? AND COALESCE(s.verified, 0) = 0
+                    UNION ALL
+                    SELECT 'done', NULL, s.game_number, s.scratch_score, NULL, NULL, b.name, NULL,
+                           s.verified_by, s.verified_at,
+                           ROW_NUMBER() OVER (ORDER BY s.verified_at DESC)
+                    FROM scores s JOIN bowlers b ON b.id = s.bowler_id
+                    WHERE s.tournament_id = ? AND s.verified = 1 AND s.verified_by IS NOT NULL
+                )
+                WHERE kind = 'need' OR ord <= ?
+                ORDER BY kind DESC, ord
+                """,
+                (tournament_id, tournament_id, limit),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning("td_team.verification_board failed: %s", exc)
+        return [], []
+    queue, done = [], []
+    for r in rows:
+        if r["kind"] == "need":
+            queue.append({
+                "id": r["id"], "game_number": r["game_number"], "scratch_score": r["scratch_score"],
+                "hdcp_score": r["hdcp_score"], "recorded_by": r["recorded_by"], "name": r["name"],
+                "lane_assignment": r["lane_assignment"],
+            })
+        else:
+            done.append({
+                "game_number": r["game_number"], "scratch_score": r["scratch_score"],
+                "verified_by": r["verified_by"], "verified_at": r["verified_at"], "name": r["name"],
+            })
+    return queue, done
+
+
 @_safe(False)
 def verify_score(score_id: int, td_name: str, new_scratch: int | None = None) -> bool:
     """Mark a score verified. If new_scratch is given, fix the number first (handicap is kept)."""
