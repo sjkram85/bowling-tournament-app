@@ -71,6 +71,22 @@ def test_adapter_rows_lastrowid_errors_and_migrations(lib_db):
     db_state.init_db()  # second run on an existing database is harmless
 
 
+def test_libsql_connection_is_reused_and_close_still_rolls_back(lib_db):
+    a = db_state.get_connection()
+    a.execute("CREATE TABLE IF NOT EXISTS reuse_probe (n INT)")
+    a.commit()
+    with a:
+        a.execute("INSERT INTO reuse_probe VALUES (1)")
+    a.execute("INSERT INTO reuse_probe VALUES (7)")  # left uncommitted on purpose
+    a.close()
+    a.close()  # returning to the pool twice must not hand the same connection out twice
+    b = db_state.get_connection()
+    assert b is a
+    assert [r[0] for r in b.execute("SELECT n FROM reuse_probe").fetchall()] == [1]
+    assert b.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    b.close()
+
+
 def test_backup_and_restore_through_adapter(lib_db):
     from modules.tournament_templates import ROSE_MURPHY_KEY, create_tournament_from_template
     tid = create_tournament_from_template(ROSE_MURPHY_KEY, "FHL")

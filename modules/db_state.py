@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import sqlite3
+import threading
 import streamlit as st
 
 # Keep the original database file name so existing tournament data is still found.
@@ -216,23 +217,90 @@ def _connect_sqlite(path) -> sqlite3.Connection:
     return conn
 
 
-def get_connection():
-    """Connection to the tournament database: Turso when configured, else the local SQLite file.
+# One remote execute is one network round trip. Opening a fresh Turso connection per
+# call also sent PRAGMA foreign_keys every time. Idle libsql connections are reused;
+# close() returns one to the pool instead of dropping it. A real close() rolls back
+# an open transaction, so release does too — only when a transaction is still open,
+# so a read does not cost an extra round trip. sqlite3 connections stay unpooled:
+# callers (and tests) use isinstance(conn, sqlite3.Connection).
+_pool_guard = threading.Lock()
+_pool_idle: dict[tuple, list] = {}
+_POOL_IDLE_MAX = 4
 
-    Both kinds support conn.execute(...), row['name'], cur.lastrowid, executescript and `with conn:`.
-    """
+
+def _pool_key() -> tuple | None:
     cfg = turso_config()
     if cfg:
-        conn = _connect_libsql(cfg[0], cfg[1])
-    elif os.environ.get("PRISM_DB_ENGINE") == "libsql-file":
-        conn = _connect_libsql(str(DB_PATH))
-    else:
-        return _connect_sqlite(DB_PATH)
+        return ("turso", cfg[0], cfg[1])
+    if os.environ.get("PRISM_DB_ENGINE") == "libsql-file":
+        return ("libsql-file", str(DB_PATH))
+    return None
+
+
+def _really_close(conn) -> None:
+    orig = getattr(conn, "_prism_orig_close", None)
+    try:
+        (orig or conn.close)()
+    except Exception:
+        pass
+
+
+def _release(conn) -> None:
+    if getattr(conn, "_prism_in_pool", False):
+        return
+    conn._prism_in_pool = True
+    raw = getattr(conn, "_raw", None)
+    try:
+        if raw is not None and getattr(raw, "in_transaction", False):
+            conn.rollback()
+    except Exception:
+        _really_close(conn)
+        return
+    key = getattr(conn, "_prism_key", None)
+    with _pool_guard:
+        idle = _pool_idle.setdefault(key, [])
+        if key is None or len(idle) >= _POOL_IDLE_MAX:
+            _really_close(conn)
+            return
+        idle.append(conn)
+
+
+def _checkout_libsql(key: tuple, opener):
+    with _pool_guard:
+        idle = _pool_idle.get(key)
+        if idle:
+            conn = idle.pop()
+            conn._prism_in_pool = False
+            return conn
+    conn = opener()
     try:
         conn.execute("PRAGMA foreign_keys = ON;")
     except Exception:
         pass
+    conn._prism_key = key
+    conn._prism_in_pool = False
+    conn._prism_orig_close = conn.close
+
+    def close():
+        _release(conn)
+
+    conn.close = close
     return conn
+
+
+def get_connection():
+    """Connection to the tournament database: Turso when configured, else the local SQLite file.
+
+    Both kinds support conn.execute(...), row['name'], cur.lastrowid, executescript and `with conn:`.
+    Libsql connections are drawn from a small pool so a rerun does not open a new remote
+    connection (and send PRAGMA foreign_keys) for every query.
+    """
+    key = _pool_key()
+    if key is None:
+        return _connect_sqlite(DB_PATH)
+    if key[0] == "turso":
+        return _checkout_libsql(key, lambda: _connect_libsql(key[1], key[2]))
+    return _checkout_libsql(key, lambda: _connect_libsql(key[1]))
 
 
 def checkpoint_db() -> None:
@@ -660,6 +728,11 @@ def restore_from_bytes(data: bytes) -> Path:
             src.close()
             dst.close()
     init_db()  # bring older backups up to the current schema
+    try:
+        from modules.event_logos import clear_logo_cache
+        clear_logo_cache()
+    except Exception:
+        pass
     log_desk_action("Admin", "admin", f"Restored database from backup (safety copy: {safety.name})")
     return safety
 
@@ -709,10 +782,16 @@ def copy_local_to_turso(replace: bool = False) -> dict:
     src = sqlite3.connect(str(DB_PATH))
     dst = get_connection()
     try:
-        return copy_database(src, dst)
+        copied = copy_database(src, dst)
     finally:
         src.close()
         dst.close()
+    try:
+        from modules.event_logos import clear_logo_cache
+        clear_logo_cache()
+    except Exception:
+        pass
+    return copied
 
 
 def auto_migrate_to_turso() -> bool:

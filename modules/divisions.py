@@ -229,10 +229,9 @@ def grouped_results(tournament_id: int) -> list[dict]:
     Empty list when the tournament has no divisions. Only 1st place has a stated scholarship;
     other places show 0 here (the committee decides) and can be filled in on the flyer box.
     """
-    from modules.standings import query  # local import avoids a cycle
+    from modules.standings import get_tournament, query  # local import avoids a cycle
 
-    trow = query("SELECT * FROM tournaments WHERE id = ?", (tournament_id,))
-    t = trow[0] if trow else None
+    t = get_tournament(tournament_id)
     divs = get_divisions(t)
     if not divs:
         return []

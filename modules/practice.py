@@ -23,15 +23,12 @@ class PracticeBlocked(Exception):
 def is_practice(tournament_id) -> bool:
     if not tournament_id:
         return False
-    conn = get_connection()
     try:
-        try:
-            row = conn.execute("SELECT COALESCE(is_practice, 0) FROM tournaments WHERE id = ?", (tournament_id,)).fetchone()
-        except sqlite3.OperationalError:
-            return False  # older database without practice columns yet
-        return bool(row and row[0])
-    finally:
-        conn.close()
+        from modules.standings import get_tournament
+        row = get_tournament(tournament_id)
+    except sqlite3.OperationalError:
+        return False  # older database without the tournaments table yet
+    return bool(row and row.get("is_practice"))
 
 
 def block_if_practice(tournament_id, action: str = "used") -> None:

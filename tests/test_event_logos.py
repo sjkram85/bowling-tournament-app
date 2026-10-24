@@ -71,6 +71,22 @@ def test_upload_validate_set_and_remove(db):
         event_logos.validate_image(b"not an image")
 
 
+def test_logo_cache_follows_writes_and_stays_on_its_own_database(db, tmp_path, monkeypatch):
+    tid = _plain_event()
+    buf = io.BytesIO(); Image.new("RGB", (8, 8), "red").save(buf, "PNG")
+    png = event_logos.validate_image(buf.getvalue())
+    event_logos.set_logo(tid, "event", png)
+    assert event_logos.get_logos(tid)["event"] == event_logos.get_logos(tid)["event"]
+    event_logos.set_logo(tid, "event", None)
+    assert event_logos.get_logos(tid) == {}
+    # A different file can reuse tournament id 1; it must not see the other file's cache.
+    other = tmp_path / "other.db"
+    monkeypatch.setattr(db_state, "DB_PATH", other)
+    db_state.init_db()
+    tid2 = _plain_event()
+    assert event_logos.get_logos(tid2) == {}
+
+
 def test_partner_name_migration_column(db):
     tid = _plain_event()
     event_logos.set_partner_name(tid, " Forest Hill Lanes ")

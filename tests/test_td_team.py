@@ -24,8 +24,12 @@ def db(tmp_path, monkeypatch):
 def test_verify_queue_per_tournament_and_fix(db):
     q = td_team.needs_verifying(1)
     assert [s["name"] for s in q] == ["Amy"]
+    assert td_team.verification_board(1)[0] == q
     assert td_team.verify_score(q[0]["id"], "Scott", new_scratch=155)
     assert td_team.needs_verifying(1) == []
+    queue, done = td_team.verification_board(1)
+    assert queue == []  # verify is visible on the next read; nothing is cached past the write
+    assert done == td_team.recently_verified(1)
     assert len(td_team.needs_verifying(2)) == 1
     done = td_team.recently_verified(1)[0]
     assert done["verified_by"] == "Scott" and done["scratch_score"] == 155

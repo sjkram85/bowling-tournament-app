@@ -10,9 +10,14 @@ from modules.db_state import get_connection
 MAX_CONTEXT_CHARS = 900
 
 
-def _one(conn, sql, args=()):
-    row = conn.execute(sql, args).fetchone()
-    return row[0] if row else None
+def _parse_per_game(raw) -> dict:
+    per: dict[int, int] = {}
+    for part in str(raw or "").split(","):
+        if ":" not in part:
+            continue
+        g, c = part.split(":", 1)
+        per[int(g)] = int(c)
+    return per
 
 
 def build_screen_context(view: str, tournament_id: int | None) -> dict:
@@ -25,25 +30,40 @@ def build_screen_context(view: str, tournament_id: int | None) -> dict:
     try:
         conn = get_connection()
         try:
+            # One round trip for the tournament plus every count. Missing lanes need the
+            # current game, which is computed from those counts, so they are a second trip.
             t = conn.execute(
-                "SELECT name, squad_format, game_count, pin_verifier, status FROM tournaments WHERE id = ?",
+                """
+                SELECT name, squad_format, game_count, pin_verifier, status,
+                  (SELECT COUNT(*) FROM bowlers WHERE tournament_id = t.id) AS n,
+                  (SELECT COUNT(*) FROM bowlers WHERE tournament_id = t.id AND checked_in = 1) AS checked,
+                  (SELECT COUNT(*) FROM bowlers WHERE tournament_id = t.id AND COALESCE(paid_status,'') NOT IN ('paid','Paid','PAID')) AS unpaid,
+                  (SELECT COUNT(*) FROM bowlers WHERE tournament_id = t.id AND COALESCE(entering_avg,0) <= 0) AS no_avg,
+                  (SELECT COUNT(*) FROM bowlers WHERE tournament_id = t.id AND is_youth = 1 AND COALESCE(smart_account_id,'') = '') AS youth_no_smart,
+                  (SELECT COUNT(*) FROM (SELECT lane_assignment, lineup_position FROM bowlers WHERE tournament_id = t.id GROUP BY 1, 2 HAVING COUNT(*) > 1)) AS dup_spots,
+                  (SELECT COUNT(*) FROM scores WHERE tournament_id = t.id AND COALESCE(verified,0) = 0) AS unverified,
+                  (SELECT group_concat(game_number || ':' || c) FROM (
+                      SELECT game_number, COUNT(*) AS c FROM scores WHERE tournament_id = t.id GROUP BY game_number
+                  )) AS per_game
+                FROM tournaments t WHERE t.id = ?
+                """,
                 (tournament_id,),
             ).fetchone()
             if t is None:
                 return {"page": view, "tournament": "not found", "warnings": ["The open tournament could not be found."]}
             name, fmt, games, pin, status = t[0], t[1], int(t[2] or 0), t[3], t[4]
-            n = _one(conn, "SELECT COUNT(*) FROM bowlers WHERE tournament_id = ?", (tournament_id,)) or 0
-            checked = _one(conn, "SELECT COUNT(*) FROM bowlers WHERE tournament_id = ? AND checked_in = 1", (tournament_id,)) or 0
-            unpaid = _one(conn, "SELECT COUNT(*) FROM bowlers WHERE tournament_id = ? AND COALESCE(paid_status,'') NOT IN ('paid','Paid','PAID')", (tournament_id,)) or 0
-            no_avg = _one(conn, "SELECT COUNT(*) FROM bowlers WHERE tournament_id = ? AND COALESCE(entering_avg,0) <= 0", (tournament_id,)) or 0
-            youth_no_smart = _one(conn, "SELECT COUNT(*) FROM bowlers WHERE tournament_id = ? AND is_youth = 1 AND COALESCE(smart_account_id,'') = ''", (tournament_id,)) or 0
-            dup_spots = _one(conn, "SELECT COUNT(*) FROM (SELECT lane_assignment, lineup_position FROM bowlers WHERE tournament_id = ? GROUP BY 1,2 HAVING COUNT(*) > 1)", (tournament_id,)) or 0
-            per_game = dict(conn.execute("SELECT game_number, COUNT(*) FROM scores WHERE tournament_id = ? GROUP BY game_number", (tournament_id,)).fetchall())
+            n = int(t["n"] or 0)
+            checked = int(t["checked"] or 0)
+            unpaid = int(t["unpaid"] or 0)
+            no_avg = int(t["no_avg"] or 0)
+            youth_no_smart = int(t["youth_no_smart"] or 0)
+            dup_spots = int(t["dup_spots"] or 0)
+            unverified = int(t["unverified"] or 0)
+            per_game = _parse_per_game(t["per_game"])
             game = next((g for g in range(1, games + 1) if per_game.get(g, 0) < n), games) if games else 0
             missing_lanes = [r[0] for r in conn.execute(
                 "SELECT DISTINCT b.lane_assignment FROM bowlers b LEFT JOIN scores s ON s.bowler_id = b.id AND s.game_number = ? "
                 "WHERE b.tournament_id = ? AND s.id IS NULL ORDER BY 1", (game, tournament_id)).fetchall()]
-            unverified = _one(conn, "SELECT COUNT(*) FROM scores WHERE tournament_id = ? AND COALESCE(verified,0) = 0", (tournament_id,)) or 0
         finally:
             conn.close()
     except Exception:
