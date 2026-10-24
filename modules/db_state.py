@@ -216,6 +216,7 @@ def ensure_tournament_config_columns() -> None:
                 ("lineage_fee", "REAL DEFAULT 12.0"),
                 ("expense_fee", "REAL DEFAULT 3.0"),
                 ("is_practice", "INTEGER DEFAULT 0"),
+                ("status", "TEXT DEFAULT 'active'"),
                 ("divisions_json", "TEXT"),
                 ("preset_key", "TEXT"),
                 ("rules_locked", "INTEGER DEFAULT 0"),
