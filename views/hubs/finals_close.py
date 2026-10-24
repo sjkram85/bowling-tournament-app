@@ -13,7 +13,6 @@ from modules.cde_bls_bridge import build_bls_streams
 from modules.db_state import get_connection, log_desk_action
 from modules.reports import (
     build_certified_pdf,
-    build_smart_scholarship_csv,
     freeze_tournament,
 )
 
@@ -172,15 +171,8 @@ def render_finals_close() -> None:
         if is_practice(t_id):
             st.warning("PRACTICE MODE: exports, certified results and archiving are turned off for practice tournaments.")
             return
-        # Fixed call: pass prize_pool explicitly to avoid missing argument TypeError
-        smart_csv_data = build_smart_scholarship_csv(t_id, prize_pool=total_prize_fund)
-        st.download_button(
-            label="📥 Download USBC SMART Upload CSV",
-            data=smart_csv_data,
-            file_name=f"smart_escrow_tournament_{t_id}.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
+        from components.smart_export_box import render_smart_export_box
+        render_smart_export_box(t_id)
 
         col_pdf, col_bls = st.columns(2)
         with col_pdf:

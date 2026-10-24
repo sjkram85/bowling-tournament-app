@@ -83,27 +83,16 @@ def _get_full_bowler_records(tournament_id: int) -> list[dict]:
     )
 
 
-def build_smart_scholarship_csv(tournament_id: int, prize_pool: float = 280.0) -> str:
-    """SMART scholarship awards for the top 25% of the field with safe prize_pool default."""
+def build_smart_scholarship_csv(tournament_id: int, prize_pool: float | None = None) -> str:
+    """SMART recipient CSV from the event's real payout setup (see modules/smart_export).
+
+    prize_pool is ignored (kept so old callers still work); amounts are never invented.
+    """
     block_if_practice(tournament_id, "exported")
-    tournament = get_tournament(tournament_id)
-    standings = compute_standings(tournament_id)
-    if tournament is None or not standings:
+    from modules.smart_export import build_smart_export, recipients_csv
+    if get_tournament(tournament_id) is None:
         return ""
-    amounts = [120.00, 80.00, 50.00, 30.00]
-    output = io.StringIO()
-    writer = csv.writer(output, lineterminator="\n")
-    writer.writerow(["USBC ID", "Bowler Name", "SMART Account #", "Award Amount ($)", "Tournament Name", "Date"])
-    for row, amount in zip(standings, amounts):
-        writer.writerow([
-            row["usbc_id"] or "",
-            row["name"],
-            row.get("smart_account_id", ""),
-            f"{amount:.2f}",
-            tournament["name"],
-            date.today().isoformat()
-        ])
-    return output.getvalue()
+    return recipients_csv(build_smart_export(tournament_id))
 
 
 def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
