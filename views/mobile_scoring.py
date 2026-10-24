@@ -310,13 +310,19 @@ def _render_photo_review(tourney: dict, lane: int, game: int, image: bytes, revi
     if b1.button("Save these scores", type="primary", use_container_width=True, disabled=bool(errors),
                  key="photo_save"):
         handicaps = {r["bowler_id"]: r["handicap"] for r in review["rows"]}
-        n = 0
+        n, changed = 0, []
         for bid, v in values.items():
             if v > 0:
-                _record_score(tourney["id"], bid, game, v, handicaps.get(bid, 0), f"{verifier_name} (photo)")
+                hid = _record_score(tourney["id"], bid, game, v, handicaps.get(bid, 0), f"{verifier_name} (photo)",
+                                    source="photo", device=st.session_state.get("floor_device"))
+                if hid:
+                    changed.append(hid)
                 n += 1
         st.session_state.pop("photo_review", None)
+        st.session_state["photo_undo"] = changed
         st.success(f"Saved {n} score{'s' if n != 1 else ''}. They are waiting in the TD Verify list.")
+        from components.undo_box import saved_undo_button
+        saved_undo_button("photo_undo", verifier_name, device=st.session_state.get("floor_device"))
     if b2.button("Cancel", use_container_width=True, key="photo_cancel"):
         st.session_state.pop("photo_review", None)
         st.rerun()

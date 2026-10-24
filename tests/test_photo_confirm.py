@@ -92,3 +92,15 @@ def test_ai_failure_returns_none(monkeypatch):
     monkeypatch.setattr(ms, "extract_scores_from_overhead_photo",
                         lambda b: {"status": "success", "extracted_data": [{"name": "Cal Ray", "game_score": 177}]})
     assert {r["bowler_id"]: r["value"] for r in ms.read_photo(b"img", LANE)["rows"]}[3] == 177
+
+
+def test_photo_saves_recorded_in_undo_history_and_undoable(ev):
+    from modules import score_history
+    tid, path = ev
+    at = _review_app(tid, path, [{"name": "Ann Smith", "game_score": 201}]).run()
+    next(b for b in at.button if b.label == "Save these scores").click().run()
+    h = score_history.recent(tid)
+    assert len(h) == 1 and h[0]["source"] == "photo" and h[0]["new_scratch"] == 201
+    assert any(b.label == "↩️ Undo" for b in at.button)
+    ok, _ = score_history.undo(h[0]["id"], "Scott")
+    assert ok and _scores(tid) == {}
