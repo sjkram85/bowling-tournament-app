@@ -8,10 +8,12 @@ from modules.ocr_engine import extract_scores_from_overhead_photo
 from modules.settings import ai_available, AI_OFF_MESSAGE
 
 
-def _get_active_tournament_for_scoring() -> dict | None:
+def _get_active_tournament_for_scoring(event: dict | None) -> dict | None:
+    if not event:
+        return None
     conn = get_connection()
     try:
-        row = conn.execute("SELECT * FROM tournaments WHERE status = 'active' ORDER BY COALESCE(is_practice, 0) ASC, id DESC LIMIT 1").fetchone()
+        row = conn.execute("SELECT * FROM tournaments WHERE id = ? AND status = 'active'", (event["id"],)).fetchone()
         return dict(row) if row else None
     finally:
         conn.close()
@@ -92,7 +94,12 @@ def render_mobile_scoring() -> None:
         unsafe_allow_html=True,
     )
 
-    tourney = _get_active_tournament_for_scoring()
+    from components.event_picker import public_event
+    tourney = _get_active_tournament_for_scoring(public_event(st.query_params.get("t") or st.query_params.get("tournament")))
+    if tourney and st.session_state.get("scorer_event") != tourney["id"]:
+        # Unlocking one event's pad never unlocks another event.
+        st.session_state["scorer_event"] = tourney["id"]
+        st.session_state.pop("scorer_authenticated", None)
     if not tourney:
         st.warning("No active tournament available for scoring.")
         return
