@@ -18,6 +18,9 @@ FIELDS = [
     ("is_youth", "Youth (yes/no)", False),
     ("smart_account_id", "SMART Account ID", False),
     ("paid_status", "Paid Status (paid/unpaid)", True),
+    ("gender", "Boys/Girls", False),
+    ("birth_date", "Birth Date", False),
+    ("bowls_scratch", "Bowls Scratch (yes/no)", False),
 ]
 FIELD_KEYS = [f[0] for f in FIELDS]
 REQUIRED = {f[0] for f in FIELDS if f[2]}
@@ -33,6 +36,9 @@ ALIASES = {
     "is_youth": ["isyouth", "youth"],
     "smart_account_id": ["smartaccountid", "smartid", "smart", "smartaccount"],
     "paid_status": ["paidstatus", "paid", "payment", "paymentstatus"],
+    "gender": ["gender", "sex", "boysgirls", "boygirl"],
+    "birth_date": ["birthdate", "dob", "dateofbirth", "birthday"],
+    "bowls_scratch": ["bowlsscratch", "scratch"],
 }
 
 SAMPLE_ROW = {
@@ -86,7 +92,8 @@ def guess_mapping(columns) -> dict[str, str | None]:
 def matches_template(columns) -> bool:
     """True when every template column is present (ignoring case, spaces, underscores)."""
     normed = {_norm(c) for c in columns}
-    return all(_norm(k) in normed for k in FIELD_KEYS)
+    # The newer optional youth columns (gender, birth date, scratch) are not required here.
+    return all(_norm(k) in normed for k in FIELD_KEYS if k not in ("gender", "birth_date", "bowls_scratch"))
 
 
 def apply_mapping(df: pd.DataFrame, mapping: dict[str, str | None]) -> list[dict]:
@@ -161,6 +168,15 @@ def validate_rows(rows: list[dict]) -> list[dict]:
             row[k] = "" if s.lower() in ("nan", "none") else s
         if row["email"] and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", row["email"]):
             errs.append("email looks invalid")
+
+        g = str(row.get("gender") or "").strip().lower()
+        row["gender"] = {"b": "Boys", "boy": "Boys", "boys": "Boys", "m": "Boys", "male": "Boys",
+                         "g": "Girls", "girl": "Girls", "girls": "Girls", "f": "Girls", "female": "Girls"}.get(g, "")
+        if g and g not in ("nan", "none") and not row["gender"]:
+            errs.append(f"boys/girls '{row.get('gender')}' not understood")
+        bd = str(row.get("birth_date") or "").strip()
+        row["birth_date"] = "" if bd.lower() in ("nan", "none", "nat") else bd
+        row["bowls_scratch"] = str(row.get("bowls_scratch") or "").strip().lower() in ("1", "yes", "y", "true")
 
         row["errors"] = "; ".join(errs)
         out.append(row)

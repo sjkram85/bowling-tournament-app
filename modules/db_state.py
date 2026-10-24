@@ -216,10 +216,33 @@ def ensure_tournament_config_columns() -> None:
                 ("lineage_fee", "REAL DEFAULT 12.0"),
                 ("expense_fee", "REAL DEFAULT 3.0"),
                 ("is_practice", "INTEGER DEFAULT 0"),
+                ("divisions_json", "TEXT"),
+                ("preset_key", "TEXT"),
+                ("rules_locked", "INTEGER DEFAULT 0"),
+                ("youth_only", "INTEGER DEFAULT 0"),
+                ("require_smart", "INTEGER DEFAULT 0"),
+                ("no_walkins", "INTEGER DEFAULT 0"),
+                ("entry_deadline", "TEXT"),
+                ("event_start", "TEXT"),
+                ("unconfirmed_json", "TEXT"),
+                ("flyer_notes", "TEXT"),
+                ("fees_at_front_desk", "INTEGER DEFAULT 0"),
+                ("grouping", "TEXT"),
+                ("require_gender", "INTEGER DEFAULT 0"),
+                ("require_birthdate", "INTEGER DEFAULT 0"),
+                ("require_usbc", "INTEGER DEFAULT 0"),
+                ("age_groups_json", "TEXT"),
+                ("age_cutoff", "TEXT"),
+                ("rules_text", "TEXT"),
             ]
             for col_name, col_type in col_defs:
                 if col_name not in cols:
                     conn.execute(f"ALTER TABLE tournaments ADD COLUMN {col_name} {col_type}")
+            bowler_cols = [c[1] for c in conn.execute("PRAGMA table_info(bowlers)")]
+            for col_name, col_type in (("division", "TEXT"), ("gender", "TEXT"), ("birth_date", "TEXT"),
+                                       ("bowls_scratch", "INTEGER DEFAULT 0"), ("age_group", "TEXT")):
+                if col_name not in bowler_cols:
+                    conn.execute(f"ALTER TABLE bowlers ADD COLUMN {col_name} {col_type}")
     finally:
         conn.close()
 

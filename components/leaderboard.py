@@ -51,3 +51,22 @@ def render_leaderboard(
     st.markdown(f'<table style="{_TABLE_STYLE}"><tr>{header}</tr>{"".join(rows)}</table>', unsafe_allow_html=True)
     if has_cut_line:
         st.caption(f"Red line = Seed #{cut} cut line")
+
+
+def render_standings_for(tournament_id: int, highlight_bowler_id: int | None = None) -> None:
+    """Standings, split into one board per division/group when the tournament has divisions."""
+    from modules.divisions import division_label, finalists_count, get_divisions, group_standings
+    from modules.standings import compute_standings, get_tournament
+
+    tournament = get_tournament(tournament_id) or {}
+    standings = compute_standings(tournament_id)
+    divs = get_divisions(tournament)
+    if not divs:
+        render_leaderboard(standings, highlight_bowler_id=highlight_bowler_id)
+        return
+    for name, rows in group_standings(standings, tournament):
+        st.markdown(f"#### {escape(division_label(name, divs))}")
+        if not rows:
+            st.caption("No bowlers in this group yet.")
+            continue
+        render_leaderboard(rows, cut=finalists_count(len(rows)), highlight_bowler_id=highlight_bowler_id)

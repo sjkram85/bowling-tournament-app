@@ -17,6 +17,7 @@ from modules.cde_bls_bridge import build_bls_streams, generate_bls_export
 from modules.constants import CENTERS, HOST_CENTERS
 from modules.db_state import checkpoint_db, get_connection
 from modules.practice import block_if_practice
+from modules.divisions import grouped_results
 from modules.standings import (
     CUT_SEED,
     compute_standings,
@@ -252,6 +253,9 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
         prize_template[i] for i, b in enumerate(bowler_records)
         if i < len(prize_template) and b["is_youth"]
     )
+    _groups_for_kpi = grouped_results(tournament_id)
+    if _groups_for_kpi:  # division tournaments: 1st-place SMART scholarships per group, no cash
+        total_prize_fund = smart_escrow = sum(r["prize"] for g in _groups_for_kpi for r in g["rows"])
     adult_cash = total_prize_fund - smart_escrow
 
     kpi_data = [
@@ -303,60 +307,76 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
         Paragraph("<b>Payout Type</b>", th_style),
     ])
 
-    table_data = [headers]
+    groups = grouped_results(tournament_id)
+    if groups:
+        rec_by_id = {r["id"]: r for r in bowler_records}
+        segments = [(g["label"] + (f" — top {g['finalists']} to stepladder finals" if g["rows"] else ""),
+                     [{**rec_by_id.get(r["id"], r), **{k: r[k] for k in ("grand_total", "total_scratch")}, "_prize": r["prize"]}
+                      for r in g["rows"]]) for g in groups]
+    else:
+        segments = [("", bowler_records)]
+    for seg_title, seg_rows in segments:
+        if seg_title:
+            story.append(Paragraph(f"<b>{escape(seg_title)}</b>", td_style))
+            story.append(Spacer(1, 4))
+        if groups and not seg_rows:
+            story.append(Paragraph("No bowlers in this group.", td_style))
+            story.append(Spacer(1, 10))
+            continue
+        table_data = [headers]
 
-    for idx, b in enumerate(bowler_records, start=1):
-        b_id = b["id"]
-        g_scores = scores_by_bowler.get(b_id, {})
-        prize = prize_template[idx - 1] if idx <= len(prize_template) else 0.0
-        is_y = bool(b["is_youth"])
+        for idx, b in enumerate(seg_rows, start=1):
+            b_id = b["id"]
+            g_scores = scores_by_bowler.get(b_id, {})
+            prize = b["_prize"] if groups else (prize_template[idx - 1] if idx <= len(prize_template) else 0.0)
+            is_y = bool(b["is_youth"])
 
-        if is_y and prize > 0:
-            routing_txt = "SMART"
-        elif prize > 0:
-            routing_txt = "Cash"
-        else:
-            routing_txt = "—"
+            if is_y and prize > 0:
+                routing_txt = "SMART"
+            elif prize > 0:
+                routing_txt = "Cash"
+            else:
+                routing_txt = "—"
 
-        hdcp_val = b["handicap"] or 0
-        avg_hdcp_str = f"{b['entering_avg'] or '—'} / +{hdcp_val}" if hdcp_val > 0 else f"{b['entering_avg'] or '—'} (Scratch)"
+            hdcp_val = b["handicap"] or 0
+            avg_hdcp_str = f"{b['entering_avg'] or '—'} / +{hdcp_val}" if hdcp_val > 0 else f"{b['entering_avg'] or '—'} (Scratch)"
 
-        row_cells = [
-            Paragraph(f"<b>#{idx}</b>", td_center),
-            Paragraph(f"<b>{escape(b['name'])}</b>" + (" <i>(Youth)</i>" if is_y else ""), td_style),
-            Paragraph(escape(str(b["usbc_id"] or "—")), td_center),
-            Paragraph(avg_hdcp_str, td_center),
-        ]
-
-        for g in range(1, game_count + 1):
-            score_val = g_scores.get(g, 0)
-            row_cells.append(Paragraph(str(score_val) if score_val > 0 else "—", td_center))
-
-        row_cells.extend([
-            Paragraph(str(b["total_scratch"]), td_center),
-            Paragraph(f"<b>{b['grand_total']}</b>", td_center),
-            Paragraph(f"${prize:.2f}" if prize > 0 else "—", td_center),
-            Paragraph(routing_txt, td_center),
-        ])
-        table_data.append(row_cells)
-
-    base_cols = [38, 120, 68, 70]
-    game_cols = [36] * game_count
-    end_cols = [46, 52, 52, 58]
-    t_standings = Table(table_data, colWidths=base_cols + game_cols + end_cols)
-    t_standings.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E293B")),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            row_cells = [
+                Paragraph(f"<b>#{idx}</b>", td_center),
+                Paragraph(f"<b>{escape(b['name'])}</b>" + (" <i>(Youth)</i>" if is_y else ""), td_style),
+                Paragraph(escape(str(b["usbc_id"] or "—")), td_center),
+                Paragraph(avg_hdcp_str, td_center),
             ]
+
+            for g in range(1, game_count + 1):
+                score_val = g_scores.get(g, 0)
+                row_cells.append(Paragraph(str(score_val) if score_val > 0 else "—", td_center))
+
+            row_cells.extend([
+                Paragraph(str(b["total_scratch"]), td_center),
+                Paragraph(f"<b>{b['grand_total']}</b>", td_center),
+                Paragraph(f"${prize:.2f}" if prize > 0 else "—", td_center),
+                Paragraph(routing_txt, td_center),
+            ])
+            table_data.append(row_cells)
+
+        base_cols = [38, 120, 68, 70]
+        game_cols = [36] * game_count
+        end_cols = [46, 52, 52, 58]
+        t_standings = Table(table_data, colWidths=base_cols + game_cols + end_cols)
+        t_standings.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E293B")),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ]
+            )
         )
-    )
-    story.append(t_standings)
-    story.append(Spacer(1, 16))
+        story.append(t_standings)
+        story.append(Spacer(1, 16))
 
     story.append(
         Paragraph(

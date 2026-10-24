@@ -3,7 +3,7 @@
 import streamlit as st
 
 from components.header import render_header
-from components.leaderboard import render_leaderboard
+from components.leaderboard import render_leaderboard, render_standings_for
 from components.tournament_picker import pick_tournament
 from modules.standings import compute_standings, current_game, get_tournament
 
@@ -25,7 +25,7 @@ def _kiosk_board(tournament_id: int) -> None:
         logo_path=tournament["logo_path"],
         squad_format=tournament["squad_format"],
     )
-    render_leaderboard(compute_standings(tournament_id))
+    render_standings_for(tournament_id)
 
 
 def render_kiosk() -> None:
