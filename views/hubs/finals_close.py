@@ -1,6 +1,7 @@
 """Finals closeout, prize payout audit, bracket/side-pot management, and USBC Rule 400 SMART compliance."""
 
 from modules.practice import is_practice
+from modules.divisions import grouped_results
 import csv
 import io
 import pandas as pd
@@ -75,9 +76,19 @@ def render_finals_close() -> None:
     smart_total = 0.0
     cash_total = 0.0
 
+    groups = grouped_results(t_id)
+    group_info = {r["id"]: (g, r) for g in groups for r in g["rows"]}
+    if groups:
+        # Division tournaments: ranks and prizes are per group; order the table group by group.
+        standings = [r for g in groups for r in g["rows"]]
     if standings:
         for rank, bowler in enumerate(standings, start=1):
-            prize = prize_template[rank - 1] if rank <= len(prize_template) else 0.0
+            if groups:
+                g, gr = group_info[bowler["id"]]
+                rank = gr["rank"]
+                prize = gr["prize"]
+            else:
+                prize = prize_template[rank - 1] if rank <= len(prize_template) else 0.0
             is_youth = bool(bowler["is_youth"])
 
             if is_youth and prize > 0:
@@ -94,7 +105,8 @@ def render_finals_close() -> None:
                 "Bowler": bowler["name"],
                 "USBC ID": bowler["usbc_id"] or "N/A",
                 "Grand Total": bowler["grand_total"],
-                "Division": "YOUTH (Rule 400)" if is_youth else "ADULT",
+                "Division": (group_info[bowler["id"]][0]["group"] + (" · FINALIST" if group_info[bowler["id"]][1]["finalist"] else ""))
+                if groups else ("YOUTH (Rule 400)" if is_youth else "ADULT"),
                 "Prize": f"${prize:.2f}",
                 "Payout Routing": routing,
             })

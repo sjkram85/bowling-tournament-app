@@ -24,6 +24,9 @@ from modules.auth import current_user
 from modules.constants import CENTERS, HOST_CENTERS
 from modules.db_state import get_connection, log_desk_action
 from modules import roster_import
+from modules import auth as _auth
+from modules.divisions import assign_all, entry_problems, normalize_birth
+from components.preset_panel import render_preset_panel
 from modules.tournament_templates import CHUSBC_TEMPLATES, create_tournament_from_template, save_tournament_as_template
 from modules.settings import get_secret, ai_available, AI_OFF_MESSAGE, model_name
 
@@ -165,7 +168,8 @@ def _get_squad_bowlers(tournament_id: int) -> list[dict]:
         rows = conn.execute(
             """
             SELECT id, name, usbc_id, email, entering_avg, handicap, lane_assignment,
-                   lineup_position, is_pacer, is_youth, smart_account_id, paid_status, checked_in
+                   lineup_position, is_pacer, is_youth, smart_account_id, paid_status, checked_in,
+                   gender, birth_date, bowls_scratch, division, age_group
             FROM bowlers
             WHERE tournament_id = ?
             ORDER BY lane_assignment ASC, lineup_position ASC
@@ -206,7 +210,11 @@ def render_intake_gateway() -> None:
             st.markdown(f"<small style='color: #94A3B8;'>{tmpl_info['description']} &middot; <b>{tmpl_info['game_count']} Games</b> &middot; Format: {tmpl_info['squad_format']}</small>", unsafe_allow_html=True)
 
             center_keys = list(CENTERS.keys())
-            template_center = st.selectbox("Template Host Center", center_keys, format_func=lambda k: CENTERS[k]["name"], key="tmpl_center")
+            if tmpl_info.get("locked"):
+                template_center = tmpl_info["locked"]["host_center"]
+                st.markdown(f"**Host center:** {CENTERS.get(template_center, {}).get('name', template_center)} (set by preset)")
+            else:
+                template_center = st.selectbox("Template Host Center", center_keys, format_func=lambda k: CENTERS[k]["name"], key="tmpl_center")
             template_pin = st.text_input("Floor Scorer PIN", value="6199", max_chars=8, key="tmpl_pin")
 
             if st.button("🚀 Load Template & Unlock Intake", type="primary", use_container_width=True):
@@ -297,6 +305,9 @@ def render_intake_gateway() -> None:
                 st.success(f"Successfully saved '{new_tmpl_title}' to the CHUSBC Template Library!")
                 st.rerun()
 
+    render_preset_panel(active_tourney, td_name)
+    override = not active_tourney.get("rules_locked")
+
     tab_roster, tab_entry, tab_concourse = st.tabs(
         ["📋 Squad Roster (Fully Editable)", "➕ Add Competitors (AI & Manual)", "📱 Concourse Access Badges"]
     )
@@ -320,10 +331,16 @@ def render_intake_gateway() -> None:
                 hide_index=True,
                 use_container_width=True,
                 key="editable_squad_roster",
-                disabled=["id", "tournament_id"]
+                disabled=["id", "tournament_id", "division", "age_group"] + (["handicap"] if active_tourney.get("rules_locked") else [])
             )
 
-            if st.button("💾 Save Roster Changes", type="primary"):
+            roster_problems = [] if override else [
+                f"{r['name']}: {p}" for r in edited_roster.to_dict("records")
+                for p in entry_problems({**active_tourney, "no_walkins": 0}, r)
+            ]
+            for msg in roster_problems[:6]:
+                st.error(msg)
+            if st.button("💾 Save Roster Changes", type="primary", disabled=bool(roster_problems)):
                 conn = get_connection()
                 try:
                     with conn:
@@ -340,7 +357,10 @@ def render_intake_gateway() -> None:
                                     lineup_position = ?,
                                     is_youth = ?,
                                     smart_account_id = ?,
-                                    paid_status = ?
+                                    paid_status = ?,
+                                    gender = ?,
+                                    birth_date = ?,
+                                    bowls_scratch = ?
                                 WHERE id = ?
                                 """,
                                 (
@@ -354,10 +374,14 @@ def render_intake_gateway() -> None:
                                     int(row["is_youth"]),
                                     row["smart_account_id"],
                                     row["paid_status"],
+                                    (row.get("gender") or None),
+                                    normalize_birth(row.get("birth_date")),
+                                    int(bool(row.get("bowls_scratch") or 0)),
                                     row["id"],
                                 ),
                             )
                     log_desk_action(td_name, "td", f"Updated squad roster for tournament #{t_id}")
+                    assign_all(t_id)
                     st.success("Roster changes saved successfully!")
                     st.rerun()
                 finally:
@@ -525,15 +549,27 @@ def render_intake_gateway() -> None:
 
                 c3, c4 = st.columns(2)
                 with c3:
-                    is_youth = st.checkbox("Youth Competitor (USBC Rule 400 SMART Escrow)")
+                    is_youth = st.checkbox("Youth Competitor (USBC Rule 400 SMART Escrow)", value=bool(active_tourney.get("youth_only")))
+                    gender = st.selectbox("Boys or Girls", ["", "Boys", "Girls"]) if active_tourney.get("require_gender") else ""
+                    birth = st.text_input("Birth date (MM/DD/YYYY)", value="") if active_tourney.get("require_birthdate") else ""
+                    scratch_flag = st.checkbox("Bowls scratch (no qualifying average)") if active_tourney.get("divisions_json") else False
                     smart_id = st.text_input("SMART Account # (if youth)", value="")
                 with c4:
-                    paid = st.selectbox("Payment Status", ["paid", "unpaid"])
+                    if active_tourney.get("fees_at_front_desk"):
+                        paid = "paid"
+                        st.info("Entry fees are collected by the Forest Hill Lanes front desk.")
+                    else:
+                        paid = st.selectbox("Payment Status", ["paid", "unpaid"])
 
                 btn_add = st.form_submit_button("📥 Register Bowler to Squad", type="primary", use_container_width=True)
                 if btn_add:
+                    problems = entry_problems(active_tourney, {"is_youth": is_youth, "smart_account_id": smart_id, "entering_avg": b_avg,
+                                                               "usbc_id": b_usbc, "gender": gender, "birth_date": birth, "bowls_scratch": scratch_flag})
                     if not b_name.strip():
                         st.error("Bowler name is required.")
+                    elif problems:
+                        for p_msg in problems:
+                            st.error(p_msg)
                     else:
                         conn = get_connection()
                         try:
@@ -560,6 +596,8 @@ def render_intake_gateway() -> None:
                                     ),
                                 )
                                 b_db_id = cur.lastrowid
+                                conn.execute("UPDATE bowlers SET gender = ?, birth_date = ?, bowls_scratch = ? WHERE id = ?",
+                                             (gender or None, normalize_birth(birth), int(bool(scratch_flag)), b_db_id))
                                 
                                 selected_events = []
                                 if reg_singles: selected_events.append("Singles")
@@ -573,6 +611,7 @@ def render_intake_gateway() -> None:
                                         (b_db_id, t_id, ev, paid)
                                     )
 
+                            assign_all(t_id)
                             log_desk_action(td_name, "td", f"Registered bowler '{b_name}' for squad #{t_id} across multi-event package")
                             st.success(f"Bowler {b_name} added to Squad #{t_id}!")
                             st.rerun()
@@ -591,7 +630,15 @@ def render_intake_gateway() -> None:
                 df_edit, num_rows="dynamic", use_container_width=True, key="ai_editor",
                 disabled=["problems"],
             )
-            checked = roster_import.validate_rows(edited_df.drop(columns=["problems"]).to_dict("records"))
+            raw_rows = edited_df.drop(columns=["problems"]).to_dict("records")
+            if active_tourney.get("fees_at_front_desk"):
+                for r in raw_rows:
+                    r["paid_status"] = "paid"
+            checked = roster_import.validate_rows(raw_rows)
+            for r in checked:
+                extra = entry_problems(active_tourney, r)
+                if extra:
+                    r["errors"] = "; ".join([e for e in [r["errors"]] + extra if e])
             bad = [i + 1 for i, r in enumerate(checked) if r["errors"]]
             if bad:
                 st.error(f"{len(bad)} row(s) have problems (rows {', '.join(map(str, bad[:15]))}). Fix them or delete those rows before saving.")
@@ -635,12 +682,16 @@ def render_intake_gateway() -> None:
                                     ),
                                 )
                                 b_db_id = cur.lastrowid
+                                conn.execute("UPDATE bowlers SET gender = ?, birth_date = ?, bowls_scratch = ? WHERE id = ?",
+                                             (row.get("gender") or None, normalize_birth(row.get("birth_date")),
+                                              int(bool(row.get("bowls_scratch"))), b_db_id))
                                 for ev in selected_events:
                                     conn.execute(
                                         "INSERT OR IGNORE INTO bowler_events (bowler_id, tournament_id, event_type, paid_status) VALUES (?, ?, ?, ?)",
                                         (b_db_id, t_id, ev, row["paid_status"])
                                     )
                                 inserted += 1
+                        assign_all(t_id)
                         log_desk_action(td_name, "td", f"Batch-registered {inserted} bowlers across multi-event package for squad #{t_id}")
                         st.session_state["parsed_ai_roster"] = []
                         st.session_state.pop("roster_src", None)

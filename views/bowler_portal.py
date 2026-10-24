@@ -268,6 +268,10 @@ ORDER BY grand_total DESC, total_scratch DESC"""
     finally:
         conn.close()
 
+    if rows and rows[0]["games_bowled"] > 0:
+        from components.leaderboard import render_standings_for
+        render_standings_for(tourney["id"])
+
 
 def render_bowler_portal() -> None:
     inject_styles()

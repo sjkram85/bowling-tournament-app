@@ -99,7 +99,7 @@ def compute_standings(tournament_id: int) -> list[dict]:
     if tournament is None:
         return []
     bowlers = query(
-        "SELECT id, name, usbc_id, handicap, lane_assignment, mystery_doubles_opt_in "
+        "SELECT id, name, usbc_id, handicap, lane_assignment, mystery_doubles_opt_in, division, entering_avg, gender, age_group "
         "FROM bowlers WHERE tournament_id = ?",
         (tournament_id,),
     )
