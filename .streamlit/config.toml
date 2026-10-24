@@ -6,7 +6,7 @@ secondaryBackgroundColor = "#1E293B"
 textColor = "#F1F5F9"
 
 [client]
-# Hide the developer/deploy menu from TDs and bowlers.
-toolbarMode = "viewer"
+# "auto" keeps the normal menu for admins; components/hide_chrome.py hides it for everyone else.
+toolbarMode = "auto"
 # Don't show Python tracebacks to users; Prism shows its own friendly messages.
 showErrorDetails = false
