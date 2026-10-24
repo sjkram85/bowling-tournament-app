@@ -284,11 +284,11 @@ def render_active_squad() -> None:
     host_code = tourney["host_center"]
     total_lanes = CENTERS.get(host_code, {}).get("lanes", 24)
 
-    # Top Control Header Bar
+    # Top: event bar (name, game, brackets), then the main job: Needs verifying.
     top_col1, top_col2, top_col3 = st.columns([2, 1, 1])
     with top_col1:
         st.subheader(f"{tourney['name']} ({tourney['host_center']})")
-        st.caption(f"Format: **{tourney['squad_format']}** | Scoring PIN: **{tourney['pin_verifier']}**")
+        st.caption(f"Format: **{tourney['squad_format']}**")
     with top_col2:
         active_game = st.selectbox(
             "Active Game",
@@ -302,29 +302,31 @@ def render_active_squad() -> None:
             generate_eight_person_brackets(t_id)
             st.success("Brackets verified/generated!")
 
-    with st.expander("📱 Floor-phone scoring link for this event"):
+    from components.td_team_panel import render_td_team_panel
+    render_td_team_panel(t_id)  # 'Needs verifying (N)' + chat + TDs on duty line
+
+    from components.rolloff_box import render_rolloff_box
+    render_rolloff_box(t_id)  # only shows when a roll-off is needed
+    from components.undo_box import render_undo_box
+    _u = current_user() or {}
+    render_undo_box(t_id, _u.get("display_name") or _u.get("username") or "TD")
+
+    with st.expander("⚙️ Event setup (floor phones, kiosk)"):
         score_url = f"{_get_base_url().rstrip('/')}/?mode=score&t={t_id}"
-        st.caption(f"Floor helpers open this on their phone (scan the code). Scoring PIN: {tourney['pin_verifier']}")
+        st.markdown(f"**📱 Floor-phone scoring** — Scoring PIN: **{tourney['pin_verifier']}**")
+        st.caption("Floor helpers scan this code with their phone, then type the PIN.")
         st.code(score_url, language=None)
         st.markdown(f"<img src='{_generate_qr_base64(score_url)}' width='160'>", unsafe_allow_html=True)
-
-    with st.expander("📺 Open kiosk for this event"):
+        st.markdown("---")
         kiosk_url = f"{_get_base_url().rstrip('/')}/?mode=kiosk&t={t_id}"
+        st.markdown("**📺 Lobby kiosk**")
         st.caption("Open this link on the lobby laptop, then press F11 for full screen.")
         st.code(kiosk_url, language=None)
         st.link_button("Open kiosk in a new tab", kiosk_url)
 
-    from components.td_team_panel import render_td_team_panel
-    render_td_team_panel(t_id)
-
     from modules.auth import is_admin
     if is_admin():
-        st.caption("💾 Reminder: after each squad, download a backup (Backup & Restore in the sidebar).")
-    from components.undo_box import render_undo_box
-    _u = current_user() or {}
-    render_undo_box(t_id, _u.get("display_name") or _u.get("username") or "TD")
-    from components.rolloff_box import render_rolloff_box
-    render_rolloff_box(t_id)
+        st.caption("💾 After each squad, download a backup (Backup & Restore in the sidebar).")
 
     st.markdown("---")
     bowlers = _get_squad_bowlers(t_id)

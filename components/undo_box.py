@@ -29,11 +29,25 @@ def saved_undo_button(state_key: str, who: str, device: str | None = None) -> No
             st.rerun()
 
 
+def _is_fresh(changed_at: str | None, minutes: int = 10) -> bool:
+    from datetime import datetime, timedelta, timezone
+    try:
+        t = datetime.fromisoformat(str(changed_at)).replace(tzinfo=timezone.utc)
+    except Exception:
+        return False
+    return datetime.now(timezone.utc) - t <= timedelta(minutes=minutes)
+
+
 def render_undo_box(t_id: int, td_name: str) -> None:
+    """Open box when something changed in the last 10 minutes; otherwise a small closed 'Undo a change'."""
     changes = score_history.recent(t_id, 5)
     if not changes:
         return
-    with st.expander("↩️ Undo last change"):
+    fresh = _is_fresh(changes[0].get("changed_at"))
+    box = st.container(border=True) if fresh else st.expander("↩️ Undo a change")
+    with box:
+        if fresh:
+            st.markdown("**↩️ Undo last change**")
         st.caption("The latest score changes for this event. Undo puts the old score back (it goes back to Verify).")
         for h in changes:
             old = "new score" if h["old_scratch"] is None else f"was {h['old_scratch']}"

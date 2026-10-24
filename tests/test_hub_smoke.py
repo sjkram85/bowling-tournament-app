@@ -25,4 +25,18 @@ def test_hub_renders_with_undo(tmp_path, monkeypatch):
         f"st.session_state['active_tournament_id'] = {tid}\n"
         "from views.hubs.active_squad import render_active_squad\nrender_active_squad()\n", default_timeout=30).run()
     assert not at.exception, at.exception
-    assert any("Undo last change" in e.label for e in at.expander)
+    # Fresh change -> open undo box; setup links tucked into one collapsed expander; chat is compact.
+    assert any("Undo last change" in m.value for m in at.markdown)
+    labels = [e.label for e in at.expander]
+    assert any("Event setup" in l for l in labels) and any("Chat" in l for l in labels)
+    assert not any("Floor-phone scoring link" in l or "Open kiosk" in l for l in labels)
+    assert any("Needs verifying" in m.value for m in at.markdown)
+
+
+def test_undo_box_collapses_when_changes_are_old():
+    from components.undo_box import _is_fresh
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    assert _is_fresh((now - timedelta(minutes=2)).strftime("%Y-%m-%d %H:%M:%S"))
+    assert not _is_fresh((now - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S"))
+    assert not _is_fresh(None)

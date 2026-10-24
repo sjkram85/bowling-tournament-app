@@ -17,19 +17,19 @@ def _me() -> str:
 def _on_duty(t_id: int) -> None:
     people = td_team.tds_on_duty(t_id)
     if not people:
-        st.caption("No one else signed in right now.")
+        st.caption("TDs on duty: just you right now.")
         return
-    chips = " ".join(
+    chips = ", ".join(
         f"{'🟢' if p['online'] else '⚪'} {escape(p['display_name'])}" for p in people
     )
-    st.markdown(f"**TDs on duty:** {chips}")
+    st.caption(f"TDs on duty: {chips}")
 
 
 @st.fragment(run_every=8)
 def _verify_queue(t_id: int) -> None:
     me = _me()
     queue = td_team.needs_verifying(t_id)
-    st.markdown(f"#### ✅ Needs verifying ({len(queue)})")
+    st.markdown(f"### ✅ Needs verifying ({len(queue)})")
     if not queue:
         st.success("All scores are verified.")
     for s in queue[:15]:
@@ -60,7 +60,7 @@ def _chat(t_id: int) -> None:
     key = f"td_chat_read_{t_id}"
     msgs = td_team.get_messages(t_id)
     unread = td_team.unread_count(msgs, st.session_state.get(key, 0), me)
-    with st.expander(f"💬 TD Chat{f'  🔴 {unread} new' if unread else ''}", expanded=bool(unread)):
+    with st.expander(f"💬 Chat ({unread} new)" if unread else "💬 Chat"):
         box = st.container(height=220)
         for m in msgs:
             box.markdown(f"**{escape(m['user'])}** <span style='font-size:11px;opacity:.6'>{td_team.to_eastern(m['created_at'])}</span><br>"
@@ -79,12 +79,16 @@ def _chat(t_id: int) -> None:
 
 
 def render_td_team_panel(t_id: int) -> None:
+    """Full-width 'Needs verifying' (the main job) plus a compact chat + one-line TDs on duty."""
     if not current_user() or not t_id:
         return
     with st.container(border=True):
-        _on_duty(t_id)
-        left, right = st.columns([3.2, 2])
-        with left:
-            _verify_queue(t_id)
-        with right:
-            _chat(t_id)
+        _verify_queue(t_id)
+    render_team_extras(t_id)
+
+
+def render_team_extras(t_id: int) -> None:
+    if not current_user() or not t_id:
+        return
+    _chat(t_id)
+    _on_duty(t_id)
