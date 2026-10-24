@@ -10,11 +10,228 @@ DB_PATH = Path(__file__).resolve().parent.parent / "tournament.db"
 DB_FILE = DB_PATH  # alias used by newer code
 
 
-def get_connection() -> sqlite3.Connection:
-    """Return a connection to the SQLite tournament database with row factory enabled."""
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+# --- Storage backend -------------------------------------------------------------------------
+# Turso (hosted libSQL) when TURSO_DATABASE_URL + TURSO_AUTH_TOKEN are set (Streamlit secrets or env),
+# otherwise the local tournament.db file. Turso survives Streamlit Cloud reboots; the local file does not.
+# PRISM_DB_ENGINE=libsql-file runs the libSQL adapter against the local file (used by tests).
+
+
+def _setting(name: str) -> str:
+    val = os.environ.get(name, "")
+    if not val:
+        try:
+            val = st.secrets.get(name, "") or ""
+        except Exception:
+            val = ""
+    return str(val).strip()
+
+
+def turso_config() -> tuple[str, str] | None:
+    url, token = _setting("TURSO_DATABASE_URL"), _setting("TURSO_AUTH_TOKEN")
+    return (url, token) if url and token else None
+
+
+def using_turso() -> bool:
+    return turso_config() is not None
+
+
+def storage_label() -> str:
+    return "Data: Turso (permanent)" if using_turso() else "Data: local (temporary)"
+
+
+def _translate(exc: Exception) -> Exception:
+    """libsql raises ValueError; turn it into the sqlite3 errors the rest of the app already catches."""
+    msg = str(exc)
+    if "constraint" in msg.lower():
+        return sqlite3.IntegrityError(msg)
+    return sqlite3.OperationalError(msg)
+
+
+class LibsqlRow:
+    """Behaves like sqlite3.Row: row[0], row['name'], keys(), dict(row), iteration, len()."""
+
+    __slots__ = ("_cols", "_vals", "_idx")
+
+    def __init__(self, cols: tuple, vals: tuple, idx: dict):
+        self._cols, self._vals, self._idx = cols, tuple(vals), idx
+
+    def keys(self) -> list[str]:
+        return list(self._cols)
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            try:
+                return self._vals[self._idx[key]]
+            except KeyError:
+                low = {k.lower(): i for k, i in self._idx.items()}
+                if key.lower() in low:
+                    return self._vals[low[key.lower()]]
+                raise IndexError(f"No item with that key: {key}")
+        return self._vals[key]
+
+    def __iter__(self):
+        return iter(self._vals)
+
+    def __len__(self) -> int:
+        return len(self._vals)
+
+    def __eq__(self, other):
+        if isinstance(other, LibsqlRow):
+            return self._cols == other._cols and self._vals == other._vals
+        return NotImplemented
+
+    def __hash__(self):
+        return hash((self._cols, self._vals))
+
+    def __repr__(self) -> str:
+        return f"LibsqlRow({dict(zip(self._cols, self._vals))!r})"
+
+
+class LibsqlCursor:
+    def __init__(self, cur):
+        self._cur = cur
+
+    def _row(self, vals):
+        if vals is None:
+            return None
+        desc = self._cur.description or ()
+        cols = tuple(d[0] for d in desc)
+        return LibsqlRow(cols, vals, {c: i for i, c in enumerate(cols)})
+
+    def execute(self, sql, params=()):
+        try:
+            self._cur.execute(sql, tuple(params) if not isinstance(params, dict) else params)
+        except ValueError as exc:
+            raise _translate(exc) from exc
+        return self
+
+    def executemany(self, sql, seq):
+        try:
+            self._cur.executemany(sql, [tuple(p) for p in seq])
+        except ValueError as exc:
+            raise _translate(exc) from exc
+        return self
+
+    def fetchone(self):
+        return self._row(self._cur.fetchone())
+
+    def fetchall(self):
+        return [self._row(r) for r in self._cur.fetchall()]
+
+    def fetchmany(self, size=None):
+        rows = self._cur.fetchmany(size) if size else self._cur.fetchmany()
+        return [self._row(r) for r in rows]
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+    @property
+    def lastrowid(self):
+        return self._cur.lastrowid
+
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
+    @property
+    def description(self):
+        return self._cur.description
+
+    def close(self):
+        try:
+            self._cur.close()
+        except Exception:
+            pass
+
+
+class LibsqlConnection:
+    """Enough of sqlite3.Connection for this app: execute, executescript, `with conn:` transactions."""
+
+    is_libsql = True
+
+    def __init__(self, raw):
+        self._raw = raw
+        self.row_factory = None  # accepted and ignored; rows always support row['name']
+
+    def cursor(self):
+        return LibsqlCursor(self._raw.cursor())
+
+    def execute(self, sql, params=()):
+        return self.cursor().execute(sql, params)
+
+    def executemany(self, sql, seq):
+        return self.cursor().executemany(sql, seq)
+
+    def executescript(self, script):
+        try:
+            self._raw.executescript(script)
+        except ValueError as exc:
+            raise _translate(exc) from exc
+        return self
+
+    def commit(self):
+        try:
+            self._raw.commit()
+        except ValueError as exc:
+            raise _translate(exc) from exc
+
+    def rollback(self):
+        try:
+            self._raw.rollback()
+        except ValueError:
+            pass
+
+    def close(self):
+        try:
+            self._raw.close()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self.commit()
+        else:
+            self.rollback()
+        return False
+
+
+def _libsql():
+    import libsql  # only needed when Turso is configured (or in adapter tests)
+    return libsql
+
+
+def _connect_libsql(target: str, token: str | None = None) -> LibsqlConnection:
+    lib = _libsql()
+    raw = lib.connect(target, auth_token=token) if token is not None else lib.connect(target)
+    return LibsqlConnection(raw)
+
+
+def _connect_sqlite(path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
+    return conn
+
+
+def get_connection():
+    """Connection to the tournament database: Turso when configured, else the local SQLite file.
+
+    Both kinds support conn.execute(...), row['name'], cur.lastrowid, executescript and `with conn:`.
+    """
+    cfg = turso_config()
+    if cfg:
+        conn = _connect_libsql(cfg[0], cfg[1])
+    elif os.environ.get("PRISM_DB_ENGINE") == "libsql-file":
+        conn = _connect_libsql(str(DB_PATH))
+    else:
+        return _connect_sqlite(DB_PATH)
+    try:
+        conn.execute("PRAGMA foreign_keys = ON;")
+    except Exception:
+        pass
     return conn
 
 
@@ -31,6 +248,7 @@ def checkpoint_db() -> None:
 
 def init_db() -> None:
     """Initialize core tables, audit log, multi-event package tracking, and schema dependencies."""
+    auto_migrate_to_turso()
     conn = get_connection()
     try:
         with conn:
@@ -296,12 +514,86 @@ def backup_filename(now=None) -> str:
     return f"prism-backup-{now.strftime('%Y-%m-%d-%H%M')}-ET.db"
 
 
+def _user_objects(conn) -> list[tuple[str, str, str]]:
+    rows = conn.execute(
+        "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' "
+        "ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END, rowid").fetchall()
+    return [(r[0], r[1], r[2]) for r in rows]
+
+
+def _row_count(conn, table: str) -> int:
+    try:
+        return int(conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0])
+    except Exception:
+        return 0
+
+
+def copy_database(src, dst) -> dict:
+    """Table-by-table copy of everything in src into dst (dst's own tables are dropped first).
+
+    Works for any mix of sqlite3 / Turso connections. Rows go in multi-row INSERTs so a remote copy
+    takes a few round trips per table, not one per row. Runs in one transaction on dst.
+    Returns {table: rows copied}.
+    """
+    objects = _user_objects(src)
+    tables = [(n, sql) for t, n, sql in objects if t == "table"]
+    copied = {}
+    try:
+        dst.execute("PRAGMA foreign_keys = OFF")
+    except Exception:
+        pass
+    try:
+        for t, n, _ in reversed(_user_objects(dst)):
+            if t in ("table", "view", "trigger"):
+                dst.execute(f'DROP {t.upper()} IF EXISTS "{n}"')
+        for name, sql in tables:
+            dst.execute(sql)
+            cur = src.execute(f'SELECT * FROM "{name}"')
+            cols = [d[0] for d in cur.description]
+            rows = [tuple(r) for r in cur.fetchall()]
+            per = max(1, 900 // max(1, len(cols)))
+            col_sql = ", ".join(f'"{c}"' for c in cols)
+            one = "(" + ", ".join("?" * len(cols)) + ")"
+            for i in range(0, len(rows), per):
+                chunk = rows[i:i + per]
+                dst.execute(f'INSERT INTO "{name}" ({col_sql}) VALUES ' + ", ".join([one] * len(chunk)),
+                            [v for r in chunk for v in r])
+            copied[name] = len(rows)
+        for t, n, sql in objects:
+            if t != "table":
+                dst.execute(sql)
+        try:
+            seq = [tuple(r) for r in src.execute("SELECT name, seq FROM sqlite_sequence").fetchall()]
+        except Exception:
+            seq = []
+        if seq:
+            try:
+                dst.execute("DELETE FROM sqlite_sequence")
+                for n, v in seq:
+                    dst.execute("INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)", (n, v))
+            except Exception:
+                pass
+        dst.commit()
+    except Exception:
+        dst.rollback()
+        raise
+    finally:
+        try:
+            dst.execute("PRAGMA foreign_keys = ON")
+        except Exception:
+            pass
+    return copied
+
+
 def _snapshot_to(path: Path) -> None:
-    """Consistent copy of the live database into a file, via the SQLite backup API."""
+    """Consistent copy of the live database into a local SQLite file."""
     src = get_connection()
     dst = sqlite3.connect(str(path))
     try:
-        src.backup(dst)
+        if isinstance(src, sqlite3.Connection):
+            src.backup(dst)  # SQLite backup API for the local file
+        else:
+            copy_database(src, dst)  # Turso: table-by-table
     finally:
         dst.close()
         src.close()
@@ -359,10 +651,81 @@ def restore_from_bytes(data: bytes) -> Path:
         src = sqlite3.connect(str(p))
         dst = get_connection()
         try:
-            src.backup(dst)
+            if isinstance(dst, sqlite3.Connection):
+                src.backup(dst)
+            else:
+                copy_database(src, dst)
         finally:
             src.close()
             dst.close()
     init_db()  # bring older backups up to the current schema
     log_desk_action("Admin", "admin", f"Restored database from backup (safety copy: {safety.name})")
     return safety
+
+
+# --- One-time move of the local file into Turso ------------------------------------------------
+
+def _has_data(conn) -> bool:
+    return _row_count(conn, "tournaments") > 0 or _row_count(conn, "staff_users") > 0
+
+
+def local_data_counts() -> dict | None:
+    """Counts in the local tournament.db, or None if there is no local file / no data."""
+    if not Path(DB_PATH).exists():
+        return None
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        if not _has_data(conn):
+            return None
+        return {t: _row_count(conn, t) for t in BACKUP_REQUIRED_TABLES}
+    finally:
+        conn.close()
+
+
+def turso_has_data() -> bool:
+    if not using_turso():
+        return False
+    conn = get_connection()
+    try:
+        return _has_data(conn)
+    finally:
+        conn.close()
+
+
+def copy_local_to_turso(replace: bool = False) -> dict:
+    """Copy the local tournament.db into Turso. Refuses to overwrite Turso data unless replace=True
+    (then a safety copy of Turso's data is saved locally first)."""
+    if not using_turso():
+        raise ValueError("Turso is not set up (TURSO_DATABASE_URL / TURSO_AUTH_TOKEN missing).")
+    if local_data_counts() is None:
+        raise ValueError("There is no local data to copy.")
+    if turso_has_data():
+        if not replace:
+            raise ValueError("Turso already has data. Tick 'replace' to overwrite it.")
+        safety_dir = Path(DB_PATH).parent / SAFETY_DIR_NAME
+        safety_dir.mkdir(exist_ok=True)
+        _snapshot_to(safety_dir / ("pre-copy-turso-" + backup_filename().removeprefix("prism-backup-")))
+    src = sqlite3.connect(str(DB_PATH))
+    dst = get_connection()
+    try:
+        return copy_database(src, dst)
+    finally:
+        src.close()
+        dst.close()
+
+
+def auto_migrate_to_turso() -> bool:
+    """On startup: if Turso is set up but empty and the local file has data, copy it over (nothing lost)."""
+    try:
+        if not using_turso() or local_data_counts() is None or turso_has_data():
+            return False
+        copy_local_to_turso()
+        try:
+            log_desk_action("System", "admin", "Copied local data to Turso (automatic first-time move)")
+        except Exception:
+            pass
+        return True
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("automatic copy to Turso failed: %s", exc)
+        return False
