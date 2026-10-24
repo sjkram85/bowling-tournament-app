@@ -65,11 +65,12 @@ def _record_score(tournament_id: int, bowler_id: int, game_num: int, scratch: in
                 """
                 INSERT INTO scores (tournament_id, bowler_id, game_number, scratch_score, hdcp_score, total_score, recorded_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(bowler_id, game_number) DO UPDATE SET
+                ON CONFLICT(tournament_id, bowler_id, game_number) DO UPDATE SET
                     scratch_score = excluded.scratch_score,
                     hdcp_score = excluded.hdcp_score,
                     total_score = excluded.total_score,
                     recorded_by = excluded.recorded_by,
+                    verified = 0, verified_by = NULL, verified_at = NULL,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (tournament_id, bowler_id, game_num, scratch, hdcp, total, verifier_name),

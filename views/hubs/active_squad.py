@@ -106,15 +106,17 @@ def _save_score(tournament_id: int, bowler_id: int, game_number: int, scratch: i
         with conn:
             conn.execute(
                 """
-                INSERT INTO scores (tournament_id, bowler_id, game_number, scratch_score, total_score, recorded_by)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO scores (tournament_id, bowler_id, game_number, scratch_score, total_score, recorded_by,
+                                    verified, verified_by, verified_at)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(tournament_id, bowler_id, game_number) DO UPDATE SET
                     scratch_score = excluded.scratch_score,
                     total_score = excluded.total_score,
                     recorded_by = excluded.recorded_by,
+                    verified = 1, verified_by = excluded.verified_by, verified_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                (tournament_id, bowler_id, game_number, scratch, total, user_name),
+                (tournament_id, bowler_id, game_number, scratch, total, user_name, user_name),
             )
         log_desk_action(user_name, "td", f"Logged Game {game_number} score {scratch} (HDCP +{hdcp}) for Bowler #{bowler_id}")
     finally:
@@ -288,6 +290,9 @@ def render_active_squad() -> None:
         if st.button("🎲 Manage Brackets", use_container_width=True):
             generate_eight_person_brackets(t_id)
             st.success("Brackets verified/generated!")
+
+    from components.td_team_panel import render_td_team_panel
+    render_td_team_panel(t_id)
 
     st.markdown("---")
     bowlers = _get_squad_bowlers(t_id)
