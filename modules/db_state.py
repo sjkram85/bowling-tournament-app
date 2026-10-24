@@ -246,6 +246,8 @@ def ensure_tournament_config_columns() -> None:
                 ("age_groups_json", "TEXT"),
                 ("age_cutoff", "TEXT"),
                 ("rules_text", "TEXT"),
+                ("event_end_date", "TEXT"),
+                ("cert_number", "TEXT"),
             ]
             for col_name, col_type in col_defs:
                 if col_name not in cols:
