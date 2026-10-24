@@ -4,6 +4,7 @@ import os
 import streamlit as st
 from google import genai
 from google.genai import types
+from modules.settings import get_secret
 
 PRIMARY_MODEL = "gemini-3.8-flash"
 
@@ -24,7 +25,7 @@ Keep your answers authoritative, concise, objective, and directly grounded in th
 
 def _get_gemini_client() -> genai.Client | None:
     """Retrieve Gemini client using google-genai with a strict 15s timeout."""
-    api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    api_key = get_secret("GEMINI_API_KEY")
     if not api_key:
         return None
     try:
@@ -82,7 +83,7 @@ def get_prism_ai_guidance(view_state: dict, user_prompt: str | None = None) -> s
         return _local_fallback_guidance(view_name, user_prompt)
 
     # Sanitize model selection against stale cloud secrets
-    configured_model = st.secrets.get("GEMINI_MODEL", PRIMARY_MODEL)
+    configured_model = get_secret("GEMINI_MODEL", PRIMARY_MODEL)
     if any(k in configured_model.lower() for k in ("2.5", "lite", "1.5")):
         model_name = PRIMARY_MODEL
     else:

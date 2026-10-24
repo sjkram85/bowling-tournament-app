@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 from google import genai
 from google.genai import types
+from modules.settings import get_secret
 
 # Use gemini-3.8-flash as the primary engine
 PRIMARY_MODEL = "gemini-3.8-flash"
@@ -15,7 +16,7 @@ PRIMARY_MODEL = "gemini-3.8-flash"
 
 def get_gemini_client() -> genai.Client | None:
     """Initialize GenAI client with strict 15-second timeout and no silent multi-minute backoff hangs."""
-    api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    api_key = get_secret("GEMINI_API_KEY")
     if not api_key:
         return None
     return genai.Client(
@@ -33,7 +34,7 @@ def get_gemini_client() -> genai.Client | None:
 
 def get_best_available_model(client: genai.Client = None) -> str:
     """Return active model without blocking catalog enumeration."""
-    return st.secrets.get("GEMINI_MODEL", PRIMARY_MODEL)
+    return get_secret("GEMINI_MODEL", PRIMARY_MODEL)
 
 
 EXTRACTION_PROMPT = (
@@ -42,13 +43,13 @@ EXTRACTION_PROMPT = (
     "Each object in the JSON array must contain ONLY these keys:\n"
     "- name: string (Bowler Full Name)\n"
     "- usbc_id: string or null (USBC ID)\n"
-    "- entering_avg: integer (default 200)\n"
-    "- handicap: integer (90% of 220 minus entering_avg if not explicitly listed, min 0)\n"
-    "- lane_assignment: integer (starting lane number, default 1)\n"
+    "- entering_avg: integer or null if not listed\n"
+    "- handicap: integer or null if not listed\n"
+    "- lane_assignment: integer or null if not listed (starting lane number)\n"
     "- email: string or null\n"
     "- is_youth: boolean (true if Youth, Junior, Rule 400, or SMART is noted)\n"
     "- smart_account_id: string or null (SMART ID number if present)\n"
-    "- paid_status: 'paid' or 'unpaid' (default 'paid')\n\n"
+    "- paid_status: 'paid', 'unpaid', or null if not stated\n\n"
     "Output raw valid JSON only."
 )
 
@@ -123,7 +124,7 @@ def _fast_structured_text_parser(text: str) -> list[dict]:
             continue
 
         lane_m = re.search(r"Lane\s*(\d+)", line_clean, re.IGNORECASE)
-        lane = int(lane_m.group(1)) if lane_m else 1
+        lane = int(lane_m.group(1)) if lane_m else None
 
         name_m = re.search(r"(?:Lane\s*\d+\s*[:\-]\s*)?([A-Za-z\s'\.\-]+?)(?:\s*[\(\-\|,]|$)", line_clean)
         name = name_m.group(1).strip() if name_m else ""
@@ -134,10 +135,10 @@ def _fast_structured_text_parser(text: str) -> list[dict]:
         usbc_id = usbc_m.group(1).strip() if usbc_m else ""
 
         avg_m = re.search(r"Avg[:\s]*(\d+)", line_clean, re.IGNORECASE)
-        avg = int(avg_m.group(1)) if avg_m else 200
+        avg = int(avg_m.group(1)) if avg_m else None
 
         hdcp_m = re.search(r"HDCP[:\s]*(\d+)", line_clean, re.IGNORECASE)
-        hdcp = int(hdcp_m.group(1)) if hdcp_m else max(0, int((220 - avg) * 0.9))
+        hdcp = int(hdcp_m.group(1)) if hdcp_m else None
 
         email_m = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", line_clean)
         email = email_m.group(0).strip() if email_m else ""
@@ -149,7 +150,12 @@ def _fast_structured_text_parser(text: str) -> list[dict]:
         if smart_id.lower() in ("email", "paid", "unpaid"):
             smart_id = ""
 
-        paid = "unpaid" if re.search(r"\b(unpaid|owing|due)\b", line_clean, re.IGNORECASE) else "paid"
+        if re.search(r"\b(unpaid|owing|due)\b", line_clean, re.IGNORECASE):
+            paid = "unpaid"
+        elif re.search(r"\bpaid\b", line_clean, re.IGNORECASE):
+            paid = "paid"
+        else:
+            paid = None
 
         bowlers.append({
             "name": name,

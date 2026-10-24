@@ -2,7 +2,7 @@
 
 import streamlit as st
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "1.0"
 RELEASE_NOTES = [
     "Tournament, roster, score and audit-log database (SQLite, WAL mode).",
     "Mystery doubles draw and BITS / AutoScoring import and export.",

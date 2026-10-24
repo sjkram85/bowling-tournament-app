@@ -9,6 +9,7 @@ from pathlib import Path
 import smtplib
 
 import streamlit as st
+from modules.settings import get_secret
 
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
@@ -83,8 +84,8 @@ def _build_email_shell(inner_content: str, preview_text: str = "") -> str:
 
 def send_ptcc_mail(to_email: str, subject: str, html_content: str) -> bool:
     """Send an HTML email with embedded CHUSBC sanction seal."""
-    sender = st.secrets.get("CHUSBC_GMAIL_USER", DEFAULT_ALERT_EMAIL)
-    app_password = st.secrets.get("CHUSBC_GMAIL_APP_PASSWORD")
+    sender = get_secret("CHUSBC_GMAIL_USER", DEFAULT_ALERT_EMAIL)
+    app_password = get_secret("CHUSBC_GMAIL_APP_PASSWORD")
 
     if not sender or not app_password or not to_email:
         return False
@@ -123,7 +124,7 @@ def send_ptcc_mail(to_email: str, subject: str, html_content: str) -> bool:
 
 def send_admin_registration_alert(applicant: dict) -> bool:
     """Dispatches a tournament-official alert for pending desk operator credentials."""
-    admin_email = st.secrets.get("ADMIN_ALERT_EMAIL", DEFAULT_ALERT_EMAIL)
+    admin_email = get_secret("ADMIN_ALERT_EMAIL", DEFAULT_ALERT_EMAIL)
     display_name = escape(str(applicant.get("display_name") or "Tournament Official Applicant"))
     username = escape(str(applicant.get("username") or "-"))
     email = escape(str(applicant.get("email") or "-"))

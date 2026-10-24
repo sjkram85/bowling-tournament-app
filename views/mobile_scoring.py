@@ -5,6 +5,7 @@ from components.styles import inject_styles
 from modules.constants import CENTERS
 from modules.db_state import get_connection, log_desk_action
 from modules.ocr_engine import extract_scores_from_overhead_photo
+from modules.settings import ai_available, AI_OFF_MESSAGE
 
 
 def _get_active_tournament_for_scoring() -> dict | None:
@@ -209,7 +210,9 @@ def render_mobile_scoring() -> None:
         st.subheader("Overhead Monitor Photo Ingest")
         st.caption("Take a photo of the lane monitor. Prism A.I will read the scores and queue them for verification.")
 
-        uploaded_img = st.camera_input("Snap Monitor Screen")
+        if not ai_available():
+            st.info(AI_OFF_MESSAGE + " Please use the 10-Key Manual Input tab.")
+        uploaded_img = st.camera_input("Snap Monitor Screen", disabled=not ai_available())
         if uploaded_img is not None:
             if st.button("Transcribe Monitor via Gemini Vision", type="primary", use_container_width=True):
                 with st.spinner("Prism A.I Vision reading overhead frames..."):
