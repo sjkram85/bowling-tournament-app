@@ -22,6 +22,8 @@ def render_backup_restore() -> None:
                            mime="application/octet-stream", type="primary", key="bk_download")
         st.caption(f"File: {name}")
 
+    _render_turso_copy()
+
     st.markdown("---")
     st.subheader("2. Restore from backup")
     st.write("Only use this if data was lost. It **replaces all current data** with the backup.")
@@ -55,3 +57,29 @@ def render_backup_restore() -> None:
         st.success(f"Restored. A safety copy of the old data was saved as {safety.name}.")
         st.download_button("⬇️ Download the safety copy (old data)", safety.read_bytes(),
                            file_name=safety.name, key="bk_safety")
+
+
+def _render_turso_copy() -> None:
+    """Only shown when Turso is set up and there is local data that is not in Turso yet."""
+    if not db_state.using_turso():
+        return
+    local = db_state.local_data_counts()
+    if not local:
+        return
+    st.markdown("---")
+    st.subheader("Copy current data to Turso (one time)")
+    has = db_state.turso_has_data()
+    st.write(f"This server still has local data ({local['tournaments']} events, {local['bowlers']} bowlers, "
+             f"{local['scores']} scores, {local['staff_users']} staff). Copy it to Turso so it is kept permanently.")
+    replace = False
+    if has:
+        st.warning("Turso already has data. Copying will replace it (a safety copy is saved first).")
+        replace = st.checkbox("Yes, replace the Turso data with this local data", key="turso_replace")
+    if st.button("Copy current data to Turso", disabled=has and not replace, key="turso_copy"):
+        try:
+            copied = db_state.copy_local_to_turso(replace=replace)
+        except Exception as exc:
+            st.error(f"Copy failed; nothing was changed. ({exc})")
+            return
+        st.success(f"Copied to Turso: {copied.get('tournaments', 0)} events, {copied.get('bowlers', 0)} bowlers, "
+                   f"{copied.get('scores', 0)} scores.")
