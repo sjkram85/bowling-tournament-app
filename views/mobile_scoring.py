@@ -1,6 +1,7 @@
 """Floor assistant 10-key mobile scoring pad and AI Overhead OCR photo ingest."""
 
 import streamlit as st
+from components.ai_lane_feedback import call_with_lane_feedback, gutter_ball_html, rolling_ball_html
 from components.styles import inject_styles
 from modules.constants import CENTERS
 from modules.db_state import get_connection, log_desk_action
@@ -313,16 +314,22 @@ def render_mobile_scoring() -> None:
 PHOTO_FAIL_MESSAGE = "Prism A.I. couldn't read this photo. Please type the scores in the 10-Key Manual Input tab."
 
 
-def read_photo(image: bytes, lane_bowlers: list[dict]) -> dict | None:
-    """A.I. read -> review dict, or None if the A.I. failed or read nothing. Never raises, never saves."""
+def _read_photo_result(image: bytes, lane_bowlers: list[dict]) -> tuple[dict | None, str]:
+    """Review dict plus the plain-English A.I. error, if the read failed. Never raises, never saves."""
     from modules.photo_review import build_review
     try:
         result = extract_scores_from_overhead_photo(image)
     except Exception:
-        return None
+        return None, ""
     if result.get("status") != "success" or not result.get("extracted_data"):
-        return None
-    return build_review(lane_bowlers, result["extracted_data"])
+        return None, str(result.get("message") or "")
+    return build_review(lane_bowlers, result["extracted_data"]), ""
+
+
+def read_photo(image: bytes, lane_bowlers: list[dict]) -> dict | None:
+    """A.I. read -> review dict, or None if the A.I. failed or read nothing. Never raises, never saves."""
+    review, _message = _read_photo_result(image, lane_bowlers)
+    return review
 
 
 def _render_photo_tab(tourney: dict, squad: list[dict], verifier_name: str) -> None:
@@ -347,10 +354,19 @@ def _render_photo_tab(tourney: dict, squad: list[dict], verifier_name: str) -> N
     if "photo_review" not in st.session_state:
         if not st.button("Read scores from photo", type="primary", use_container_width=True):
             return
-        with st.spinner("Prism A.I. is reading the photo..."):
-            review = read_photo(img.getvalue(), _bowlers_on_lane(tourney, squad, int(lane), int(game)))
+        lane_bowlers = _bowlers_on_lane(tourney, squad, int(lane), int(game))
+        review, err = call_with_lane_feedback(
+            lambda: _read_photo_result(img.getvalue(), lane_bowlers),
+            waiting_html=rolling_ball_html("Reading the monitor..."),
+        )
         if review is None:
-            st.error(PHOTO_FAIL_MESSAGE)
+            if "Gutter ball" in err:
+                st.markdown(
+                    gutter_ball_html(f"{err} {PHOTO_FAIL_MESSAGE}", settled=True),
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.error(PHOTO_FAIL_MESSAGE)
             return
         st.session_state["photo_review"] = review
         st.session_state["photo_key"] = key

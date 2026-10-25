@@ -5,16 +5,29 @@ providers later, only this file needs to change.
 
 There is no silent fallback: if the key is missing, the model is retired, or
 Google refuses the request, AIError is raised with a plain-English message.
+
+Busy signals, timeouts, and other API errors are retried a couple of times.
+A listener (see push_retry_listener) can show the gutter-ball / approach
+feedback while those retries run. A bad key or a retired model is not retried.
 """
 
 from __future__ import annotations
 
+import contextvars
 import json
+import time
 from datetime import datetime
 
 from modules.settings import AI_OFF_MESSAGE, DEFAULT_MODEL, DEFAULT_RULES_MODEL, get_secret, model_name
 
 TIMEOUT_MS = 15_000
+
+# Extra shots after the first one fails because Gemini is busy, slow, or errors.
+# Each retry holds the gutter ball, then "getting back on the approach", then calls again.
+EXTRA_RETRIES = 2
+# (seconds the gutter stays up, seconds the approach stays up) before that retry.
+RETRY_BEATS = ((0.75, 0.55), (1.25, 0.7))
+APPROACH_STATUS = "Getting back on the approach..."
 
 # Model names Google has shut down or restricted (Gemini API deprecations page, Oct 2026).
 RETIRED_PREFIXES = (
@@ -24,6 +37,16 @@ RETIRED_PREFIXES = (
 
 # Last call result, shown in the About box.
 LAST_STATUS: dict = {"model": None, "ok": None, "message": "No A.I. requests yet.", "at": None}
+
+# UI hook for the gutter / approach animation. None when nothing is listening.
+_retry_listener: contextvars.ContextVar = contextvars.ContextVar("prism_ai_retry_listener", default=None)
+
+_TRANSIENT = {
+    "busy": ("Google's A.I. is very busy right now.", "Please try again in a minute."),
+    "limit": ("Prism A.I. is temporarily over its usage limit.", "Wait a minute and try again."),
+    "timeout": ("Prism A.I. took too long to answer (over 15 seconds).", "Please try again."),
+    "api": ("Prism A.I. couldn't complete the request.", "Please try again in a moment."),
+}
 
 
 class AIError(Exception):
@@ -40,6 +63,29 @@ def retired_message(name: str, setting: str = "GEMINI_MODEL") -> str:
         f"Prism A.I. is set to an old model ({name}) that Google has retired. "
         f"Change {setting} to {DEFAULT_MODEL if setting == 'GEMINI_MODEL' else DEFAULT_RULES_MODEL}."
     )
+
+
+def push_retry_listener(listener):
+    """Call listener(phase, message) on gutter, approach, and give_up. Returns a reset token."""
+    return _retry_listener.set(listener)
+
+
+def pop_retry_listener(token) -> None:
+    _retry_listener.reset(token)
+
+
+def _notify(phase: str, message: str) -> None:
+    listener = _retry_listener.get()
+    if listener is None:
+        return
+    try:
+        listener(phase, message)
+    except Exception:
+        return
+
+
+def _pause(seconds: float) -> None:
+    time.sleep(seconds)
 
 
 def _record(model: str, ok: bool, message: str) -> None:
@@ -66,20 +112,24 @@ def _client():
     )
 
 
-def _friendly_error(exc: Exception, model: str) -> str:
+def _error_kind(exc: Exception) -> str:
+    """Classify a Gemini exception the same way the on-screen sentences do."""
     text = str(exc).lower()
-    if "404" in text or "not found" in text or "not supported" in text or "no longer available" in text:
-        return (f"Google says the model '{model}' isn't available to this account. "
-                f"Change GEMINI_MODEL to {DEFAULT_MODEL}.")
-    if "401" in text or "403" in text or "api key" in text or "permission" in text:
-        return "Google refused the Gemini key. Check that GEMINI_API_KEY is correct and active."
-    if "503" in text or "unavailable" in text or "high demand" in text or "overloaded" in text:
-        return "Google's A.I. is very busy right now. Please try again in a minute."
-    if "429" in text or "quota" in text or "resource_exhausted" in text:
-        return "Prism A.I. is temporarily over its usage limit. Wait a minute and try again."
-    if "timeout" in text or "timed out" in text or "deadline" in text:
-        return "Prism A.I. took too long to answer (over 15 seconds). Please try again."
-    return "Prism A.I. couldn't complete the request. Please try again in a moment."
+    if any(k in text for k in ("404", "not found", "not supported", "no longer available")):
+        return "model"
+    if any(k in text for k in ("401", "403", "api key", "permission")):
+        return "auth"
+    if any(k in text for k in ("503", "unavailable", "high demand", "overloaded")):
+        return "busy"
+    if any(k in text for k in ("429", "quota", "resource_exhausted")):
+        return "limit"
+    if any(k in text for k in ("timeout", "timed out", "deadline")):
+        return "timeout"
+    return "api"
+
+
+def _is_retryable(kind: str) -> bool:
+    return kind in _TRANSIENT
 
 
 def _is_busy(exc: Exception) -> bool:
@@ -87,6 +137,63 @@ def _is_busy(exc: Exception) -> bool:
     text = str(exc).lower()
     return any(k in text for k in ("503", "504", "429", "unavailable", "deadline", "timeout", "timed out",
                                    "resource_exhausted", "quota", "high demand", "overloaded"))
+
+
+def _friendly_message(kind: str, model: str, *, exhausted: bool = False) -> str:
+    if kind == "model":
+        return (
+            f"Google says the model '{model}' isn't available to this account. "
+            f"Change GEMINI_MODEL to {DEFAULT_MODEL}."
+        )
+    if kind == "auth":
+        return "Google refused the Gemini key. Check that GEMINI_API_KEY is correct and active."
+    if kind == "empty":
+        return "Prism A.I. returned an empty answer. Please try again."
+    base, ending = _TRANSIENT.get(kind, _TRANSIENT["api"])
+    if exhausted:
+        return (
+            f"Gutter ball. {base} Prism got back on the approach and tried again, "
+            f"but the ball still went in the gutter. {ending}"
+        )
+    return f"{base} {ending}"
+
+
+def _raise(kind: str, model: str, exc: Exception | None, *, exhausted: bool = False) -> None:
+    msg = _friendly_message(kind, model, exhausted=exhausted)
+    if exhausted:
+        _notify("give_up", msg)
+    _record(model, False, msg)
+    if exc is not None:
+        raise AIError(msg) from exc
+    raise AIError(msg)
+
+
+def _call_model(client, model: str, contents, config) -> str:
+    response = client.models.generate_content(model=model, contents=contents, config=config)
+    return (getattr(response, "text", None) or "").strip()
+
+
+def _attempt(client, model: str, backup: str | None, contents, config):
+    """One shot on the main model, then the backup model if that shot was busy or slow.
+
+    Returns (text, kind, model_for_the_message, exception). text is empty on failure.
+    """
+    try:
+        text = _call_model(client, model, contents, config)
+    except Exception as exc:
+        if not (backup and _is_busy(exc)):
+            return "", _error_kind(exc), model, exc
+        try:
+            text = _call_model(client, backup, contents, config)
+        except Exception as exc2:
+            return "", _error_kind(exc2), backup, exc2
+        if text:
+            return text, None, backup, None
+        # Backup came back empty. Keep the original busy/timeout reason, as before.
+        return "", _error_kind(exc), model, exc
+    if not text:
+        return "", "empty", model, None
+    return text, None, model, None
 
 
 def _generate(contents, purpose: str, system: str | None = None, want_json: bool = False,
@@ -109,31 +216,30 @@ def _generate(contents, purpose: str, system: str | None = None, want_json: bool
         temperature=temperature,
         response_mime_type="application/json" if want_json else None,
     )
-    try:
-        response = client.models.generate_content(model=model, contents=contents, config=config)
-        text = (getattr(response, "text", None) or "").strip()
-    except Exception as exc:
-        msg = _friendly_error(exc, model)
-        backup = model_name("backup")
-        if _is_busy(exc) and backup and backup != model and not is_retired(backup):
-            try:
-                response = client.models.generate_content(model=backup, contents=contents, config=config)
-                text = (getattr(response, "text", None) or "").strip()
-            except Exception as exc2:
-                msg = _friendly_error(exc2, backup)
-                _record(backup, False, msg)
-                raise AIError(msg) from exc2
-            if text:
-                _record(backup, True, f"Last request succeeded using the backup model ({model} was busy or over its limit).")
-                return text
-        _record(model, False, msg)
-        raise AIError(msg) from exc
-    if not text:
-        msg = "Prism A.I. returned an empty answer. Please try again."
-        _record(model, False, msg)
-        raise AIError(msg)
-    _record(model, True, "Last request succeeded.")
-    return text
+    backup_name = model_name("backup")
+    backup = backup_name if backup_name and backup_name != model and not is_retired(backup_name) else None
+
+    last_kind, last_model, last_exc = "api", model, None
+    for attempt in range(EXTRA_RETRIES + 1):
+        if attempt:
+            gutter_beat, approach_beat = RETRY_BEATS[min(attempt - 1, len(RETRY_BEATS) - 1)]
+            _notify("gutter", _friendly_message(last_kind, last_model))
+            _pause(gutter_beat)
+            _notify("approach", APPROACH_STATUS)
+            _pause(approach_beat)
+        text, kind, used, exc = _attempt(client, model, backup, contents, config)
+        if text:
+            if used != model:
+                _record(used, True, f"Last request succeeded using the backup model ({model} was busy or over its limit).")
+            elif attempt:
+                _record(used, True, "Last request succeeded after getting back on the approach.")
+            else:
+                _record(used, True, "Last request succeeded.")
+            return text
+        last_kind, last_model, last_exc = kind, used, exc
+        if not _is_retryable(kind):
+            _raise(kind, used, exc)
+    _raise(last_kind, last_model, last_exc, exhausted=True)
 
 
 def _parse_json(text: str):

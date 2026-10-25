@@ -31,7 +31,10 @@ def use(env, client):
 
 
 def test_defaults():
-    assert ap.model_name() == "gemini-3.8-flash" and ap.model_name("rules") == "gemini-4-argon"
+    assert ap.model_name() == "gemini-3.8-flash"
+    assert ap.model_name("rules") == "gemini-3.8-flash"
+    assert ap.model_name("backup") == "gemini-3.6-flash"
+    assert ap.is_retired("gemini-2.0-flash")
 
 
 def test_no_key_plain_message():
@@ -55,7 +58,7 @@ def test_current_lite_not_blocked(env):
 def test_rules_uses_rules_model(env):
     c = FakeClient(text="Rule answer"); use(env, c)
     out = prism_ai.get_prism_ai_guidance({"view": "USBC Rules Engine"}, user_prompt="wrong lane?")
-    assert out.startswith("Rule answer") and "Sections checked: Rule 9" in out and c.models.calls[0][0] == "gemini-4-argon"
+    assert out.startswith("Rule answer") and "Sections checked: Rule 9" in out and c.models.calls[0][0] == "gemini-3.8-flash"
     assert ap.LAST_STATUS["ok"] is True
 
 
@@ -108,7 +111,7 @@ class BusyThenOK:
 def test_busy_model_uses_backup_once(env, err):
     m = BusyThenOK(err); c = type("C", (), {"models": m})(); use(env, c)
     assert ap.ask_text("hi", purpose="rules") == "backup answer"
-    assert m.calls == ["gemini-4-argon", "gemini-3.6-flash"]
+    assert m.calls == ["gemini-3.8-flash", "gemini-3.6-flash"]
     assert "backup model" in ap.LAST_STATUS["message"]
 
 
@@ -117,3 +120,96 @@ def test_wrong_key_does_not_use_backup(env):
     with pytest.raises(ap.AIError, match="refused"):
         ap.ask_text("hi")
     assert m.calls == ["gemini-3.8-flash"]
+
+
+def test_copilot_and_rules_use_flash(env):
+    c = FakeClient(text="tips"); use(env, c)
+    assert prism_ai.get_prism_ai_guidance({"view": "Active Squad Hub", "screen_context": {"page": "Desk"}}) == "tips"
+    assert c.models.calls[0][0] == "gemini-3.8-flash"
+
+
+class FailThen:
+    def __init__(self, n, err, text="ok"):
+        self.n, self.err, self.text, self.calls = n, err, text, []
+
+    def generate_content(self, model, contents, config=None):
+        self.calls.append(model)
+        if len(self.calls) <= self.n:
+            raise RuntimeError(self.err)
+        return type("R", (), {"text": self.text})()
+
+
+def test_timeout_retries_with_gutter_then_approach(env, monkeypatch):
+    pauses = []
+    events = []
+    monkeypatch.setattr(ap, "_pause", lambda seconds: pauses.append(seconds))
+    token = ap.push_retry_listener(lambda phase, message: events.append((phase, message)))
+    try:
+        m = FailThen(99, "timed out")
+        use(env, type("C", (), {"models": m})())
+        with pytest.raises(ap.AIError, match="Gutter ball") as raised:
+            ap.ask_text("hi")
+    finally:
+        ap.pop_retry_listener(token)
+    message = str(raised.value)
+    assert "took too long" in message
+    assert "got back on the approach" in message
+    assert message.endswith("Please try again.")
+    assert m.calls == ["gemini-3.8-flash", "gemini-3.6-flash"] * (ap.EXTRA_RETRIES + 1)
+    assert pauses == [beat for pair in ap.RETRY_BEATS for beat in pair]
+    assert [phase for phase, _ in events] == ["gutter", "approach", "gutter", "approach", "give_up"]
+    assert events[1][1] == "Getting back on the approach..."
+
+
+def test_busy_succeeds_on_the_approach(env, monkeypatch):
+    monkeypatch.setattr(ap, "_pause", lambda seconds: None)
+    m = FailThen(2, "503 UNAVAILABLE high demand", text="back on the lane")
+    use(env, type("C", (), {"models": m})())
+    assert ap.ask_text("hi") == "back on the lane"
+    assert m.calls == ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.8-flash"]
+    assert "getting back on the approach" in ap.LAST_STATUS["message"]
+
+
+def test_generic_api_error_retries_same_model(env, monkeypatch):
+    monkeypatch.setattr(ap, "_pause", lambda seconds: None)
+    c = FakeClient(exc=RuntimeError("connection reset by peer")); use(env, c)
+    with pytest.raises(ap.AIError, match="Gutter ball") as raised:
+        ap.ask_text("hi")
+    assert "couldn't complete" in str(raised.value)
+    assert "Please try again in a moment." in str(raised.value)
+    assert [call[0] for call in c.models.calls] == ["gemini-3.8-flash"] * (ap.EXTRA_RETRIES + 1)
+
+
+def test_missing_model_does_not_retry(env, monkeypatch):
+    def boom(_seconds):
+        raise AssertionError("paused")
+
+    monkeypatch.setattr(ap, "_pause", boom)
+    c = FakeClient(exc=RuntimeError("404 NOT_FOUND")); use(env, c)
+    with pytest.raises(ap.AIError, match="isn't available"):
+        ap.ask_text("hi")
+    assert len(c.models.calls) == 1
+    assert "Gutter ball" not in ap.LAST_STATUS["message"]
+
+
+def test_empty_answer_is_not_retried(env, monkeypatch):
+    def boom(_seconds):
+        raise AssertionError("paused")
+
+    monkeypatch.setattr(ap, "_pause", boom)
+    c = FakeClient(text="  "); use(env, c)
+    with pytest.raises(ap.AIError, match="empty answer"):
+        ap.ask_text("hi")
+    assert len(c.models.calls) == 1
+
+
+def test_retry_listener_errors_are_ignored(env, monkeypatch):
+    monkeypatch.setattr(ap, "_pause", lambda seconds: None)
+    token = ap.push_retry_listener(lambda *_args: (_ for _ in ()).throw(RuntimeError("ui")))
+    try:
+        c = FakeClient(exc=RuntimeError("503 UNAVAILABLE")); use(env, c)
+        with pytest.raises(ap.AIError, match="Gutter ball"):
+            ap.ask_text("hi")
+    finally:
+        ap.pop_retry_listener(token)
+    assert len(c.models.calls) == (ap.EXTRA_RETRIES + 1) * 2

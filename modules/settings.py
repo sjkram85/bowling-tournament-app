@@ -29,14 +29,17 @@ def ai_available() -> bool:
     return bool(get_secret("GEMINI_API_KEY"))
 
 
-DEFAULT_MODEL = "gemini-3.8-flash"
-DEFAULT_RULES_MODEL = "gemini-4-argon"
-# Used once, automatically, when the main model is overloaded, too slow, or over its limit.
+# Current Gemini Flash id for Co-Pilot and the Rule Arbitrator.
+# gemini-2.0-flash and gemini-2.5-flash are retired; ai_provider blocks them.
+FLASH_MODEL = "gemini-3.8-flash"
+DEFAULT_MODEL = FLASH_MODEL
+DEFAULT_RULES_MODEL = FLASH_MODEL
+# Second Flash model, used once when the main model is busy, slow, or over its limit.
 DEFAULT_BACKUP_MODEL = "gemini-3.6-flash"
 
 
 def model_name(purpose: str = "general") -> str:
-    """The one place the A.I. model is chosen. 'rules' is the USBC Rule Arbitrator."""
+    """The one place the A.I. model is chosen. Co-Pilot and the Rule Arbitrator use Flash."""
     if purpose == "backup":
         return str(get_secret("GEMINI_BACKUP_MODEL") or DEFAULT_BACKUP_MODEL).strip()
     if purpose == "rules":
