@@ -6,7 +6,6 @@ from pathlib import Path
 import sqlite3
 import threading
 import time
-import streamlit as st
 
 log = logging.getLogger(__name__)
 
@@ -16,32 +15,25 @@ DB_FILE = DB_PATH  # alias used by newer code
 
 
 # --- Storage backend -------------------------------------------------------------------------
-# Turso (hosted libSQL) when TURSO_DATABASE_URL + TURSO_AUTH_TOKEN are set (Streamlit secrets or env),
-# otherwise the local tournament.db file. Turso survives Streamlit Cloud reboots; the local file does not.
-# PRISM_DB_ENGINE=libsql-file runs the libSQL adapter against the local file (used by tests).
-
-
-def _setting(name: str) -> str:
-    val = os.environ.get(name, "")
-    if not val:
-        try:
-            val = st.secrets.get(name, "") or ""
-        except Exception:
-            val = ""
-    return str(val).strip()
+# The desk uses the on-disk SQLite file at DB_PATH. TURSO_DATABASE_URL and
+# TURSO_AUTH_TOKEN are not read from the environment or Streamlit secrets, so
+# leftover Turso secrets cannot switch the live database. A deploy does not
+# need a Turso database. On Streamlit Cloud the file can reset when the app
+# sleeps or is redeployed; it stays while the app is up and serving traffic.
+# PRISM_DB_ENGINE=libsql-file runs the libSQL adapter against that same file (tests).
 
 
 def turso_config() -> tuple[str, str] | None:
-    url, token = _setting("TURSO_DATABASE_URL"), _setting("TURSO_AUTH_TOKEN")
-    return (url, token) if url and token else None
+    """Hosted Turso is not the live database. Secrets and env vars are ignored."""
+    return None
 
 
 def using_turso() -> bool:
-    return turso_config() is not None
+    return False
 
 
 def storage_label() -> str:
-    return "Data: Turso (permanent)" if using_turso() else "Data: local (temporary)"
+    return "Data: local SQLite"
 
 
 def _translate(exc: Exception) -> Exception:
@@ -375,9 +367,8 @@ _STREAM_IDLE_SECONDS = 8
 
 
 def _pool_key() -> tuple | None:
-    cfg = turso_config()
-    if cfg:
-        return ("turso", cfg[0], cfg[1])
+    # Default engine is the sqlite3 file. libsql-file is the test adapter only.
+    # Hosted Turso is not a pool key: TURSO_DATABASE_URL / TURSO_AUTH_TOKEN are not read.
     if os.environ.get("PRISM_DB_ENGINE") == "libsql-file":
         return ("libsql-file", str(DB_PATH))
     return None
@@ -458,17 +449,15 @@ def _checkout_libsql(key: tuple, opener):
 
 
 def get_connection():
-    """Connection to the tournament database: Turso when configured, else the local SQLite file.
+    """Connection to the on-disk SQLite file (tournament.db).
 
-    Both kinds support conn.execute(...), row['name'], cur.lastrowid, executescript and `with conn:`.
-    Libsql connections are drawn from a small pool so a rerun does not open a new remote
-    connection (and send PRAGMA foreign_keys) for every query.
+    Supports conn.execute(...), row['name'], cur.lastrowid, executescript and `with conn:`.
+    PRISM_DB_ENGINE=libsql-file draws a pooled libSQL connection to that same file (tests).
+    Hosted Turso is not selected.
     """
     key = _pool_key()
     if key is None:
         return _connect_sqlite(DB_PATH)
-    if key[0] == "turso":
-        return _checkout_libsql(key, lambda: _connect_libsql(key[1], key[2]))
     return _checkout_libsql(key, lambda: _connect_libsql(key[1]))
 
 
@@ -694,7 +683,7 @@ def init_db() -> None:
     When prism_schema.version is already SCHEMA_VERSION, the CREATE/ALTER script is skipped.
     A missing stamp or an older one still migrates, then the stamp is written.
     """
-    auto_migrate_to_turso()
+    auto_migrate_to_turso()  # no-op: hosted Turso is not the live database
     conn = get_connection()
     try:
         up_to_date = _schema_version(conn) >= SCHEMA_VERSION
@@ -966,7 +955,7 @@ def restore_from_bytes(data: bytes) -> Path:
     return safety
 
 
-# --- One-time move of the local file into Turso ------------------------------------------------
+# --- Local file helpers. Hosted Turso is not used. ---------------------------------------------
 
 def _has_data(conn) -> bool:
     return _row_count(conn, "tournaments") > 0 or _row_count(conn, "staff_users") > 0
@@ -986,55 +975,15 @@ def local_data_counts() -> dict | None:
 
 
 def turso_has_data() -> bool:
-    if not using_turso():
-        return False
-    conn = get_connection()
-    try:
-        return _has_data(conn)
-    finally:
-        conn.close()
+    return False
 
 
 def copy_local_to_turso(replace: bool = False) -> dict:
-    """Copy the local tournament.db into Turso. Refuses to overwrite Turso data unless replace=True
-    (then a safety copy of Turso's data is saved locally first)."""
-    if not using_turso():
-        raise ValueError("Turso is not set up (TURSO_DATABASE_URL / TURSO_AUTH_TOKEN missing).")
-    if local_data_counts() is None:
-        raise ValueError("There is no local data to copy.")
-    if turso_has_data():
-        if not replace:
-            raise ValueError("Turso already has data. Tick 'replace' to overwrite it.")
-        safety_dir = Path(DB_PATH).parent / SAFETY_DIR_NAME
-        safety_dir.mkdir(exist_ok=True)
-        _snapshot_to(safety_dir / ("pre-copy-turso-" + backup_filename().removeprefix("prism-backup-")))
-    src = sqlite3.connect(str(DB_PATH))
-    dst = get_connection()
-    try:
-        copied = copy_database(src, dst)
-    finally:
-        src.close()
-        dst.close()
-    try:
-        from modules.event_logos import clear_logo_cache
-        clear_logo_cache()
-    except Exception:
-        pass
-    return copied
+    """Hosted Turso is not the live database, so the local file is never copied there."""
+    del replace
+    raise ValueError("The desk uses the local SQLite file. Turso is not used.")
 
 
 def auto_migrate_to_turso() -> bool:
-    """On startup: if Turso is set up but empty and the local file has data, copy it over (nothing lost)."""
-    try:
-        if not using_turso() or local_data_counts() is None or turso_has_data():
-            return False
-        copy_local_to_turso()
-        try:
-            log_desk_action("System", "admin", "Copied local data to Turso (automatic first-time move)")
-        except Exception:
-            pass
-        return True
-    except Exception as exc:
-        import logging
-        logging.getLogger(__name__).warning("automatic copy to Turso failed: %s", exc)
-        return False
+    """No-op. Hosted Turso is not the live database, so startup never copies the file."""
+    return False

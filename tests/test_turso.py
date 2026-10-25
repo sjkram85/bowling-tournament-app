@@ -1,6 +1,7 @@
-"""Turso switch: the libSQL adapter behaves like sqlite3, backend choice, backups, one-time copy.
+"""libSQL file adapter behaves like sqlite3. The live engine stays the local SQLite file.
 
 Uses libSQL's embedded file mode (no network, no credentials). Skipped if libsql isn't installed.
+TURSO_DATABASE_URL and TURSO_AUTH_TOKEN must not select a database.
 """
 import logging
 import sqlite3
@@ -31,16 +32,20 @@ def test_fallback_is_local_sqlite_without_secrets(tmp_path, monkeypatch):
     assert isinstance(conn, sqlite3.Connection)
     conn.close()
     assert not db_state.using_turso()
-    assert db_state.storage_label() == "Data: local (temporary)"
+    assert db_state.storage_label() == "Data: local SQLite"
 
 
-def test_turso_chosen_only_when_both_settings_present(monkeypatch):
+def test_turso_secrets_do_not_select_a_database(tmp_path, monkeypatch):
     monkeypatch.setenv("TURSO_DATABASE_URL", "libsql://example.invalid")
-    monkeypatch.delenv("TURSO_AUTH_TOKEN", raising=False)
-    assert not db_state.using_turso()
     monkeypatch.setenv("TURSO_AUTH_TOKEN", "placeholder")
-    assert db_state.using_turso()
-    assert db_state.storage_label() == "Data: Turso (permanent)"
+    monkeypatch.delenv("PRISM_DB_ENGINE", raising=False)
+    monkeypatch.setattr(db_state, "DB_PATH", tmp_path / "x.db")
+    assert db_state.turso_config() is None
+    assert not db_state.using_turso()
+    assert db_state.storage_label() == "Data: local SQLite"
+    conn = db_state.get_connection()
+    assert isinstance(conn, sqlite3.Connection)
+    conn.close()
 
 
 def test_adapter_rows_lastrowid_errors_and_migrations(lib_db):
@@ -104,30 +109,26 @@ def test_backup_and_restore_through_adapter(lib_db):
     conn.close()
 
 
-def test_copy_local_into_empty_turso_and_refuse_overwrite(tmp_path, monkeypatch):
+def test_turso_secrets_do_not_copy_or_switch_the_file(tmp_path, monkeypatch):
     local = tmp_path / "tournament.db"
     monkeypatch.setattr(db_state, "DB_PATH", local)
     monkeypatch.delenv("PRISM_DB_ENGINE", raising=False)
-    monkeypatch.delenv("TURSO_DATABASE_URL", raising=False)
+    monkeypatch.setenv("TURSO_DATABASE_URL", "libsql://example.invalid")
+    monkeypatch.setenv("TURSO_AUTH_TOKEN", "placeholder")
     db_state.init_db()
     from modules.tournament_templates import ROSE_MURPHY_KEY, create_tournament_from_template
     create_tournament_from_template(ROSE_MURPHY_KEY, "FHL")
-    # Pretend Turso = a separate libSQL file (embedded mode), no network.
-    remote = tmp_path / "remote.db"
-    monkeypatch.setenv("TURSO_DATABASE_URL", str(remote))
-    monkeypatch.setenv("TURSO_AUTH_TOKEN", "placeholder")
-    monkeypatch.setattr(db_state, "_connect_libsql", lambda target, token=None: db_state.LibsqlConnection(libsql.connect(target)))
+    assert db_state.auto_migrate_to_turso() is False
     assert not db_state.turso_has_data()
-    assert db_state.auto_migrate_to_turso() is True
-    assert db_state.turso_has_data()
+    assert not db_state.using_turso()
     conn = db_state.get_connection()
+    assert isinstance(conn, sqlite3.Connection)
     assert conn.execute("SELECT COUNT(*) AS n FROM tournaments").fetchone()["n"] == 1
     conn.close()
-    assert db_state.auto_migrate_to_turso() is False  # never overwrites
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="local SQLite"):
         db_state.copy_local_to_turso()
-    db_state.copy_local_to_turso(replace=True)  # explicit replace saves a safety copy first
-    assert list((tmp_path / "backups").glob("pre-copy-turso-*.db"))
+    with pytest.raises(ValueError, match="local SQLite"):
+        db_state.copy_local_to_turso(replace=True)
 
 
 # The sign-in screen runs this CREATE on every logged-out desk open. The semicolon
@@ -411,6 +412,8 @@ def test_bootstrap_repairs_missing_columns_without_a_leading_semicolon(lib_db):
 def test_login_form_renders_when_bootstrap_cannot_prepare(tmp_path):
     """The redacted OperationalError used to replace the Staff Sign In card."""
     streamlit_testing = pytest.importorskip("streamlit.testing.v1")
+    from modules import auth
+    original = auth._ensure_default_admin
     script = f"""
 import sqlite3
 from pathlib import Path
@@ -423,7 +426,11 @@ def broken():
 auth._ensure_default_admin = broken
 auth.render_login_screen()
 """
-    app = streamlit_testing.AppTest.from_string(script, default_timeout=30).run()
+    app = streamlit_testing.AppTest.from_string(script, default_timeout=30)
+    try:
+        app.run()
+    finally:
+        auth._ensure_default_admin = original
     assert not app.exception, app.exception
     assert any(button.label == "Sign In" for button in app.button)
     assert any(field.label == "Username" for field in app.text_input)
