@@ -79,9 +79,108 @@ def _handle_create(result: tuple[bool, str]) -> None:
     st.error(message)
 
 
+def _profile_defaults(user: dict) -> dict:
+    """Form values for one account. A shifted row is shown already corrected.
+
+    The corrected email is blank. Saving is what writes it; opening the form does not.
+    """
+    shifted = auth.shifted_staff_fields(
+        user.get("email"), user.get("center_affiliation"), user.get("role")
+    )
+    if shifted is None:
+        return {
+            "display_name": user.get("display_name") or "",
+            "email": user.get("email") or "",
+            "center": (user.get("center_affiliation") or "").strip(),
+            "role": user.get("role") or "",
+            "shifted": False,
+        }
+    return {
+        "display_name": user.get("display_name") or "",
+        "email": shifted["email"],
+        "center": shifted["center_affiliation"],
+        "role": shifted["role"],
+        "shifted": True,
+    }
+
+
+def _remember_profile(user_id: int, display_name: str, email: str, center: str, role: str) -> None:
+    """Keep the signed-in admin's sidebar in step when they edit their own account."""
+    current = st.session_state.get("user")
+    if not isinstance(current, dict) or current.get("id") != user_id:
+        return
+    updated = dict(current)
+    updated["display_name"] = display_name.strip()
+    updated["email"] = (email or "").strip()
+    updated["center_affiliation"] = center
+    updated["role"] = role
+    st.session_state["user"] = updated
+
+
+def _profile_form(user: dict, me: dict) -> None:
+    defaults = _profile_defaults(user)
+    centers = list(HOST_CENTERS)
+    stored_center = (user.get("center_affiliation") or "").strip()
+    center_value = defaults["center"]
+    center_index = centers.index(center_value) if center_value in centers else 0
+    role_value = defaults["role"]
+    role_index = ROLES.index(role_value) if role_value in ROLES else ROLES.index("td")
+
+    if defaults["shifted"]:
+        st.warning(
+            "Email and center were swapped by an old bug. The form shows the corrected "
+            "center and role, with email empty. Save to apply, or enter a real email first."
+        )
+    elif stored_center and stored_center not in centers:
+        st.caption(
+            f'Stored center "{stored_center}" is not a host center. Choose a center and save.'
+        )
+
+    with st.form(f"profile_{user['id']}"):
+        display_name = st.text_input(
+            "Display name",
+            value=defaults["display_name"],
+            key=f"staff_display_{user['id']}",
+        )
+        email = st.text_input(
+            "Email (optional)",
+            value=defaults["email"],
+            placeholder="name@example.com",
+            key=f"staff_email_{user['id']}",
+        )
+        center = st.selectbox(
+            "Center",
+            centers,
+            index=center_index,
+            key=f"staff_center_{user['id']}",
+        )
+        role = st.selectbox(
+            "Role",
+            ROLES,
+            index=role_index,
+            key=f"staff_role_{user['id']}",
+        )
+        if st.form_submit_button("Save account", type="primary"):
+            error = auth.update_staff_profile(
+                user["id"],
+                display_name=display_name,
+                email=email,
+                center_affiliation=center,
+                role=role,
+                admin_name=me["display_name"],
+            )
+            if error:
+                st.error(error)
+            else:
+                _remember_profile(user["id"], display_name, email, center, role)
+                st.session_state[_NOTICE_KEY] = ("success", f"Updated {user['username']}.")
+                st.rerun()
+
+
 def _manage_selected(user: dict, me: dict) -> None:
     with st.container(border=True):
         st.subheader(f"Manage {user['display_name']} ({user['username']})")
+        _profile_form(user, me)
 
         with st.form(f"reset_{user['id']}", clear_on_submit=True):
             new_password = st.text_input(
@@ -96,20 +195,6 @@ def _manage_selected(user: dict, me: dict) -> None:
                         auth.reset_password(user["id"], new_password, me["display_name"]),
                         f"Password reset for {user['username']}. Share it with them securely.",
                     )
-
-        role_cols = st.columns([2, 1])
-        new_role = role_cols[0].selectbox(
-            "Role", ROLES, index=ROLES.index(user["role"]), key=f"role_{user['id']}"
-        )
-        if role_cols[1].button("Update role", key=f"role_btn_{user['id']}", width="stretch"):
-            if new_role == user["role"]:
-                st.info("Role unchanged.")
-            else:
-                error = auth.set_role(user["id"], new_role, me["display_name"])
-                if error:
-                    st.error(error)
-                else:
-                    st.rerun()
 
         confirm_delete = st.checkbox(
             f"Permanently delete {user['username']}", key=f"del_confirm_{user['id']}"
@@ -175,21 +260,29 @@ def render_staff_accounts() -> None:
 
     with st.form("add_staff", clear_on_submit=True):
         st.subheader("Add staff member")
-        username = st.text_input("Username")
-        display_name = st.text_input("Display name")
-        center = st.selectbox("Center", list(HOST_CENTERS))
-        role = st.selectbox("Role", ROLES, index=ROLES.index("td"))
+        username = st.text_input("Username", key="add_staff_username")
+        display_name = st.text_input("Display name", key="add_staff_display_name")
+        email = st.text_input(
+            "Email (optional)",
+            placeholder="name@example.com",
+            key="add_staff_email",
+        )
+        center = st.selectbox("Center", list(HOST_CENTERS), key="add_staff_center")
+        role = st.selectbox("Role", ROLES, index=ROLES.index("td"), key="add_staff_role")
         password = st.text_input(
-            f"Temporary password (min {MIN_PASSWORD_LENGTH} characters)", type="password"
+            f"Temporary password (min {MIN_PASSWORD_LENGTH} characters)",
+            type="password",
+            key="add_staff_password",
         )
         if st.form_submit_button("Add", type="primary"):
-            # center and role are keyword-only here: the helper's positional
-            # arguments after display_name are email, then center, then role.
+            # email, center, and role are keyword-only. Positional center/role
+            # used to land in email and center_affiliation.
             _handle_create(
                 create_staff_user(
                     username,
                     password,
                     display_name,
+                    email=email,
                     center_affiliation=center,
                     role=role,
                 )
