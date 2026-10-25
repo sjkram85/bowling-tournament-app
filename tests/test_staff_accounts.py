@@ -1,5 +1,7 @@
 """Staff Accounts: create stores email, center, and role, and an admin can edit them."""
 
+from pathlib import Path
+
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -377,3 +379,53 @@ def test_signed_in_scott_session_is_corrected():
     assert not at.exception, at.exception
     values = {item.label: item.value for item in at.text_input}
     assert values == {"role": "admin", "center": "CHUSBC", "email": "", "name": "Scott"}
+
+
+def test_shifted_fields_do_not_crash_on_non_strings():
+    assert auth.shifted_staff_fields(None, None, None) is None
+    assert auth.shifted_staff_fields(1, "admin", "td") is None
+    assert auth.shifted_staff_fields("CHUSBC", None, "td") is None
+
+
+_APP = Path(__file__).resolve().parent.parent / "app.py"
+
+
+def _desk(user):
+    at = AppTest.from_file(str(_APP), default_timeout=60)
+    at.session_state["user"] = user
+    at.run()
+    return at
+
+
+_SHIFTED_SCOTT = {
+    "id": 7,
+    "username": "scott",
+    "display_name": "Scott",
+    "email": "CHUSBC",
+    "center_affiliation": "admin",
+    "role": "td",
+}
+
+
+def test_desk_repairs_shifted_scott_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(db_state, "DB_PATH", tmp_path / "desk.db")
+    at = _desk(dict(_SHIFTED_SCOTT))
+    assert not at.exception, at.exception
+    user = at.session_state["user"]
+    assert user["role"] == "admin"
+    assert user["center_affiliation"] == "CHUSBC"
+    assert user["email"] == ""
+    assert user["display_name"] == "Scott"
+    assert any("ADMIN" in item.value for item in at.markdown)
+
+
+def test_desk_opens_when_auth_has_no_session_repair(tmp_path, monkeypatch):
+    monkeypatch.setattr(db_state, "DB_PATH", tmp_path / "desk.db")
+    monkeypatch.delattr(auth, "apply_shifted_scott_session_repair")
+    at = _desk(dict(_SHIFTED_SCOTT))
+    assert not at.exception, at.exception
+    user = at.session_state["user"]
+    assert user["role"] == "admin"
+    assert user["center_affiliation"] == "CHUSBC"
+    assert user["email"] == ""
+    assert user["display_name"] == "Scott"
