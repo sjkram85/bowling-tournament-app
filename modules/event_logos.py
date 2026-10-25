@@ -30,9 +30,9 @@ PRESET_LOGOS = {
 }
 
 
-# Logo blobs are a few hundred KB. Re-downloading them on every hub click (the setup
-# expander runs even while collapsed) dominated a Turso rerun. Kept for a minute, and
-# dropped the moment this process writes or restores logos.
+# Logo blobs are a few hundred KB. Re-reading them on every hub click (the setup
+# expander runs even while collapsed) was the slow part of a rerun. Kept for a
+# minute, and dropped the moment this process writes or restores logos.
 _LOGO_TTL = 60.0
 _logo_lock = threading.Lock()
 _logo_cache: dict[tuple, tuple[float, dict]] = {}
@@ -40,9 +40,8 @@ _logo_ensured: set[str] = set()
 
 
 def _db_token() -> str:
-    from modules.db_state import DB_PATH, turso_config
-    cfg = turso_config()
-    return "turso:" + cfg[0] if cfg else "file:" + str(DB_PATH)
+    from modules.db_state import DB_PATH
+    return "file:" + str(DB_PATH)
 
 
 def clear_logo_cache(tournament_id: int | None = None) -> None:

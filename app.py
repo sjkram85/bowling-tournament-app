@@ -13,7 +13,7 @@ from components.hide_chrome import hide_streamlit_chrome
 from components.styles import apply_clean_theme
 from modules import auth
 from modules.constants import CENTERS, HOST_CENTERS
-from modules.db_state import init_db, storage_label, using_turso
+from modules.db_state import init_db, storage_label
 from views.bowler_portal import render_bowler_portal
 from views.hubs.active_squad import render_active_squad
 from views.hubs.archive_vault import render_archive_vault
@@ -24,16 +24,9 @@ from views.kiosk import render_kiosk
 from views.mobile_scoring import render_mobile_scoring
 
 
-@st.cache_resource(show_spinner=False)
-def _init_turso_once() -> bool:
-    init_db()  # Turso: run schema checks / first-time copy once per server start, not every click
-    return True
-
-
-if using_turso():
-    _init_turso_once()
-else:
-    init_db()
+# On-disk SQLite. The schema-version stamp skips DDL once the file is current.
+# TURSO_* secrets are ignored; see modules.db_state.
+init_db()
 apply_clean_theme()
 hide_streamlit_chrome()
 
@@ -72,7 +65,7 @@ def _sidebar_identity(user: dict) -> None:
             unsafe_allow_html=True,
         )
         if is_admin:
-            st.caption(("🟢 " if using_turso() else "🟠 ") + storage_label())
+            st.caption("🟠 " + storage_label())
         about, sign_out = st.columns(2)
         if about.button("About", key="side_about", use_container_width=True):
             show_about_dialog()

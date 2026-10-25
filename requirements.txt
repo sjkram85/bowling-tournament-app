@@ -7,4 +7,5 @@ pillow>=10.4.0
 pandas>=2.2.0
 python-docx>=1.1.0
 openpyxl>=3.1.0
+# Test adapter only (PRISM_DB_ENGINE=libsql-file). The desk uses sqlite3 and does not connect to Turso.
 libsql>=0.1.11
