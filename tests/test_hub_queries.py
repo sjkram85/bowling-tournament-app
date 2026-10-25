@@ -81,6 +81,8 @@ def test_hub_and_fragments_stay_within_budget(tmp_path, monkeypatch):
     assert len(statements) <= 16, statements
     assert not any(s.startswith("PRAGMA") for s in statements), statements
     assert not any("event_logos" in s for s in statements), statements
+    # Co-Pilot counts are loaded when Analyze is clicked, not on this rerun.
+    assert not any("per_game" in s or "group_concat" in s.lower() for s in statements), statements
 
     statements.clear()
     queue, done = td_team.verification_board(tid)

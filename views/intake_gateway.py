@@ -163,18 +163,30 @@ def _run_with_bowling_animation(task_func, *args):
 
 
 def _get_active_tournament() -> dict | None:
+    """Open event for this rerun.
+
+    The practice banner already loads this row through get_tournament. Reuse that
+    read instead of a second SELECT *.
+    """
+    from modules.run_memo import memo
+    from modules.standings import get_tournament
+
+    t_id = st.session_state.get("active_tournament_id")
+    if t_id:
+        row = get_tournament(t_id)
+        if row:
+            return row
     conn = get_connection()
     try:
-        t_id = st.session_state.get("active_tournament_id")
-        if t_id:
-            row = conn.execute("SELECT * FROM tournaments WHERE id = ?", (t_id,)).fetchone()
-            if row:
-                return dict(row)
         # No choice on this device: only fall back when exactly one event is active.
         rows = conn.execute("SELECT * FROM tournaments WHERE status = 'active'").fetchall()
-        return dict(rows[0]) if len(rows) == 1 else None
     finally:
         conn.close()
+    if len(rows) != 1:
+        return None
+    found = dict(rows[0])
+    memo(("tournament", str(found["id"])), lambda: dict(found))
+    return dict(found)
 
 
 def _get_squad_bowlers(tournament_id: int) -> list[dict]:

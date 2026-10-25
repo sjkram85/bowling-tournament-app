@@ -483,13 +483,43 @@ def checkpoint_db() -> None:
         conn.close()
 
 
-def init_db() -> None:
-    """Initialize core tables, audit log, multi-event package tracking, and schema dependencies."""
-    auto_migrate_to_turso()
-    conn = get_connection()
+# Bump when the DDL in _apply_schema or ensure_tournament_config_columns changes.
+# A database already at this version skips that DDL on startup. No stamp, or an
+# older stamp, still runs the full migration. The stamp is written only after it finishes.
+SCHEMA_VERSION = 1
+
+
+def _schema_version(conn) -> int:
+    """Version stamped on this database, or 0 when the stamp is missing.
+
+    sqlite_master is checked first so a database from before the stamp does not
+    raise "no such table" (that path is logged as a libsql error).
+    """
+    found = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'prism_schema'"
+    ).fetchone()
+    if not found:
+        return 0
+    row = conn.execute("SELECT version FROM prism_schema LIMIT 1").fetchone()
+    if not row or row[0] is None:
+        return 0
     try:
-        with conn:
-            conn.executescript(
+        return int(row[0])
+    except (TypeError, ValueError):
+        return 0
+
+
+def _stamp_schema_version(conn) -> None:
+    with conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS prism_schema (version INTEGER NOT NULL)")
+        conn.execute("DELETE FROM prism_schema")
+        conn.execute("INSERT INTO prism_schema (version) VALUES (?)", (int(SCHEMA_VERSION),))
+
+
+def _apply_schema(conn) -> bool:
+    """Create and upgrade tables. False means an optional step failed, so the version is not stamped."""
+    with conn:
+        conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -624,45 +654,69 @@ def init_db() -> None:
                     FOREIGN KEY(tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
                 );
                 """
-            )
+        )
 
-        # Auto-migrate columns if tables existed from an earlier schema version
-        staff_cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_users);").fetchall()]
-        if "email" not in staff_cols:
-            conn.execute("ALTER TABLE staff_users ADD COLUMN email TEXT DEFAULT '';")
-        if "is_approved" not in staff_cols:
-            conn.execute("ALTER TABLE staff_users ADD COLUMN is_approved INTEGER DEFAULT 1;")
-        if "center_affiliation" not in staff_cols:
-            conn.execute("ALTER TABLE staff_users ADD COLUMN center_affiliation TEXT DEFAULT 'CHUSBC';")
-        if "is_active" not in staff_cols:
-            conn.execute("ALTER TABLE staff_users ADD COLUMN is_active INTEGER DEFAULT 1;")
+    # Auto-migrate columns if tables existed from an earlier schema version
+    staff_cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_users);").fetchall()]
+    if "email" not in staff_cols:
+        conn.execute("ALTER TABLE staff_users ADD COLUMN email TEXT DEFAULT '';")
+    if "is_approved" not in staff_cols:
+        conn.execute("ALTER TABLE staff_users ADD COLUMN is_approved INTEGER DEFAULT 1;")
+    if "center_affiliation" not in staff_cols:
+        conn.execute("ALTER TABLE staff_users ADD COLUMN center_affiliation TEXT DEFAULT 'CHUSBC';")
+    if "is_active" not in staff_cols:
+        conn.execute("ALTER TABLE staff_users ADD COLUMN is_active INTEGER DEFAULT 1;")
 
-        score_cols = [r[1] for r in conn.execute("PRAGMA table_info(scores);").fetchall()]
-        if "hdcp_score" not in score_cols:
-            conn.execute("ALTER TABLE scores ADD COLUMN hdcp_score INTEGER DEFAULT 0;")
-        if "total_score" not in score_cols:
-            conn.execute("ALTER TABLE scores ADD COLUMN total_score INTEGER DEFAULT 0;")
-        if "recorded_by" not in score_cols:
-            conn.execute("ALTER TABLE scores ADD COLUMN recorded_by TEXT;")
+    score_cols = [r[1] for r in conn.execute("PRAGMA table_info(scores);").fetchall()]
+    if "hdcp_score" not in score_cols:
+        conn.execute("ALTER TABLE scores ADD COLUMN hdcp_score INTEGER DEFAULT 0;")
+    if "total_score" not in score_cols:
+        conn.execute("ALTER TABLE scores ADD COLUMN total_score INTEGER DEFAULT 0;")
+    if "recorded_by" not in score_cols:
+        conn.execute("ALTER TABLE scores ADD COLUMN recorded_by TEXT;")
 
-        # Multi-TD tables/columns (presence, chat, verification). Never let this block startup.
-        try:
-            from modules.td_team import ensure_team_tables
-            ensure_team_tables(conn)
-            from modules.rolloff import ensure_rolloff_table
-            ensure_rolloff_table(conn)
-            from modules.score_history import ensure_history_table
-            ensure_history_table(conn)
-        except Exception:
-            pass
+    # Multi-TD tables/columns (presence, chat, verification). Never let this block startup.
+    try:
+        from modules.td_team import ensure_team_tables
+        ensure_team_tables(conn)
+        from modules.rolloff import ensure_rolloff_table
+        ensure_rolloff_table(conn)
+        from modules.score_history import ensure_history_table
+        ensure_history_table(conn)
+    except Exception:
+        return False
+    return True
 
+
+def init_db() -> None:
+    """Initialize core tables, audit log, multi-event package tracking, and schema dependencies.
+
+    When prism_schema.version is already SCHEMA_VERSION, the CREATE/ALTER script is skipped.
+    A missing stamp or an older one still migrates, then the stamp is written.
+    """
+    auto_migrate_to_turso()
+    conn = get_connection()
+    try:
+        up_to_date = _schema_version(conn) >= SCHEMA_VERSION
     finally:
         conn.close()
-
-    # New per-tournament rules/fee/handicap columns (added in the dynamic rules update)
-    ensure_tournament_config_columns()
+    if not up_to_date:
+        conn = get_connection()
+        try:
+            applied = _apply_schema(conn)
+        finally:
+            conn.close()
+        # New per-tournament rules/fee/handicap columns (added in the dynamic rules update)
+        ensure_tournament_config_columns()
+        if applied:
+            conn = get_connection()
+            try:
+                _stamp_schema_version(conn)
+            finally:
+                conn.close()
     # scott's row from the positional create bug (email=center, center=role, role=td).
-    # Idempotent: a repaired or later-edited row no longer matches.
+    # Idempotent: a repaired or later-edited row no longer matches. Still runs when
+    # the schema stamp is current, so a shifted row inserted later is still repaired.
     from modules.auth import repair_shifted_scott_account
     repair_shifted_scott_account()
 
