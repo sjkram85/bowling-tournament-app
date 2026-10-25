@@ -60,13 +60,23 @@ def _stream_response(full_text: str) -> None:
 
 
 def collect_view_state(current_view: str) -> dict:
-    """Collect lightweight operational context for the active screen."""
-    t_id = st.session_state.get("active_tournament_id")
+    """Desk identity for this rerun. Does not query. Co-Pilot loads counts on click."""
     return {
         "view": current_view,
-        "active_tournament_id": t_id,
-        "screen_context": build_screen_context(current_view, t_id),
+        "active_tournament_id": st.session_state.get("active_tournament_id"),
     }
+
+
+def load_copilot_state(state: dict) -> dict:
+    """Add screen counts. Call only when the director clicks Analyze or Ask."""
+    if state.get("screen_context"):
+        return state
+    loaded = dict(state)
+    loaded["screen_context"] = build_screen_context(
+        loaded.get("view") or "",
+        loaded.get("active_tournament_id"),
+    )
+    return loaded
 
 
 def render_prism_dock(current_view: str = "Active Squad Hub", view_state: dict | None = None) -> None:
@@ -133,7 +143,7 @@ def render_prism_dock(current_view: str = "Active Squad Hub", view_state: dict |
         if not guidance_text:
             if st.button("💡 Analyze This Screen", key=f"btn_analyze_{current_view}", use_container_width=True):
                 _rolling_ball_loader("Rolling analyzer ball...")
-                guidance_text = get_prism_ai_guidance(state)
+                guidance_text = get_prism_ai_guidance(load_copilot_state(state))
                 st.session_state[cache_key] = guidance_text
                 st.rerun()
         else:
@@ -149,7 +159,7 @@ def render_prism_dock(current_view: str = "Active Squad Hub", view_state: dict |
         if st.button("Ask Assistant", key="copilot_submit", use_container_width=True):
             if td_query.strip():
                 _rolling_ball_loader("Delivering ball...")
-                answer = get_prism_ai_guidance(state, user_prompt=td_query)
+                answer = get_prism_ai_guidance(load_copilot_state(state), user_prompt=td_query)
                 _stream_response(answer)
 
     # ==========================================
