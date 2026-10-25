@@ -42,16 +42,19 @@ _CSS = """<style>
 
 def _group_html(g: dict) -> str:
     body = "".join(
-        f"<tr class='{'k-fin' if r['finalist'] else ('k-roll' if r.get('rolloff') else '')}'>"
+        f"<tr class='{'k-fin' if r['finalist'] or r.get('champion') else ('k-roll' if r.get('rolloff') else '')}'>"
         f"<td class='n'>{'T' if r.get('tied') else ''}{r['rank']}</td>"
-        f"<td>{escape(r['name'])}{' <span class=k-star>★ FINALIST</span>' if r['finalist'] else ''}"
+        f"<td>{escape(r['name'])}"
+        f"{' <span class=k-star>CHAMPION</span>' if r.get('champion') else ''}"
+        f"{' <span class=k-star>★ FINALIST</span>' if r['finalist'] and not r.get('champion') else ''}"
         f"{' <span class=k-tie>TIE – ROLL-OFF</span>' if r.get('rolloff') else ''}</td>"
         f"<td class='n'>{r['games']}</td><td class='n'>{r['total']}</td></tr>"
         for r in g["rows"]
     ) or "<tr><td colspan=4>No bowlers yet</td></tr>"
     title, _, sub = g["label"].partition(" · ")
+    note = f"<div class='k-gsub'>{escape(g['note'])}</div>" if g.get("note") else ""
     return (f"<div class='k-group'><div class='k-glabel'>{escape(title)}</div>"
-            f"<div class='k-gsub'>{escape(sub) or '&nbsp;'}</div><table class='k-table'>"
+            f"<div class='k-gsub'>{escape(sub) or '&nbsp;'}</div>{note}<table class='k-table'>"
             "<tr><th class='n'>#</th><th>Bowler</th><th class='n'>Games</th><th class='n'>Total</th></tr>"
             f"{body}</table></div>")
 
@@ -62,6 +65,8 @@ def build_html(board: dict, page_idx: int, now_text: str) -> str:
     page_note = f" · Page {idx + 1} of {len(pages)}" if len(pages) > 1 else ""
     has_finalists = any(r["finalist"] for g in board["groups"] for r in g["rows"])
     has_roll = any(r.get("rolloff") for g in board["groups"] for r in g["rows"])
+    has_champ = any(r.get("champion") for g in board["groups"] for r in g["rows"])
+    has_pending = any(g.get("stage") in ("ladder_pending", "rolloff_pending") for g in board["groups"])
     return (
         f"<div class='k-top'><div class='k-left'>"
         + (f"<img class='k-elogo' src='{board['event_logo']}'>" if board.get("event_logo") else "")
@@ -70,8 +75,10 @@ def build_html(board: dict, page_idx: int, now_text: str) -> str:
         + f"<div class='k-meta'>{escape(board['center'])}<br>Last updated {now_text}{page_note}</div></div>"
         + ("<div class='k-practice'>🧪 PRACTICE – not real results</div>" if board["practice"] else "")
         + "<div class='k-grid'>" + "".join(_group_html(g) for g in pages[idx]) + "</div>"
-        + "<div class='k-foot'>" + ("★ = currently in the finals cut. " if has_finalists else "")
+        + "<div class='k-foot'>" + ("CHAMPION = stepladder winner, shown as 1st. " if has_champ else "")
+        + ("★ = currently in the finals cut. " if has_finalists else "")
         + ("TIE – ROLL-OFF = tied for the last finals spot; a roll-off decides it. " if has_roll else "")
+        + ("Finals are not finished, so this order is still qualifying. " if has_pending else "")
         + "Standings are unofficial until certified.</div>"
     )
 

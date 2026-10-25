@@ -180,6 +180,55 @@ def get_stepladder_state(tournament_id: int, group: Optional[str] = None) -> Lis
         conn.close()
 
 
+def uses_handicap(tournament: Optional[dict]) -> bool:
+    """True when this event's preset scores the stepladder with handicap, not scratch."""
+    t = tournament or {}
+    try:
+        return int(t.get("handicap_pct") or 0) > 0 and int(t.get("handicap_base") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def max_match_score(tournament: Optional[dict]) -> int:
+    """One-game ceiling. Handicap events accept scratch + handicap, not a 300 scratch cap."""
+    if not uses_handicap(tournament):
+        return 300
+    t = tournament or {}
+    base, pct = int(t.get("handicap_base") or 0), int(t.get("handicap_pct") or 0)
+    return 300 + max(0, int(base * pct / 100))
+
+
+def clear_stepladder(tournament_id: int, group: str = OVERALL, td_name: str = "Desk Admin",
+                     force: bool = False) -> Dict[str, Any]:
+    """Remove one group's ladder so it can be seeded again. Qualifying scores are not touched.
+
+    Refuses once a match has a score unless force is True (the TD confirmed).
+    """
+    init_stepladder_tables()
+    group = group or ""
+    matches = get_stepladder_state(tournament_id, group)
+    if not matches:
+        return {"ok": False, "removed": 0, "reason": "No stepladder to clear."}
+    scored = any(m.get("status") == "completed" or m.get("score_low") is not None for m in matches)
+    if scored and not force:
+        return {"ok": False, "removed": 0, "needs_force": True,
+                "reason": "Match scores have been entered. Confirm to clear them. Qualifying scores are kept."}
+    conn = get_connection()
+    try:
+        with conn:
+            cur = conn.execute(
+                "DELETE FROM stepladder_matches WHERE tournament_id = ? AND COALESCE(group_name, '') = ?",
+                (tournament_id, group),
+            )
+            removed = cur.rowcount
+    finally:
+        conn.close()
+    log_desk_action(td_name, "admin",
+                    f"Cleared stepladder for tournament #{tournament_id} ({group or 'Overall'}): "
+                    f"{removed} match(es). Qualifying scores kept.")
+    return {"ok": True, "removed": removed, "reason": ""}
+
+
 def champion(tournament_id: int, group: str = OVERALL) -> Optional[str]:
     """Name of the champion once the last match is done, else None."""
     ms = get_stepladder_state(tournament_id, group)

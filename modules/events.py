@@ -52,6 +52,31 @@ def resolve_event(events: list[dict], *wanted) -> tuple[dict | None, bool]:
     return None, len(events) > 1
 
 
+def scoring_is_open(tournament_id: int) -> bool:
+    """Floor phones and the desk can change scores only while the event is active."""
+    try:
+        from modules.standings import get_tournament
+        t = get_tournament(tournament_id)
+    except Exception:
+        return False
+    return bool(t and str(t.get("status") or "").lower() == "active")
+
+
+def cancel_tournament(tournament_id: int, by: str) -> None:
+    """Mark the squad cancelled. Scores, roster and finals rows stay in the database."""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("UPDATE tournaments SET status = 'cancelled' WHERE id = ?", (tournament_id,))
+    finally:
+        conn.close()
+    try:
+        from modules.db_state import log_desk_action
+        log_desk_action(by, "td", f"Cancelled tournament #{tournament_id}. Scores were not deleted.")
+    except Exception as exc:
+        log.warning("cancel audit failed: %s", exc)
+
+
 def center_name(code: str) -> str:
     try:
         from modules.constants import CENTERS

@@ -109,6 +109,29 @@ def group_order(tournament: dict) -> list[str]:
     return divs
 
 
+def clean_average(value) -> int | None:
+    """A real entering average, or None. Blank and 0 are not 200 and not a division."""
+    if value is None or value == "":
+        return None
+    try:
+        avg = int(value)
+    except (TypeError, ValueError):
+        return None
+    if avg <= 0 or avg > 300:
+        return None
+    return avg
+
+
+def entry_handicap(tournament: dict | None, average, bowls_scratch: bool = False) -> int | None:
+    """Handicap from this event's average rule. None when the average is blank — never invent one."""
+    if bowls_scratch:
+        return 0
+    avg = clean_average(average)
+    if avg is None:
+        return None
+    return handicap_for(avg, tournament or {}, False)
+
+
 def handicap_for(avg, tournament: dict, bowls_scratch: bool = False) -> int | None:
     """Handicap = pct% of (base - average), never below 0. Scratch bowlers get 0."""
     pct, base = tournament.get("handicap_pct"), tournament.get("handicap_base")
@@ -259,5 +282,5 @@ def grouped_results(tournament_id: int) -> list[dict]:
             r["games"] = r["games_bowled"]
         rolloff = apply_cut(members, n_final, recorded.get(name))
         out.append({"group": name, "label": division_label(name, divs), "rows": members, "finalists": n_final,
-                    "rolloff": rolloff})
+                    "rolloff": rolloff, "rolloff_recorded": recorded.get(name) or {}})
     return out

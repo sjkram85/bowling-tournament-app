@@ -106,12 +106,21 @@ def certified_pdf_filename(tournament: dict | None) -> str:
 
 
 def rolloff_details(tournament_id: int) -> dict[str, list[dict]]:
-    """{group: [{bowler_id, total, decided_by}]} recorded cut roll-off winners."""
+    """{group: [{bowler_id, total, decided_by, rolloff_score?}]} recorded cut roll-off winners."""
     try:
-        rows = query("SELECT group_name, bowler_id, total, decided_by FROM cut_rolloffs WHERE tournament_id = ? ORDER BY id",
-                     (tournament_id,))
+        rows = query(
+            "SELECT group_name, bowler_id, total, decided_by, rolloff_score FROM cut_rolloffs "
+            "WHERE tournament_id = ? ORDER BY id",
+            (tournament_id,),
+        )
     except Exception:
-        return {}
+        try:
+            rows = query(
+                "SELECT group_name, bowler_id, total, decided_by FROM cut_rolloffs WHERE tournament_id = ? ORDER BY id",
+                (tournament_id,),
+            )
+        except Exception:
+            return {}
     out: dict[str, list[dict]] = {}
     for r in rows:
         out.setdefault(r["group_name"], []).append(dict(r))
@@ -139,9 +148,16 @@ def _finals_section(tournament_id, groups, placements, sec_heading, th_style, td
                 wn = ", ".join(escape(names[w["bowler_id"]]) for w in won)
                 losers = [escape(r["name"]) for r in tied_all if r["id"] not in {w["bowler_id"] for w in won}]
                 by = ", ".join(sorted({w["decided_by"] for w in won if w.get("decided_by")}))
+                scored = [w for w in won if w.get("rolloff_score")]
+                score_txt = ""
+                if scored:
+                    score_txt = " Roll-off score: " + ", ".join(
+                        f"{escape(names.get(w['bowler_id'], '') or '')} {w['rolloff_score']}" for w in scored
+                    ) + "."
                 note = (f"Roll-off for the last finals spot: {tie_names} tied at {total} after qualifying. "
                         f"<b>{wn}</b> won the roll-off{f' (recorded by {escape(by)})' if by else ''} and advanced to the finals"
-                        + (f"; {', '.join(losers)} did not advance and are ranked by qualifying." if losers else "."))
+                        + (f"; {', '.join(losers)} did not advance and are ranked by qualifying." if losers else ".")
+                        + score_txt)
             block += [Paragraph(note, small_style), Spacer(1, 4)]
         ms = plc["matches"]
         if not ms:
@@ -482,13 +498,117 @@ def build_certified_pdf(tournament_id: int, certified_by: str) -> bytes:
     return buffer.getvalue()
 
 
-def freeze_tournament(tournament_id: int) -> None:
-    """Lock down tournament as frozen/archived."""
+def _archive_snapshot(tournament_id: int) -> dict:
+    """JSON the Archive Vault reads: tournament, roster, scores, and final placement."""
+    from modules.placement import closeout_standings
+
+    tournament = get_tournament(tournament_id) or {}
+    safe_t = {k: v for k, v in dict(tournament).items() if not isinstance(v, (bytes, memoryview))}
+    bowlers = query(
+        """SELECT id, name, usbc_id, entering_avg, handicap, lane_assignment, paid_status, is_youth, division
+           FROM bowlers WHERE tournament_id = ? ORDER BY name""",
+        (tournament_id,),
+    )
+    scores = query(
+        """SELECT bowler_id, game_number, scratch_score, total_score FROM scores
+           WHERE tournament_id = ? ORDER BY bowler_id, game_number""",
+        (tournament_id,),
+    )
+    by_id = {b["id"]: b for b in bowlers}
+    finals = []
+    for row in closeout_standings(tournament_id)["rows"]:
+        b = by_id.get(row["id"], {})
+        finals.append({
+            "rank": row["place"] or row.get("qual_rank") or "",
+            "name": row["name"],
+            "usbc_id": row.get("usbc_id"),
+            "entering_avg": b.get("entering_avg"),
+            "handicap": b.get("handicap") or 0,
+            "scratch_total": row.get("total_scratch") or 0,
+            "handicap_total": row.get("grand_total") or 0,
+        })
+    return {"tournament": safe_t, "final_standings": finals, "bowlers": bowlers, "scores": scores}
+
+
+def save_tournament_archive(tournament_id: int, archived_by: str, pdf_bytes: bytes | None = None) -> int:
+    """Write one vault row (certified PDF, SMART CSV, BLS streams, snapshot). Does not delete scores."""
     block_if_practice(tournament_id, "archived")
+    if pdf_bytes is None:
+        pdf_bytes = build_certified_pdf(tournament_id, archived_by)
+    from modules.smart_export import build_smart_export, recipients_csv
+    smart_csv = recipients_csv(build_smart_export(tournament_id))
+    try:
+        bls = build_bls_streams(tournament_id)
+    except Exception:
+        bls = {}
+    snapshot = _archive_snapshot(tournament_id)
     conn = get_connection()
     try:
         with conn:
-            conn.execute("UPDATE tournaments SET status = 'closed' WHERE id = ?", (tournament_id,))
+            cur = conn.execute(
+                """INSERT INTO tournament_archives
+                   (tournament_id, archived_by, snapshot_json, certified_pdf, smart_csv, bls_bits_csv, bls_autoscoring_dat)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (tournament_id, archived_by or "TD", json.dumps(snapshot), pdf_bytes, smart_csv or "",
+                 bls.get("bits_csv") or "", bls.get("autoscoring_dat") or ""),
+            )
+            return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def latest_archive(tournament_id: int) -> dict | None:
+    try:
+        rows = query(
+            "SELECT * FROM tournament_archives WHERE tournament_id = ? ORDER BY id DESC LIMIT 1",
+            (tournament_id,),
+        )
+    except Exception:
+        return None
+    return rows[0] if rows else None
+
+
+def freeze_tournament(tournament_id: int, archived_by: str = "TD", pdf_bytes: bytes | None = None) -> int:
+    """Save the certified PDF into the vault, then lock scoring. Scores are not deleted."""
+    block_if_practice(tournament_id, "archived")
+    archive_id = save_tournament_archive(tournament_id, archived_by, pdf_bytes=pdf_bytes)
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE tournaments SET status = 'closed', closed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (tournament_id,),
+            )
         checkpoint_db()
     finally:
         conn.close()
+    try:
+        from modules.db_state import log_desk_action
+        log_desk_action(archived_by or "TD", "td",
+                        f"Froze tournament #{tournament_id} and saved archive #{archive_id}. Scores were not deleted.")
+    except Exception:
+        pass
+    return archive_id
+
+
+def reopen_tournament(tournament_id: int, by: str) -> bool:
+    """Admin undo of a freeze. Scores and the vault snapshot stay. Practice events are not reopened."""
+    block_if_practice(tournament_id, "reopened")
+    tournament = get_tournament(tournament_id)
+    if not tournament or str(tournament.get("status") or "").lower() != "closed":
+        return False
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE tournaments SET status = 'active', closed_at = NULL WHERE id = ?",
+                (tournament_id,),
+            )
+    finally:
+        conn.close()
+    try:
+        from modules.db_state import log_desk_action
+        log_desk_action(by or "Admin", "admin", f"Reopened frozen tournament #{tournament_id}. Scores were kept.")
+    except Exception:
+        pass
+    return True

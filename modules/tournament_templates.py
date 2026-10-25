@@ -30,6 +30,8 @@ ROSE_MURPHY_PRESET = {
         "handicap_pct": 90,
         "handicap_base": 220,
         "grouping": "division_gender",  # confirmed by Scott: average division x boys/girls
+        "lane_pattern": "same_pair",  # 3 games on the same pair — do not cross the house
+        "brackets_enabled": 0,  # no bracket side pots; do not invent bracket money
         "divisions": [
             {"name": "Division 1", "min_avg": 160, "max_avg": None, "first_place": 500},
             {"name": "Division 2", "min_avg": 126, "max_avg": 159, "first_place": 300},
@@ -123,7 +125,8 @@ def create_tournament_from_template(template_key: str, host_center: str, pin: st
                        no_walkins = ?, entry_deadline = ?, event_start = ?, divisions_json = ?, unconfirmed_json = ?,
                        fees_at_front_desk = ?, entry_fee = CASE WHEN ? THEN 0 ELSE entry_fee END,
                        require_usbc = ?, require_gender = ?, require_birthdate = ?, handicap_pct = ?, handicap_base = ?,
-                       grouping = ?, age_cutoff = ?, age_groups_json = ?, rules_text = ?
+                       grouping = ?, age_cutoff = ?, age_groups_json = ?, rules_text = ?,
+                       lane_pattern = ?, brackets_enabled = ?
                        WHERE id = ?""",
                     (template_key, locked["youth_only"], locked["require_smart"], locked["no_walkins"],
                      locked["entry_deadline"], locked["event_start"], json.dumps(locked["divisions"]),
@@ -132,7 +135,8 @@ def create_tournament_from_template(template_key: str, host_center: str, pin: st
                      locked.get("require_usbc", 0), locked.get("require_gender", 0), locked.get("require_birthdate", 0),
                      locked.get("handicap_pct", 90), locked.get("handicap_base", 220), locked.get("grouping", "division"),
                      locked.get("age_cutoff"), json.dumps(locked.get("age_groups", [])),
-                     json.dumps(locked.get("rules_text", [])), t_id),
+                     json.dumps(locked.get("rules_text", [])),
+                     locked.get("lane_pattern"), locked.get("brackets_enabled"), t_id),
                 )
     finally:
         conn.close()

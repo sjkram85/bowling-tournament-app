@@ -40,8 +40,28 @@ def init_bracket_tables() -> None:
     finally:
         conn.close()
 
+def event_uses_brackets(tournament: dict | None) -> bool:
+    """False for events that do not sell brackets (Rose Murphy). Missing flag stays on for older custom events."""
+    if not tournament:
+        return False
+    flag = tournament.get("brackets_enabled")
+    if flag is not None and flag != "":
+        try:
+            return bool(int(flag))
+        except (TypeError, ValueError):
+            return False
+    if "Rose Murphy" in str(tournament.get("preset_key") or ""):
+        return False
+    if tournament.get("rules_locked") and tournament.get("youth_only"):
+        return False
+    return True
+
+
 def create_brackets_for_tournament(tournament_id: int, bracket_type: str = "handicap", entry_fee: float = 10.0) -> int:
     """Automatically group available bowlers into 8-person single-elimination brackets."""
+    from modules.standings import get_tournament
+    if not event_uses_brackets(get_tournament(tournament_id)):
+        return 0
     init_bracket_tables()
     conn = get_connection()
     try:
@@ -86,6 +106,11 @@ def score_bracket_round(bracket_id: int, round_number: int) -> None:
 
 def get_bracket_financial_ledger(tournament_id: int) -> dict:
     """Compute total collected funds and payout liability for brackets and side pots."""
+    from modules.standings import get_tournament
+    empty = {"brackets": [], "side_pots": [], "total_collected": 0.0,
+             "bracket_payout_liability": 0.0, "pot_payout_liability": 0.0, "enabled": False}
+    if not event_uses_brackets(get_tournament(tournament_id)):
+        return empty
     init_bracket_tables()
     conn = get_connection()
     try:
@@ -114,7 +139,8 @@ def get_bracket_financial_ledger(tournament_id: int) -> dict:
             "side_pots": [dict(r) for r in side_pots],
             "total_collected": total_bracket_collected + total_pot_collected,
             "bracket_payout_liability": total_bracket_collected * 0.80,
-            "pot_payout_liability": total_pot_collected
+            "pot_payout_liability": total_pot_collected,
+            "enabled": True,
         }
     finally:
         conn.close()

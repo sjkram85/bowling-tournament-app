@@ -361,7 +361,7 @@ def init_db() -> None:
                     name TEXT NOT NULL,
                     usbc_id TEXT,
                     email TEXT,
-                    entering_avg INTEGER DEFAULT 200,
+                    entering_avg INTEGER,
                     handicap INTEGER DEFAULT 0,
                     lane_assignment INTEGER DEFAULT 1,
                     lineup_position INTEGER DEFAULT 1,
@@ -539,6 +539,8 @@ def ensure_tournament_config_columns() -> None:
                 ("event_end_date", "TEXT"),
                 ("cert_number", "TEXT"),
                 ("partner_name", "TEXT"),
+                ("lane_pattern", "TEXT"),
+                ("brackets_enabled", "INTEGER"),
             ]
             for col_name, col_type in col_defs:
                 if col_name not in cols:
