@@ -22,7 +22,10 @@ def test_build_review_flags():
     assert rv["unmatched"] == ["Zed"]
     rv = build_review(LANE, [{"name": "Ann Smith", "game_score": None}])
     assert {r["bowler_id"]: r["flags"] for r in rv["rows"]}[1] == ["missing"]
-    assert save_errors({1: 301}) and not save_errors({1: 300, 2: 0})
+    zero = {r["bowler_id"]: r for r in build_review(LANE, [{"name": "Ann Smith", "game_score": 0}])["rows"]}
+    assert zero[1]["value"] == 0 and zero[1]["flags"] == []
+    assert zero[2]["value"] is None and zero[2]["flags"] == ["missing"]
+    assert save_errors({1: 301}) and not save_errors({1: 300, 2: 0, 3: None})
 
 
 @pytest.fixture
@@ -92,6 +95,43 @@ def test_ai_failure_returns_none(monkeypatch):
     monkeypatch.setattr(ms, "extract_scores_from_overhead_photo",
                         lambda b: {"status": "success", "extracted_data": [{"name": "Cal Ray", "game_score": 177}]})
     assert {r["bowler_id"]: r["value"] for r in ms.read_photo(b"img", LANE)["rows"]}[3] == 177
+
+
+def test_photo_saves_a_read_zero_and_skips_blank_bowlers(ev):
+    tid, path = ev
+    at = _review_app(tid, path, [{"name": "Ann Smith", "game_score": 0}]).run()
+    assert not at.exception
+    boxes = {n.label: n for n in at.number_input}
+    assert boxes["Ann Smith"].value == 0
+    assert boxes["Bea Jones"].value is None and boxes["Cal Ray"].value is None
+    next(b for b in at.button if b.label == "Save these scores").click().run()
+    s = _scores(tid)
+    assert s[1]["scratch_score"] == 0 and s[1]["verified"] == 0 and s[1]["recorded_by"] == "Mike (photo)"
+    assert 2 not in s and 3 not in s
+    assert any(r["scratch_score"] == 0 for r in td_team.needs_verifying(tid))
+    conn = db_state.get_connection()
+    total = conn.execute("SELECT hdcp_score, total_score FROM scores WHERE bowler_id=1").fetchone()
+    conn.close()
+    assert total["hdcp_score"] == 10 and total["total_score"] == 10
+
+
+def test_photo_typed_zero_does_not_fill_blank_bowlers(ev):
+    tid, path = ev
+    at = _review_app(tid, path, []).run()
+    assert all(n.value is None for n in at.number_input)
+    next(n for n in at.number_input if n.label == "Ann Smith").set_value(0).run()
+    next(b for b in at.button if b.label == "Save these scores").click().run()
+    s = _scores(tid)
+    assert set(s) == {1} and s[1]["scratch_score"] == 0
+
+
+def test_photo_cleared_zero_is_not_saved(ev):
+    tid, path = ev
+    at = _review_app(tid, path, [{"name": "Bea Jones", "game_score": 0}]).run()
+    assert next(n for n in at.number_input if n.label == "Bea Jones").value == 0
+    next(n for n in at.number_input if n.label == "Bea Jones").set_value(None).run()
+    next(b for b in at.button if b.label == "Save these scores").click().run()
+    assert _scores(tid) == {}
 
 
 def test_photo_saves_recorded_in_undo_history_and_undoable(ev):

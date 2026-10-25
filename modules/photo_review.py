@@ -50,13 +50,18 @@ def build_review(lane_bowlers: list[dict], extracted: list[dict]) -> dict:
 
 
 def check_value(v) -> list[str]:
-    if v is None or v == 0:
+    """Blank is missing. 0 is a real score, same as the desk."""
+    if v is None:
         return ["missing"]
     if v > 300 or v < 0:
         return ["out of range (0–300)"]
     return []
 
 
-def save_errors(values: dict[int, int]) -> list[str]:
-    """Plain messages that block saving (values = {bowler_id: score}; 0 means 'skip')."""
-    return [f"Score {v} is over 300." for v in values.values() if v and (v > 300 or v < 0)]
+def save_errors(values: dict) -> list[str]:
+    """Messages that block saving. Blank is allowed (that bowler is skipped). 0 is a real score."""
+    return [
+        f"Score {v} is over 300."
+        for v in values.values()
+        if v is not None and (v > 300 or v < 0)
+    ]
