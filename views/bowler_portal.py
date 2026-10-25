@@ -13,7 +13,9 @@ def _get_active_tournaments() -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT id, name, host_center, status, game_count FROM tournaments "
+            "SELECT id, name, host_center, status, game_count, "
+            "COALESCE(fees_at_front_desk, 0) AS fees_at_front_desk "
+            "FROM tournaments "
             "WHERE status = 'active' AND COALESCE(is_practice, 0) = 0 ORDER BY id DESC"
         ).fetchall()
         return [dict(r) for r in rows]
@@ -59,26 +61,22 @@ def _confirm_check_in(bowler_id: int, bowler_name: str) -> bool:
     return False
 
 
-def _render_checkin_flow(active_tourneys: list[dict]) -> None:
-    """Dedicated arrival verification gate for bowlers."""
+def _render_checkin_flow(tourney: dict) -> None:
+    """Dedicated arrival verification gate for one event."""
+    from modules.events import front_desk_fee_copy
+    subtitle = (
+        "Confirm arrival and get your lane. The entry fee is collected at the front desk."
+        if front_desk_fee_copy(tourney)
+        else "Confirm entry, verify entry fee payment, and receive your lane assignment"
+    )
     st.markdown(
-        """<div style="background: linear-gradient(135deg, #064E3B 0%, #0F172A 100%); border: 1px solid #10B981; border-radius: 12px; padding: 18px; text-align: center; margin-bottom: 20px;">
+        f"""<div style="background: linear-gradient(135deg, #064E3B 0%, #0F172A 100%); border: 1px solid #10B981; border-radius: 12px; padding: 18px; text-align: center; margin-bottom: 20px;">
 <span style="background: #10B981; color: #022C22; font-size: 11px; font-weight: 800; padding: 3px 10px; border-radius: 999px; text-transform: uppercase;">CHUSBC Arrival Gate</span>
 <h2 style="color: #F8FAFC; margin: 10px 0 4px 0;">🎳 Bowler Self Check-In</h2>
-<p style="color: #6EE7B7; font-size: 13px; margin-bottom: 0;">Confirm entry, verify entry fee payment & receive lane assignment</p>
+<p style="color: #6EE7B7; font-size: 13px; margin-bottom: 0;">{subtitle}</p>
 </div>""",
         unsafe_allow_html=True,
     )
-
-    if not active_tourneys:
-        st.warning("No active tournament check-in is currently open. Check with tournament desk.")
-        return
-
-    tourney = active_tourneys[0] if len(active_tourneys) == 1 else None
-    if not tourney:
-        tourney_map = {f"{t['name']} ({t['host_center']})": t for t in active_tourneys}
-        choice = st.selectbox("Select Your Tournament", list(tourney_map.keys()))
-        tourney = tourney_map[choice]
 
     bowlers = _get_tournament_bowlers(tourney["id"])
     if not bowlers:
@@ -92,23 +90,33 @@ def _render_checkin_flow(active_tourneys: list[dict]) -> None:
         record = next(b for b in bowlers if b["name"] == selected_name)
         is_paid = record["paid_status"] == "paid"
         is_checked = bool(record["checked_in"])
+        from modules.events import front_desk_fee_copy, mask_usbc_id
+        front_desk = front_desk_fee_copy(tourney)
 
         st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
         with st.container(border=True):
             col_l, col_r = st.columns([2, 1])
             with col_l:
                 st.subheader(record["name"])
-                usbc = record["usbc_id"] or "Not on file"
-                st.caption(f"USBC ID: **{usbc}** | Entering Avg: **{record['entering_avg'] or 'N/A'}** | HDCP: **+{record['handicap']}**")
+                st.caption(
+                    f"USBC ID: **{mask_usbc_id(record['usbc_id'])}** | "
+                    f"Entering Avg: **{record['entering_avg'] or 'N/A'}** | HDCP: **+{record['handicap']}**"
+                )
             with col_r:
-                if is_paid:
+                if front_desk:
+                    st.caption("Fee is collected at the front desk.")
+                elif is_paid:
                     st.markdown("<div style='text-align:right;'><span style='background:#064E3B; color:#6EE7B7; font-weight:700; padding:4px 10px; border-radius:6px;'>PAID IN FULL</span></div>", unsafe_allow_html=True)
                 else:
                     st.markdown("<div style='text-align:right;'><span style='background:#7F1D1D; color:#FCA5A5; font-weight:700; padding:4px 10px; border-radius:6px;'>UNPAID BALANCE</span></div>", unsafe_allow_html=True)
 
         st.markdown("---")
-
-        if not is_paid:
+        if front_desk:
+            st.info(front_desk)
+            fee_blocks = False
+        else:
+            fee_blocks = not is_paid
+        if fee_blocks:
             st.error("⚠️ Entry fee balance required before starting lane can be assigned.")
             
             # Stripe / Square Payment Integration Placeholder (Coming Soon)
@@ -143,7 +151,10 @@ def _render_checkin_flow(active_tourneys: list[dict]) -> None:
                 unsafe_allow_html=True,
             )
         else:
-            st.info("Your entry is verified and paid. Tap below to confirm arrival.")
+            if front_desk:
+                st.info("Tap below to confirm arrival and get your lane.")
+            else:
+                st.info("Your entry is verified and paid. Tap below to confirm arrival.")
             if st.button("Confirm Check-In & Get Lane", type="primary", use_container_width=True):
                 if _confirm_check_in(record["id"], record["name"]):
                     st.success(f"Checked in! Proceed to Lane {record['lane_assignment']}.")
@@ -282,7 +293,15 @@ def render_bowler_portal() -> None:
         st.info("No active tournaments are currently running.")
         return
 
-    tourney = active_tourneys[0]
+    from modules.events import pick_public_event
+    tourney, link_error = pick_public_event(active_tourneys, st.query_params)
+    if link_error:
+        st.error(link_error)
+        return
+    if tourney is None:
+        tourney_map = {f"{t['name']} ({t['host_center']})": t for t in active_tourneys}
+        choice = st.selectbox("Select Your Tournament", list(tourney_map.keys()))
+        tourney = tourney_map[choice]
     t_id = tourney["id"]
 
     tab_checkin, tab_standings, tab_action = st.tabs(
@@ -290,7 +309,7 @@ def render_bowler_portal() -> None:
     )
 
     with tab_checkin:
-        _render_checkin_flow(active_tourneys)
+        _render_checkin_flow(tourney)
 
     with tab_standings:
         _render_live_standings_table(tourney)

@@ -34,7 +34,10 @@ def render_preset_panel(t: dict, td_name: str) -> None:
         if t.get("event_start"):
             lines.append(f"**When:** {t['event_start']}")
         if t.get("entry_deadline"):
-            lines.append(f"**Entry deadline:** {t['entry_deadline']}" + (" — **NO walk-ins**" if t.get("no_walkins") else ""))
+            lines.append(
+                f"**Entry deadline:** {t['entry_deadline']} (end of day, Eastern Time)"
+                + (" — **NO walk-ins**" if t.get("no_walkins") else "")
+            )
         if t.get("youth_only"):
             lines.append("**Youth bowlers only** (Maryland USBC sanctioned)")
         if t.get("require_smart"):
@@ -81,14 +84,28 @@ def render_preset_panel(t: dict, td_name: str) -> None:
             st.markdown("<p style='font-size:17px'>The website didn't say these things. Check the official entry form, then fill them in:</p>"
                         + "".join(f"<div style='font-size:17px'>• {x}</div>" for x in todo), unsafe_allow_html=True)
             with st.form(f"flyer_{t_id}"):
+                from modules.smart_export import confirm_flyer_amounts, lower_amounts_text
                 amounts = {}
+                lowers = {}
                 for d in divs:
                     amounts[d["name"]] = st.number_input(f"{d['name']} 1st place scholarship ($)", 0, 10000,
                                                          int(d.get("first_place") or 0), step=25)
-                notes = st.text_area("Lane pairs, check-in time, and scholarships for 2nd place and below (committee decides)",
-                                     value=t.get("flyer_notes") or "")
+                    lowers[d["name"]] = st.text_input(
+                        f"{d['name']} — 2nd place and below (optional, dollars, comma-separated)",
+                        value=lower_amounts_text(d),
+                        placeholder="Leave blank if the committee has not set these",
+                        help="Example: 250, 100. Blank does not store $0 and does not clear the reminder.",
+                    )
+                notes = st.text_area("Other notes from the flyer (optional)", value=t.get("flyer_notes") or "")
+                st.caption("2nd place and below stay on the reminder until every division has an amount typed above. "
+                           "Prism does not fill those in.")
                 if st.form_submit_button("✅ I checked the flyer. Save these.", type="primary", use_container_width=True):
-                    new_divs = [{**d, "first_place": amounts[d["name"]]} for d in divs]
-                    _update(t_id, divisions_json=json.dumps(new_divs), flyer_notes=notes.strip(), unconfirmed_json=json.dumps([]))
-                    log_desk_action(td_name, "td", f"Confirmed flyer details for tournament #{t_id}")
-                    st.rerun()
+                    try:
+                        new_divs, remaining = confirm_flyer_amounts(divs, todo, amounts, lowers)
+                    except ValueError as exc:
+                        st.error(str(exc))
+                    else:
+                        _update(t_id, divisions_json=json.dumps(new_divs), flyer_notes=notes.strip(),
+                                unconfirmed_json=json.dumps(remaining))
+                        log_desk_action(td_name, "td", f"Confirmed flyer details for tournament #{t_id}")
+                        st.rerun()

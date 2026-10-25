@@ -26,7 +26,7 @@ from modules.db_state import get_connection, log_desk_action
 from modules import roster_import
 from modules import auth as _auth
 from modules.divisions import assign_all, clean_average, entry_handicap, entry_problems, normalize_birth
-from modules.events import cancel_tournament
+from modules.events import cancel_tournament, entry_package_labels, public_checkin_url
 from components.preset_panel import render_preset_panel
 from modules.tournament_templates import CHUSBC_TEMPLATES, create_tournament_from_template, save_tournament_as_template
 from modules.settings import get_secret, ai_available, AI_OFF_MESSAGE, model_name
@@ -406,13 +406,18 @@ def render_intake_gateway() -> None:
     with tab_entry:
         active_model = model_name()
 
-        st.markdown("##### 🏆 Multi-Event Package Registration")
-        st.caption("Select which events this roster entry applies to simultaneously (avoids importing separate files for Singles, Doubles, Team, and All-Events):")
-        col_ev1, col_ev2, col_ev3, col_ev4 = st.columns(4)
-        reg_singles = col_ev1.checkbox("Singles", value=True)
-        reg_doubles = col_ev2.checkbox("Doubles", value=True)
-        reg_team = col_ev3.checkbox("Team", value=False)
-        reg_all_events = col_ev4.checkbox("All-Events", value=True)
+        package = entry_package_labels(active_tourney)
+        st.markdown("##### 🏆 Event tags on this entry")
+        st.caption(package["caption"])
+        if package["show_picker"]:
+            col_ev1, col_ev2, col_ev3, col_ev4 = st.columns(4)
+            reg_singles = col_ev1.checkbox("Singles", value=True) if package["offer_singles"] else False
+            reg_doubles = col_ev2.checkbox("Doubles", value=False) if package["offer_doubles"] else False
+            reg_team = col_ev3.checkbox("Team", value=False) if package["offer_team"] else False
+            reg_all_events = False
+            col_ev4.caption("All-Events is not used. It does not create standings.")
+        else:
+            reg_singles, reg_doubles, reg_team, reg_all_events = True, False, False, False
 
         st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
 
@@ -737,9 +742,9 @@ def render_intake_gateway() -> None:
         st.caption("Display or share these direct portals with bowlers and floor score verifiers prior to launching the squad.")
 
         base = _get_base_url()
-        checkin_url = f"{base}/?mode=bowler&action=checkin"
-        portal_url = f"{base}/?mode=bowler"
-        scorer_url = f"{base}/?mode=score"
+        checkin_url = public_checkin_url(base, t_id)
+        portal_url = f"{base}/?mode=bowler&t={t_id}"
+        scorer_url = f"{base}/?mode=score&t={t_id}"
 
         b64_checkin = _generate_qr_base64(checkin_url)
         b64_portal = _generate_qr_base64(portal_url)

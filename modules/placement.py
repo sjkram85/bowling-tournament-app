@@ -32,10 +32,11 @@ def ladder_order(matches: list[dict]) -> list[int]:
     return order
 
 
-def group_placement(tournament_id: int, group: dict) -> dict:
+def group_placement(tournament_id: int, group: dict, matches: list | None = None) -> dict:
     """{'status', 'order': rows best-first with r['place'] set, 'matches', 'champion', 'awards_ok'}.
 
     awards_ok is False while a roll-off or a started stepladder is unfinished (no money shown yet).
+    Pass matches already loaded for this group to skip another query. None loads them.
     """
     from modules.stepladder import get_stepladder_state
 
@@ -43,7 +44,8 @@ def group_placement(tournament_id: int, group: dict) -> dict:
     rows = sorted(rows, key=lambda r: r["rank"])
     finalists = [r for r in rows if r.get("finalist")]
     others = [r for r in rows if not r.get("finalist")]
-    matches = get_stepladder_state(tournament_id, group["group"])
+    if matches is None:
+        matches = get_stepladder_state(tournament_id, group["group"])
     if group.get("rolloff"):
         status = STATUS_ROLLOFF_PENDING
     elif matches and any(m["status"] != "completed" for m in matches):

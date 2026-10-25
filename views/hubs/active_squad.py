@@ -89,7 +89,8 @@ def _matrix_snapshot_query(tournament_id: int, game_number: int) -> tuple[dict[i
                 SELECT COUNT(*) FROM (
                     SELECT b.id FROM bowlers b
                     JOIN scores s ON b.id = s.bowler_id
-                    WHERE b.tournament_id = ? AND b.is_pacer = 0 AND s.scratch_score > 0
+                    -- A saved game counts even when the scratch score is 0.
+                    WHERE b.tournament_id = ? AND b.is_pacer = 0
                     GROUP BY b.id
                     HAVING COUNT(DISTINCT s.game_number) >= (SELECT game_count FROM tournaments WHERE id = ?)
                 )
@@ -110,6 +111,38 @@ def _matrix_snapshot_query(tournament_id: int, game_number: int) -> tuple[dict[i
         else:
             done = int(r["done"] or 0)
     return scores, done
+
+
+def _cell_score(value):
+    """Blank / missing is None. 0 is a real score. NaN from the grid is blank."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def changed_desk_scores(baseline: dict, edited: dict) -> dict[int, int]:
+    """Scores the TD changed since the grid was loaded.
+
+    Unchanged cells are left out, so a stale grid cannot rewrite them.
+    A blank cell is not a score. 0 is a real score when the TD entered it.
+    """
+    updates = {}
+    for bowler_id, raw in edited.items():
+        new = _cell_score(raw)
+        if new is None:
+            continue
+        old = _cell_score(baseline.get(bowler_id) if baseline else None)
+        if old != new:
+            updates[int(bowler_id)] = new
+    return updates
 
 
 def _save_score(tournament_id: int, bowler_id: int, game_number: int, scratch: int, hdcp: int, user_name: str) -> int | None:
@@ -198,10 +231,25 @@ def _render_lane_heatmap(t_id: int, active_game: int, tourney: dict, bowlers: li
 
 
 def _render_score_entry(t_id: int, active_game: int, tourney: dict, bowlers: list[dict], td_name: str, tourney_game_count: int) -> None:
-    """Desk score grid. Saves only to active_game — not to a fragment-captured game."""
+    """Desk score grid. Saves only cells the TD changed, and only for the selected game."""
     scores_map, fully_completed_count = _matrix_snapshot(t_id, active_game)
     st.subheader(f"Direct Desk Score Entry — Game {active_game}")
-    st.caption("Enter scratch scores from the recap sheet. Save writes this game only, on the lane shown (same as the floor phone).")
+    st.caption(
+        "Leave a cell blank if that game has no score yet. Type 0 to save a real zero. "
+        "Save writes only cells you changed, for this game, on the lane shown (same as the floor phone)."
+    )
+    editor_key = f"editor_scores_{t_id}_g{active_game}"
+    base_key = f"desk_score_baseline_{t_id}_g{active_game}"
+    live = {}
+    for b in bowlers:
+        sc = scores_map.get(b["id"])
+        live[b["id"]] = None if sc is None else sc.get("scratch_score")
+    if base_key not in st.session_state:
+        st.session_state[base_key] = dict(live)
+    baseline = st.session_state[base_key]
+    for bowler_id, scratch in live.items():
+        if bowler_id not in baseline:
+            baseline[bowler_id] = scratch
 
     triage_rows = []
     for b in bowlers:
@@ -216,9 +264,9 @@ def _render_score_entry(t_id: int, active_game: int, tourney: dict, bowlers: lis
             "Current Lane": lane_shown,
             "Entering Avg": b["entering_avg"],
             "HDCP": b["handicap"],
-            "Scratch": sc.get("scratch_score", 0),
-            "Total Score": sc.get("total_score", 0),
-            "Verifier": sc.get("recorded_by", "Pending"),
+            "Scratch": baseline.get(b_id),
+            "Total Score": sc.get("total_score", 0) if sc else 0,
+            "Verifier": sc.get("recorded_by", "Pending") if sc else "Pending",
         })
 
     df_scores = pd.DataFrame(triage_rows)
@@ -226,7 +274,7 @@ def _render_score_entry(t_id: int, active_game: int, tourney: dict, bowlers: lis
         df_scores,
         hide_index=True,
         use_container_width=True,
-        key=f"editor_scores_g{active_game}",
+        key=editor_key,
         disabled=["Bowler ID", "Bowler Name", "Start Lane", "Current Lane", "Entering Avg", "HDCP", "Total Score", "Verifier"],
         column_config={
             "Scratch": st.column_config.NumberColumn(
@@ -234,29 +282,41 @@ def _render_score_entry(t_id: int, active_game: int, tourney: dict, bowlers: lis
                 min_value=0,
                 max_value=300,
                 step=1,
-                required=True,
+                required=False,
             )
         },
     )
 
-    if st.button(f"💾 Save Desk Score Adjustments for Game {active_game}", type="primary", use_container_width=True):
+    save_col, reload_col = st.columns([3, 1])
+    if reload_col.button("Reload scores", key=f"desk_reload_{t_id}_g{active_game}", use_container_width=True,
+                         help="Show the latest saved scores. This does not write anything."):
+        st.session_state.pop(base_key, None)
+        st.session_state.pop(editor_key, None)
+        st.rerun()
+    if save_col.button(f"💾 Save Desk Score Adjustments for Game {active_game}", type="primary", use_container_width=True):
         if not scoring_is_open(t_id):
             st.error("This event is frozen. Scores were not changed. An admin can reopen it from Finals Closeout.")
         else:
-            count_updated = 0
-            changed = []
-            for row in edited_scores.itertuples():
-                b_id = row._1  # Bowler ID
-                scratch = int(row.Scratch)
-                hdcp = int(row.HDCP)
-                if scratch > 0:
-                    hid = _save_score(t_id, b_id, int(active_game), scratch, hdcp, td_name)
+            edited_map = {}
+            handicaps = {}
+            for row in edited_scores.to_dict("records"):
+                bowler_id = int(row["Bowler ID"])
+                edited_map[bowler_id] = row["Scratch"]
+                handicaps[bowler_id] = int(row["HDCP"] or 0)
+            updates = changed_desk_scores(baseline, edited_map)
+            if not updates:
+                st.info("No score cells were changed, so nothing was written.")
+            else:
+                changed = []
+                for bowler_id, scratch in updates.items():
+                    hid = _save_score(t_id, bowler_id, int(active_game), scratch, handicaps.get(bowler_id, 0), td_name)
                     if hid:
                         changed.append(hid)
-                    count_updated += 1
-            st.session_state[f"desk_undo_{t_id}"] = changed
-            st.success(f"Successfully recorded and audited {count_updated} scores for Game {active_game}!")
-            st.rerun()
+                st.session_state[f"desk_undo_{t_id}"] = changed
+                st.session_state.pop(base_key, None)
+                st.session_state.pop(editor_key, None)
+                st.success(f"Saved {len(updates)} changed score(s) for Game {active_game}. Unchanged cells were left as they are.")
+                st.rerun()
 
     from components.undo_box import saved_undo_button
     saved_undo_button(f"desk_undo_{t_id}", td_name)
@@ -358,6 +418,11 @@ def render_active_squad() -> None:
 
     td_name = (current_user() or {}).get("display_name") or "Tournament Director"
     _render_lane_heatmap(t_id, int(active_game), tourney, bowlers)
+    st.markdown("### Division standings")
+    st.caption("Same cut, TIE – ROLL-OFF, and final placement as the lobby kiosk.")
+    from components.leaderboard import render_desk_division_standings
+    render_desk_division_standings(t_id)
+    st.markdown("---")
     _render_score_entry(t_id, int(active_game), tourney, bowlers, td_name, tourney["game_count"])
 
 def _render_logo_setup(t_id: int, tourney) -> None:

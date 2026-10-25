@@ -4,6 +4,12 @@ import streamlit as st
 
 from modules import auth, db_state
 
+SAFETY_COPY_PROMPT = (
+    "Download the safety copy now, before you leave this page. "
+    "It is the data this restore just replaced. Keep that file somewhere safe. "
+    "Do not continue until the download finishes."
+)
+
 
 def render_backup_restore() -> None:
     if not auth.is_admin():
@@ -26,6 +32,22 @@ def render_backup_restore() -> None:
 
     st.markdown("---")
     st.subheader("2. Restore from backup")
+    if st.session_state.get("bk_safety_file"):
+        name, payload = st.session_state["bk_safety_file"]
+        st.error(SAFETY_COPY_PROMPT)
+        st.download_button(
+            "⬇️ Download the safety copy now",
+            payload,
+            file_name=name,
+            mime="application/octet-stream",
+            type="primary",
+            key="bk_safety_download",
+        )
+        st.caption(f"Safety copy: {name}. This button stays here until you confirm the file is on your computer.")
+        if st.button("I downloaded the safety copy", key="bk_safety_done"):
+            st.session_state.pop("bk_safety_file", None)
+            st.rerun()
+        return
     st.write("Only use this if data was lost. It **replaces all current data** with the backup.")
     up = st.file_uploader("Choose a Prism backup file (.db)", type=["db"], key="bk_upload")
     if not up:
@@ -54,9 +76,8 @@ def render_backup_restore() -> None:
             st.error(f"Restore failed; nothing was changed. ({exc})")
             return
         st.session_state.pop("bk_data", None)
-        st.success(f"Restored. A safety copy of the old data was saved as {safety.name}.")
-        st.download_button("⬇️ Download the safety copy (old data)", safety.read_bytes(),
-                           file_name=safety.name, key="bk_safety")
+        st.session_state["bk_safety_file"] = (safety.name, safety.read_bytes())
+        st.rerun()
 
 
 def _render_turso_copy() -> None:
