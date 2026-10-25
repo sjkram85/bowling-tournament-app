@@ -492,6 +492,10 @@ def init_db() -> None:
 
     # New per-tournament rules/fee/handicap columns (added in the dynamic rules update)
     ensure_tournament_config_columns()
+    # scott's row from the positional create bug (email=center, center=role, role=td).
+    # Idempotent: a repaired or later-edited row no longer matches.
+    from modules.auth import repair_shifted_scott_account
+    repair_shifted_scott_account()
 
 
 def ensure_tournament_config_columns() -> None:

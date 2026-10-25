@@ -7,7 +7,7 @@ import sqlite3
 import streamlit as st
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from modules.constants import CENTERS
+from modules.constants import CENTERS, HOST_CENTERS
 from modules.db_state import get_connection, log_desk_action
 from modules.mailer import send_admin_registration_alert, send_applicant_approval_notice
 
@@ -144,14 +144,21 @@ def create_staff_user(
     username: str,
     password: str,
     display_name: str,
+    *,
     email: str = "",
     center_affiliation: str = "CHUSBC",
     role: str = "td",
     is_approved: int = 1,
 ) -> tuple[bool, str]:
-    """Create a staff user directly (used by admin console in staff_accounts.py)."""
+    """Create a staff user directly (used by the Staff Accounts add form).
+
+    email, center_affiliation, and role are keyword-only. Passing the center and
+    role as the next positional arguments used to store the center in email and
+    the role in center_affiliation, and left role as the default td.
+    """
     if len(password) < MIN_PASSWORD_LENGTH:
         return False, f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+    role = (role or "").strip()
     if role not in ROLES:
         return False, f"Invalid role: {role}."
 
@@ -175,8 +182,8 @@ def create_staff_user(
                     username.strip(),
                     hash_password(password),
                     display_name.strip(),
-                    email.strip(),
-                    center_affiliation,
+                    (email or "").strip(),
+                    (center_affiliation or "").strip(),
                     role,
                     int(is_approved),
                 ),
@@ -345,6 +352,172 @@ def reset_password(user_id: int, new_password: str, admin_name: str) -> str | No
         admin_name,
         "admin",
         f"Reset password for staff user '{target_username}'",
+    )
+    return None
+
+
+def shifted_staff_fields(email, center_affiliation, role) -> dict | None:
+    """Recover columns written by the positional create_staff_user call.
+
+    The add form passed center and role in the email and center slots, and the
+    real role stayed the default ``td``. A match is only that shape: email is a
+    host-center code, center is a role name, and role is ``td``. The recovered
+    email is empty — a real address was never collected, so none is invented.
+    """
+    stored_email = (email or "").strip()
+    stored_center = (center_affiliation or "").strip()
+    stored_role = (role or "").strip()
+    if stored_email not in HOST_CENTERS or stored_center not in ROLES or stored_role != "td":
+        return None
+    return {
+        "email": "",
+        "center_affiliation": stored_email,
+        "role": stored_center,
+    }
+
+
+def repair_shifted_scott_account() -> bool:
+    """Rewrite the scott row when it still has the positional-bug shape.
+
+    username scott, email CHUSBC, center admin, role td becomes role admin,
+    center CHUSBC, and a blank email. Any later edit no longer matches, so it
+    is left alone. Other usernames are not changed; Staff Accounts can edit those.
+    Returns True only when a row was rewritten.
+    """
+    conn = get_connection()
+    changes: list[str] = []
+    try:
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(staff_users);").fetchall()}
+        if not {"username", "email", "center_affiliation", "role"}.issubset(columns):
+            return False
+        with conn:
+            rows = conn.execute(
+                """
+                SELECT id, username, email, center_affiliation, role
+                FROM staff_users
+                WHERE LOWER(username) = 'scott'
+                """
+            ).fetchall()
+            for row in rows:
+                fields = shifted_staff_fields(row["email"], row["center_affiliation"], row["role"])
+                if fields is None:
+                    continue
+                conn.execute(
+                    """
+                    UPDATE staff_users
+                    SET email = ?, center_affiliation = ?, role = ?
+                    WHERE id = ?
+                      AND email = ?
+                      AND center_affiliation = ?
+                      AND role = ?
+                    """,
+                    (
+                        fields["email"],
+                        fields["center_affiliation"],
+                        fields["role"],
+                        row["id"],
+                        row["email"],
+                        row["center_affiliation"],
+                        row["role"],
+                    ),
+                )
+                checked = conn.execute(
+                    "SELECT email, center_affiliation, role FROM staff_users WHERE id = ?",
+                    (row["id"],),
+                ).fetchone()
+                if (
+                    checked
+                    and (checked["email"] or "") == fields["email"]
+                    and checked["center_affiliation"] == fields["center_affiliation"]
+                    and checked["role"] == fields["role"]
+                ):
+                    changes.append(
+                        f"{row['username']}: role {fields['role']}, "
+                        f"center {fields['center_affiliation']}, email cleared"
+                    )
+    finally:
+        conn.close()
+    if not changes:
+        return False
+    log_desk_action(
+        "System",
+        "admin",
+        "Repaired staff account after the positional create bug (" + "; ".join(changes) + ")",
+    )
+    return True
+
+
+def apply_shifted_scott_session_repair() -> None:
+    """Correct a signed-in scott session that still has the shifted columns.
+
+    Startup rewrites the database row. A session from before that still says
+    role td, which hides Staff Accounts. This only updates session state.
+    """
+    user = st.session_state.get("user")
+    if not isinstance(user, dict):
+        return
+    if (user.get("username") or "").strip().lower() != "scott":
+        return
+    fields = shifted_staff_fields(user.get("email"), user.get("center_affiliation"), user.get("role"))
+    if fields is None:
+        return
+    updated = dict(user)
+    updated.update(fields)
+    st.session_state["user"] = updated
+
+
+def update_staff_profile(
+    user_id: int,
+    *,
+    display_name: str,
+    email: str,
+    center_affiliation: str,
+    role: str,
+    admin_name: str,
+) -> str | None:
+    """Set display name, email, center, and role for one staff account.
+
+    Email may be blank. Center must be a host-center code. Role must be a known role.
+    """
+    name = (display_name or "").strip()
+    if not name:
+        return "Display name is required."
+    cleaned_email = (email or "").strip()
+    center = (center_affiliation or "").strip()
+    if center not in HOST_CENTERS:
+        return "Choose a center."
+    role = (role or "").strip()
+    if role not in ROLES:
+        return f"Invalid role: {role}."
+
+    conn = get_connection()
+    target_username = ""
+    try:
+        with conn:
+            row = conn.execute(
+                "SELECT username FROM staff_users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+            if not row:
+                return "User not found."
+            target_username = row["username"]
+            conn.execute(
+                """
+                UPDATE staff_users
+                SET display_name = ?, email = ?, center_affiliation = ?, role = ?
+                WHERE id = ?
+                """,
+                (name, cleaned_email, center, role, user_id),
+            )
+    except Exception as exc:
+        return f"Profile update failed: {str(exc)}"
+    finally:
+        conn.close()
+
+    log_desk_action(
+        admin_name,
+        "admin",
+        f"Updated profile for staff user '{target_username}' (role {role}, center {center})",
     )
     return None
 

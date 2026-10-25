@@ -82,6 +82,8 @@ def _sidebar_identity(user: dict) -> None:
 
 
 def render_desk() -> None:
+    # A session signed in before the scott repair still has role td, which hides this desk's admin pages.
+    auth.apply_shifted_scott_session_repair()
     user = auth.require_login()
     if user is None:
         return
