@@ -4,6 +4,8 @@ import streamlit as st
 from components.styles import inject_styles
 from modules.constants import CENTERS
 from modules.db_state import get_connection, log_desk_action
+from modules.events import scoring_is_open
+from modules.standings import current_lane, event_lane_pattern
 from modules.ocr_engine import extract_scores_from_overhead_photo
 from modules.settings import ai_available, AI_OFF_MESSAGE
 
@@ -19,29 +21,35 @@ def _get_active_tournament_for_scoring(event: dict | None) -> dict | None:
         conn.close()
 
 
-def _get_active_squad_lanes(tournament_id: int) -> list[int]:
-    """Retrieve distinct lanes currently in play for this tournament."""
+def _load_squad(tournament_id: int) -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT DISTINCT lane_assignment FROM bowlers WHERE tournament_id = ? AND lane_assignment IS NOT NULL ORDER BY lane_assignment ASC",
+            """SELECT id, name, handicap, is_pacer, lane_assignment, lineup_position
+               FROM bowlers WHERE tournament_id = ? ORDER BY lineup_position, name""",
             (tournament_id,),
-        ).fetchall()
-        return [r["lane_assignment"] for r in rows if r["lane_assignment"]]
-    finally:
-        conn.close()
-
-
-def _get_lane_bowlers(tournament_id: int, lane: int) -> list[dict]:
-    conn = get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT id, name, handicap, is_pacer FROM bowlers WHERE tournament_id = ? AND lane_assignment = ? ORDER BY lineup_position",
-            (tournament_id, lane),
         ).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()
+
+
+def _lane_for(tourney: dict, bowler: dict, game: int, squad: list[dict]) -> int:
+    return current_lane(bowler.get("lane_assignment") or 0, game, tourney, squad)
+
+
+def _lanes_for_game(tourney: dict, squad: list[dict], game: int) -> list[int]:
+    lanes = sorted({_lane_for(tourney, b, game, squad) for b in squad if b.get("lane_assignment")})
+    if lanes:
+        return lanes
+    host_code = tourney.get("host_center", "FHL")
+    max_lanes = CENTERS.get(host_code, {}).get("lanes", 40)
+    return list(range(1, max_lanes + 1))
+
+
+def _bowlers_on_lane(tourney: dict, squad: list[dict], lane: int, game: int) -> list[dict]:
+    """Bowlers the desk shows on this lane for this game. Same-pair events do not move."""
+    return [b for b in squad if _lane_for(tourney, b, game, squad) == int(lane)]
 
 
 def _get_existing_lane_scores(tournament_id: int, game_num: int) -> dict[int, dict]:
@@ -60,6 +68,8 @@ def _get_existing_lane_scores(tournament_id: int, game_num: int) -> dict[int, di
 
 def _record_score(tournament_id: int, bowler_id: int, game_num: int, scratch: int, hdcp: int, verifier_name: str,
                   source: str = "floor", device: str | None = None) -> int | None:
+    if not scoring_is_open(tournament_id):
+        return None
     from modules import score_history
     before = score_history.current(tournament_id, bowler_id, game_num)
     conn = get_connection()
@@ -147,29 +157,15 @@ def render_mobile_scoring() -> None:
 
     tab_manual, tab_camera = st.tabs(["🔢 10-Key Manual Input", "📸 AI Overhead Camera OCR"])
 
-    # Determine selectable lanes from active roster
-    active_lanes = _get_active_squad_lanes(tourney["id"])
-    if not active_lanes:
-        host_code = tourney.get("host_center", "FHL")
-        max_lanes = CENTERS.get(host_code, {}).get("lanes", 40)
-        active_lanes = list(range(1, max_lanes + 1))
+    squad = _load_squad(tourney["id"])
+    if event_lane_pattern(tourney) == "same_pair":
+        st.caption("Same pair: the lane does not change between games. It matches the desk.")
+    else:
+        st.caption("Lane shown is the lane for the game you pick — the same lane as the desk.")
 
     # --- TAB 1: 10-KEY MANUAL PAD ---
     with tab_manual:
-        col_lane, col_game = st.columns([1, 1], gap="small")
-        with col_lane:
-            if len(active_lanes) <= 12:
-                lane = st.radio(
-                    "Select Lane",
-                    options=active_lanes,
-                    format_func=lambda l: f"Lane {l}",
-                    horizontal=True,
-                    index=0,
-                    key="mobile_lane_radio",
-                )
-            else:
-                lane = st.selectbox("Select Lane", options=active_lanes, index=0)
-
+        col_game, col_lane = st.columns([1, 1], gap="small")
         with col_game:
             game_options = list(range(1, tourney["game_count"] + 1))
             game = st.radio(
@@ -180,8 +176,21 @@ def render_mobile_scoring() -> None:
                 index=0,
                 key="mobile_game_radio",
             )
+        active_lanes = _lanes_for_game(tourney, squad, int(game))
+        with col_lane:
+            if len(active_lanes) <= 12:
+                lane = st.radio(
+                    "Select Lane",
+                    options=active_lanes,
+                    format_func=lambda l: f"Lane {l}",
+                    horizontal=True,
+                    index=0,
+                    key=f"mobile_lane_g{game}",
+                )
+            else:
+                lane = st.selectbox("Select Lane", options=active_lanes, key=f"mobile_lane_g{game}")
 
-        bowlers = _get_lane_bowlers(tourney["id"], int(lane))
+        bowlers = _bowlers_on_lane(tourney, squad, int(lane), int(game))
         existing_scores = _get_existing_lane_scores(tourney["id"], game)
 
         if not bowlers:
@@ -214,6 +223,9 @@ def render_mobile_scoring() -> None:
                 btn_label = f"Update Lane {lane} Game {game} Scores" if all_recorded else f"Submit Lane {lane} Game {game} Scores"
                 submitted = st.form_submit_button(btn_label, type="primary", use_container_width=True)
                 if submitted:
+                    if not scoring_is_open(tourney["id"]):
+                        st.error("This event is frozen. Scores were not changed.")
+                        st.stop()
                     changed = []
                     for b in bowlers:
                         val = st.session_state.get(f"scratch_{b['id']}_g{game}", 0)
@@ -231,7 +243,7 @@ def render_mobile_scoring() -> None:
 
     # --- TAB 2: AI OVERHEAD OCR CAMERA SNAP ---
     with tab_camera:
-        _render_photo_tab(tourney, active_lanes, verifier_name)
+        _render_photo_tab(tourney, squad, verifier_name)
 
 
 PHOTO_FAIL_MESSAGE = "Prism A.I. couldn't read this photo. Please type the scores in the 10-Key Manual Input tab."
@@ -249,15 +261,16 @@ def read_photo(image: bytes, lane_bowlers: list[dict]) -> dict | None:
     return build_review(lane_bowlers, result["extracted_data"])
 
 
-def _render_photo_tab(tourney: dict, active_lanes: list[int], verifier_name: str) -> None:
+def _render_photo_tab(tourney: dict, squad: list[dict], verifier_name: str) -> None:
     """Photo -> A.I. read -> 'Does this look right?' review -> 'Save these scores'. Never saves directly."""
 
     st.subheader("Overhead Monitor Photo")
     st.caption("Take a photo of the lane monitor. Prism A.I. reads it, you check the numbers, then save.")
     c1, c2 = st.columns(2)
-    lane = c1.selectbox("Lane", active_lanes, format_func=lambda l: f"Lane {l}", key="photo_lane")
-    game = c2.selectbox("Game", list(range(1, tourney["game_count"] + 1)), format_func=lambda g: f"Game {g}",
+    game = c1.selectbox("Game", list(range(1, tourney["game_count"] + 1)), format_func=lambda g: f"Game {g}",
                         key="photo_game")
+    photo_lanes = _lanes_for_game(tourney, squad, int(game))
+    lane = c2.selectbox("Lane", photo_lanes, format_func=lambda l: f"Lane {l}", key=f"photo_lane_g{game}")
     if not ai_available():
         st.info(AI_OFF_MESSAGE + " Please use the 10-Key Manual Input tab.")
         return
@@ -271,7 +284,7 @@ def _render_photo_tab(tourney: dict, active_lanes: list[int], verifier_name: str
         if not st.button("Read scores from photo", type="primary", use_container_width=True):
             return
         with st.spinner("Prism A.I. is reading the photo..."):
-            review = read_photo(img.getvalue(), _get_lane_bowlers(tourney["id"], int(lane)))
+            review = read_photo(img.getvalue(), _bowlers_on_lane(tourney, squad, int(lane), int(game)))
         if review is None:
             st.error(PHOTO_FAIL_MESSAGE)
             return
@@ -309,6 +322,9 @@ def _render_photo_review(tourney: dict, lane: int, game: int, image: bytes, revi
     b1, b2 = st.columns(2)
     if b1.button("Save these scores", type="primary", use_container_width=True, disabled=bool(errors),
                  key="photo_save"):
+        if not scoring_is_open(tourney["id"]):
+            st.error("This event is frozen. Scores were not changed.")
+            return
         handicaps = {r["bowler_id"]: r["handicap"] for r in review["rows"]}
         n, changed = 0, []
         for bid, v in values.items():

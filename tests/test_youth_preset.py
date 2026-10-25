@@ -31,6 +31,7 @@ def test_preset_locked_and_rules(db):
     assert t["host_center"] == "FHL" and t["rules_locked"] and t["no_walkins"] and t["fees_at_front_desk"]
     assert t["game_count"] == 3 and t["handicap_pct"] == 90 and t["handicap_base"] == 220
     assert t["grouping"] == "division_gender" and t["entry_fee"] == 0
+    assert t["lane_pattern"] == "same_pair" and t["brackets_enabled"] == 0
     divs = dv.get_divisions(t)
     assert dv.division_for(160, divs) == "Division 1" and dv.division_for(159, divs) == "Division 2"
     assert dv.division_for(126, divs) == "Division 2" and dv.division_for(125, divs) == "Division 3"

@@ -89,13 +89,59 @@ def lane_count(tournament: dict, bowlers: list[dict]) -> int:
     """Lanes in play: the highest assigned lane rounded up to a full pair, capped at host capacity."""
     highest = max((b["lane_assignment"] or 0 for b in bowlers), default=0)
     in_play = highest + (highest % 2)
-    capacity = HOST_CENTERS.get(tournament["host_center"], {}).get("capacity_lanes")
+    capacity = HOST_CENTERS.get((tournament or {}).get("host_center"), {}).get("capacity_lanes")
     return max(2, min(in_play, capacity) if capacity else in_play)
 
 
-def lane_for_game(start_lane: int, game_number: int, lanes: int) -> int:
-    """Move right one pair (+2 lanes) after every game, wrapping at the last pair."""
-    return (start_lane - 1 + 2 * (game_number - 1)) % lanes + 1
+def event_lane_pattern(tournament: dict | None) -> str:
+    """How lanes move between games.
+
+    same_pair: stay on the assigned lane (Rose Murphy — 3 games on the same pair).
+    cross: even lanes move right one pair, odd lanes move left (across the house).
+    shift: everyone moves right one pair.
+    Omitted pattern falls back to 'same pair' in the rules text, otherwise cross
+    so the desk and the floor phones use the movement the desk already showed.
+    """
+    raw = str((tournament or {}).get("lane_pattern") or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if raw in {"same_pair", "none", "stay", "no_cross"}:
+        return "same_pair"
+    if raw in {"cross", "cross_lane", "across"}:
+        return "cross"
+    if raw in {"shift", "shift_right", "right"}:
+        return "shift"
+    blob = (tournament or {}).get("rules_text") or ""
+    if not isinstance(blob, str):
+        blob = str(blob)
+    if "same pair" in blob.lower():
+        return "same_pair"
+    return "cross"
+
+
+def lane_for_game(start_lane: int, game_number: int, lanes: int, pattern: str | None = None) -> int:
+    """Lane this bowler is on for a game.
+
+    pattern None keeps the older 'everyone shifts right' helper.
+    same_pair never leaves the starting lane. cross is the across-the-house move.
+    """
+    try:
+        start = int(start_lane)
+    except (TypeError, ValueError):
+        return 0
+    lanes = max(int(lanes or 1), 1)
+    game_number = max(int(game_number or 1), 1)
+    if pattern == "same_pair" or game_number <= 1:
+        return start
+    if pattern == "cross":
+        delta = (game_number - 1) * 2
+        if start % 2:
+            delta = -delta
+        return ((start - 1 + delta) % lanes) + 1
+    return (start - 1 + 2 * (game_number - 1)) % lanes + 1
+
+
+def current_lane(start_lane: int, game_number: int, tournament: dict | None, bowlers: list[dict]) -> int:
+    """The lane the desk and the floor phones both show for this bowler and game."""
+    return lane_for_game(start_lane, game_number, lane_count(tournament or {}, bowlers), event_lane_pattern(tournament))
 
 
 # ------------------------------------------------------------------- standings
@@ -203,7 +249,7 @@ def squad_pairs(tournament_id: int, game_number: int) -> list[dict]:
     }
     pairs: dict[int, dict] = {}
     for bowler in bowlers:
-        lane = lane_for_game(bowler["lane_assignment"], game_number, lanes)
+        lane = lane_for_game(bowler["lane_assignment"], game_number, lanes, event_lane_pattern(tournament))
         pair = pairs.setdefault(
             pair_of_lane(lane), {"pair": pair_of_lane(lane), "bowlers": [], "lanes": (0, 0)}
         )

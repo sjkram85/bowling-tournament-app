@@ -187,6 +187,15 @@ def verification_board(tournament_id: int, limit: int = 5) -> tuple[list[dict], 
 @_safe(False)
 def verify_score(score_id: int, td_name: str, new_scratch: int | None = None) -> bool:
     """Mark a score verified. If new_scratch is given, fix the number first (handicap is kept)."""
+    conn = get_connection()
+    try:
+        owner = conn.execute("SELECT tournament_id FROM scores WHERE id = ?", (score_id,)).fetchone()
+    finally:
+        conn.close()
+    if owner:
+        from modules.events import scoring_is_open
+        if not scoring_is_open(owner["tournament_id"]):
+            return False
     before = None
     if new_scratch is not None:
         conn = get_connection()

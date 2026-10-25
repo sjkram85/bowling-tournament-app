@@ -25,7 +25,8 @@ from modules.constants import CENTERS, HOST_CENTERS
 from modules.db_state import get_connection, log_desk_action
 from modules import roster_import
 from modules import auth as _auth
-from modules.divisions import assign_all, entry_problems, normalize_birth
+from modules.divisions import assign_all, clean_average, entry_handicap, entry_problems, normalize_birth
+from modules.events import cancel_tournament
 from components.preset_panel import render_preset_panel
 from modules.tournament_templates import CHUSBC_TEMPLATES, create_tournament_from_template, save_tournament_as_template
 from modules.settings import get_secret, ai_available, AI_OFF_MESSAGE, model_name
@@ -61,6 +62,19 @@ PIN_DOT = (
     '<span style="width:7px; height:7px; border-radius:50%; background:#FFFFFF; '
     'border:1px solid #DC2626; box-shadow:0 1px 2px rgba(0,0,0,0.65); display:inline-block;"></span>'
 )
+
+
+def _roster_handicap(tournament: dict, row) -> int:
+    """Locked events follow the average rule. Otherwise keep the handicap typed on the roster."""
+    avg = clean_average(row.get("entering_avg") if hasattr(row, "get") else row["entering_avg"])
+    if tournament.get("rules_locked"):
+        computed = entry_handicap(tournament, avg, bool(row.get("bowls_scratch")))
+        if computed is not None:
+            return int(computed)
+    try:
+        return int(row["handicap"] or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _get_base_url() -> str:
@@ -284,18 +298,15 @@ def render_intake_gateway() -> None:
         )
     with col_banner_action:
         st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
-        if st.button("🛑 Cancel Event", type="secondary", use_container_width=True, help="Cancel and close active tournament squad"):
-            conn = get_connection()
-            try:
-                with conn:
-                    conn.execute("UPDATE tournaments SET status = 'cancelled' WHERE id = ?", (t_id,))
-                log_desk_action(td_name, "td", f"Cancelled/purged active tournament squad #{t_id}")
-                if "active_tournament_id" in st.session_state:
-                    del st.session_state["active_tournament_id"]
-                st.success("Tournament squad cancelled successfully.")
-                st.rerun()
-            finally:
-                conn.close()
+        cancel_sure = st.checkbox("Yes, cancel this event", key=f"cancel_ok_{t_id}")
+        st.caption("Cancel keeps every score. It does not certify results. To lock the event, use Freeze on Finals Closeout after the PDF is saved.")
+        if st.button("🛑 Cancel Event", type="secondary", use_container_width=True, disabled=not cancel_sure,
+                     help="Cancel this squad. Scores stay in the database."):
+            cancel_tournament(t_id, td_name)
+            if "active_tournament_id" in st.session_state:
+                del st.session_state["active_tournament_id"]
+            st.success("Tournament squad cancelled. Scores were not deleted.")
+            st.rerun()
 
     # Save active tournament as template expander
     with st.expander("📌 Save Active Squad as Reusable Template"):
@@ -371,8 +382,8 @@ def render_intake_gateway() -> None:
                                     row["name"],
                                     row["usbc_id"],
                                     row["email"],
-                                    int(row["entering_avg"]),
-                                    int(row["handicap"]),
+                                    clean_average(row["entering_avg"]),
+                                    _roster_handicap(active_tourney, row),
                                     int(row["lane_assignment"]),
                                     int(row["lineup_position"]),
                                     int(row["is_youth"]),
@@ -547,8 +558,20 @@ def render_intake_gateway() -> None:
                     b_usbc = st.text_input("USBC Member ID")
                     b_email = st.text_input("Bowler Email")
                 with c2:
-                    b_avg = st.number_input("Entering Average", min_value=0, max_value=300, value=200)
-                    b_hdcp = st.number_input("Handicap", min_value=0, max_value=150, value=18)
+                    b_avg = st.number_input(
+                        "Entering Average", min_value=0, max_value=300, value=None, step=1,
+                        placeholder="Leave blank if unknown",
+                    )
+                    st.caption("Blank is not 200. A missing average is not placed in Division 1.")
+                    if active_tourney.get("handicap_pct") and active_tourney.get("handicap_base"):
+                        st.caption(
+                            f"Handicap is calculated from the average "
+                            f"({int(active_tourney['handicap_pct'])}% of {int(active_tourney['handicap_base'])}). "
+                            "Scratch bowlers get 0."
+                        )
+                        b_hdcp = None
+                    else:
+                        b_hdcp = st.number_input("Handicap", min_value=0, max_value=150, value=0)
                     b_lane = st.number_input("Assigned Lane", min_value=1, max_value=80, value=1)
 
                 c3, c4 = st.columns(2)
@@ -567,7 +590,11 @@ def render_intake_gateway() -> None:
 
                 btn_add = st.form_submit_button("📥 Register Bowler to Squad", type="primary", use_container_width=True)
                 if btn_add:
-                    problems = entry_problems(active_tourney, {"is_youth": is_youth, "smart_account_id": smart_id, "entering_avg": b_avg,
+                    avg = clean_average(b_avg)
+                    hdcp = entry_handicap(active_tourney, avg, bool(scratch_flag))
+                    if hdcp is None:
+                        hdcp = int(b_hdcp or 0)
+                    problems = entry_problems(active_tourney, {"is_youth": is_youth, "smart_account_id": smart_id, "entering_avg": avg or 0,
                                                                "usbc_id": b_usbc, "gender": gender, "birth_date": birth, "bowls_scratch": scratch_flag})
                     if not b_name.strip():
                         st.error("Bowler name is required.")
@@ -591,8 +618,8 @@ def render_intake_gateway() -> None:
                                         b_name.strip(),
                                         b_usbc.strip(),
                                         b_email.strip(),
-                                        b_avg,
-                                        b_hdcp,
+                                        avg,
+                                        int(hdcp),
                                         b_lane,
                                         1 if is_youth else 0,
                                         smart_id.strip(),

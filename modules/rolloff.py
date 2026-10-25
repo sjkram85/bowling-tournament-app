@@ -19,6 +19,9 @@ def ensure_rolloff_table(conn) -> None:
             decided_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )"""
     )
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(cut_rolloffs)")}
+    if "rolloff_score" not in cols:
+        conn.execute("ALTER TABLE cut_rolloffs ADD COLUMN rolloff_score INTEGER")
     conn.commit()
 
 
@@ -38,19 +41,88 @@ def winners(tournament_id: int) -> dict[str, dict[int, int]]:
     return out
 
 
-def record_winner(tournament_id: int, group_name: str, bowler_id: int, total: int, td_name: str) -> bool:
+def _score_or_none(rolloff_score) -> int | None:
+    if rolloff_score in (None, "", 0):
+        return None
+    try:
+        return int(rolloff_score)
+    except (TypeError, ValueError):
+        return None
+
+
+def record_winner(tournament_id: int, group_name: str, bowler_id: int, total: int, td_name: str,
+                  rolloff_score: int | None = None, replace: bool = False) -> bool:
+    """Record a roll-off winner. replace=True drops the other winners in this group first (misclick)."""
     conn = get_connection()
     try:
         ensure_rolloff_table(conn)
+        score = _score_or_none(rolloff_score)
         with conn:
-            conn.execute("INSERT INTO cut_rolloffs (tournament_id, group_name, bowler_id, total, decided_by) VALUES (?,?,?,?,?)",
-                         (tournament_id, group_name, bowler_id, int(total), td_name))
+            if replace:
+                conn.execute("DELETE FROM cut_rolloffs WHERE tournament_id = ? AND group_name = ?",
+                             (tournament_id, group_name))
+            existing = conn.execute(
+                "SELECT id FROM cut_rolloffs WHERE tournament_id = ? AND group_name = ? AND bowler_id = ?",
+                (tournament_id, group_name, bowler_id),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """UPDATE cut_rolloffs SET total = ?, decided_by = ?, rolloff_score = ?,
+                       decided_at = CURRENT_TIMESTAMP WHERE id = ?""",
+                    (int(total), td_name, score, existing["id"]),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO cut_rolloffs
+                       (tournament_id, group_name, bowler_id, total, decided_by, rolloff_score)
+                       VALUES (?,?,?,?,?,?)""",
+                    (tournament_id, group_name, bowler_id, int(total), td_name, score),
+                )
         return True
     except Exception as exc:
         log.warning("record_winner failed: %s", exc)
         return False
     finally:
         conn.close()
+
+
+def remove_winner(tournament_id: int, group_name: str, bowler_id: int) -> bool:
+    """Undo one recorded winner so another bowler can be chosen. Does not change qualifying scores."""
+    conn = get_connection()
+    try:
+        ensure_rolloff_table(conn)
+        with conn:
+            conn.execute(
+                "DELETE FROM cut_rolloffs WHERE tournament_id = ? AND group_name = ? AND bowler_id = ?",
+                (tournament_id, group_name, bowler_id),
+            )
+        return True
+    except Exception as exc:
+        log.warning("remove_winner failed: %s", exc)
+        return False
+    finally:
+        conn.close()
+
+
+def cut_situation(members: list[dict], n_final: int, recorded: dict[int, int] | None = None) -> dict | None:
+    """Tie at the last finals spot, including after a winner was clicked (so it can be replaced).
+
+    None when nobody is tied at the cut. Otherwise spots, tied rows, winner ids, and open spots.
+    """
+    recorded = recorded or {}
+    bowled = [r for r in members if r.get("games")]
+    if len(bowled) <= n_final:
+        return None
+    cut_total = bowled[n_final - 1]["total"]
+    if bowled[n_final]["total"] != cut_total:
+        return None
+    tied = [r for r in bowled if r["total"] == cut_total]
+    if len(tied) < 2:
+        return None
+    spots = n_final - sum(1 for r in bowled if r["total"] > cut_total)
+    winner_ids = [r["id"] for r in tied if recorded.get(r["id"]) == r["total"]]
+    return {"spots": spots, "cut_total": cut_total, "tied": tied, "winner_ids": winner_ids,
+            "open_spots": max(0, spots - len(winner_ids))}
 
 
 def apply_cut(members: list[dict], n_final: int, recorded: dict[int, int] | None = None) -> dict | None:

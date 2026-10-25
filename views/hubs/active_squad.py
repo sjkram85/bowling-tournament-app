@@ -7,9 +7,10 @@ import qrcode
 import streamlit as st
 
 from modules.auth import current_user
-from modules.brackets import generate_eight_person_brackets, score_bracket_round
-from modules.constants import CENTERS
+from modules.brackets import event_uses_brackets, generate_eight_person_brackets
 from modules.db_state import get_connection, log_desk_action
+from modules.events import scoring_is_open
+from modules.standings import current_lane, event_lane_pattern
 from views.hubs.finals_close import render_finals_close
 from modules.settings import get_secret
 
@@ -66,7 +67,17 @@ def _get_squad_bowlers(tournament_id: int) -> list[dict]:
 
 
 def _matrix_snapshot(tournament_id: int, game_number: int) -> tuple[dict[int, dict], int]:
-    """Scores for one game, plus how many bowlers have finished every game. One round trip."""
+    """Scores for one game, plus how many bowlers have finished every game. One round trip.
+
+    The lane heatmap and the score grid share this for a single page run. A later
+    fragment poll is a new run, so it still reads fresh scores.
+    """
+    from modules.run_memo import memo
+    return memo(("desk-matrix", int(tournament_id), int(game_number)),
+                lambda: _matrix_snapshot_query(tournament_id, game_number))
+
+
+def _matrix_snapshot_query(tournament_id: int, game_number: int) -> tuple[dict[int, dict], int]:
     conn = get_connection()
     try:
         rows = conn.execute(
@@ -102,6 +113,9 @@ def _matrix_snapshot(tournament_id: int, game_number: int) -> tuple[dict[int, di
 
 
 def _save_score(tournament_id: int, bowler_id: int, game_number: int, scratch: int, hdcp: int, user_name: str) -> int | None:
+    """Write one scratch score onto the game the desk has selected. Refuses a frozen event."""
+    if not scoring_is_open(tournament_id):
+        return None
     from modules import score_history
     before = score_history.current(tournament_id, bowler_id, game_number)
     conn = get_connection()
@@ -128,22 +142,15 @@ def _save_score(tournament_id: int, bowler_id: int, game_number: int, scratch: i
     return score_history.log_change(tournament_id, bowler_id, game_number, before, scratch, "desk", user_name)
 
 
-def _calculate_lane_movement(starting_lane: int, current_game: int, total_lanes: int) -> int:
-    """Calculates cross-lane movement: Even lanes move right 1 pair (+2), Odd lanes move left 1 pair (-2)."""
-    if current_game <= 1:
-        return starting_lane
-    shifts = current_game - 1
-    if starting_lane % 2 == 0:
-        new_lane = ((starting_lane - 1 + (shifts * 2)) % total_lanes) + 1
-    else:
-        new_lane = ((starting_lane - 1 - (shifts * 2)) % total_lanes) + 1
-    return new_lane
+def _lane_now(bowler: dict, active_game: int, tourney: dict, bowlers: list[dict]) -> int:
+    """Same lane the floor phone shows for this bowler and game."""
+    return current_lane(bowler.get("lane_assignment") or 0, active_game, tourney, bowlers)
 
 
 @st.fragment(run_every="8s")
-def _render_live_scoring_matrix(t_id: int, active_game: int, total_lanes: int, bowlers: list[dict], td_name: str, tourney_game_count: int) -> None:
-    """Auto-polling fragment executing every 8 seconds to reflect floor submissions in real time."""
-    scores_map, fully_completed_count = _matrix_snapshot(t_id, active_game)
+def _render_lane_heatmap(t_id: int, active_game: int, tourney: dict, bowlers: list[dict]) -> None:
+    """Auto-polling lane status. Score entry is outside this fragment so a save uses the selected game."""
+    scores_map, _done = _matrix_snapshot(t_id, active_game)
 
     # =========================================================
     # BIRDS-EYE HEATMAP MATRIX
@@ -157,12 +164,17 @@ def _render_live_scoring_matrix(t_id: int, active_game: int, total_lanes: int, b
             unsafe_allow_html=True,
         )
 
-    st.caption("Displays score reporting progress across active lanes for the selected game.")
+    pattern = event_lane_pattern(tourney)
+    if pattern == "same_pair":
+        st.caption(f"Game {active_game}: same pair — bowlers stay on the assigned lane. Floor phones use this lane.")
+    else:
+        st.caption(f"Game {active_game}: lane after movement. Floor phones list this same lane.")
     lane_status_cols = st.columns(6)
 
-    assigned_lanes = sorted(list({b["lane_assignment"] for b in bowlers}))
+    lane_of = {b["id"]: _lane_now(b, active_game, tourney, bowlers) for b in bowlers}
+    assigned_lanes = sorted({lane for lane in lane_of.values() if lane})
     for i, lane_num in enumerate(assigned_lanes):
-        lane_bowlers = [b for b in bowlers if b["lane_assignment"] == lane_num]
+        lane_bowlers = [b for b in bowlers if lane_of[b["id"]] == lane_num]
         reported_count = sum(1 for b in lane_bowlers if b["id"] in scores_map)
         all_reported = (reported_count == len(lane_bowlers)) and len(lane_bowlers) > 0
 
@@ -184,23 +196,24 @@ def _render_live_scoring_matrix(t_id: int, active_game: int, total_lanes: int, b
 
     st.markdown("---")
 
-    # =========================================================
-    # DUAL-ROLE DIRECT TD DESK SCORE ENTRY TABLE
-    # =========================================================
+
+def _render_score_entry(t_id: int, active_game: int, tourney: dict, bowlers: list[dict], td_name: str, tourney_game_count: int) -> None:
+    """Desk score grid. Saves only to active_game — not to a fragment-captured game."""
+    scores_map, fully_completed_count = _matrix_snapshot(t_id, active_game)
     st.subheader(f"Direct Desk Score Entry — Game {active_game}")
-    st.caption("Enter scratch scores directly from physical recap sheets or review mobile verifier inputs.")
+    st.caption("Enter scratch scores from the recap sheet. Save writes this game only, on the lane shown (same as the floor phone).")
 
     triage_rows = []
     for b in bowlers:
         b_id = b["id"]
         sc = scores_map.get(b_id, {})
-        current_lane = _calculate_lane_movement(b["lane_assignment"], active_game, total_lanes)
+        lane_shown = _lane_now(b, active_game, tourney, bowlers)
         pacer_str = " (PACER)" if b["is_pacer"] else ""
         triage_rows.append({
             "Bowler ID": b_id,
             "Bowler Name": f"{b['name']}{pacer_str}",
             "Start Lane": b["lane_assignment"],
-            "Current Lane": current_lane,
+            "Current Lane": lane_shown,
             "Entering Avg": b["entering_avg"],
             "HDCP": b["handicap"],
             "Scratch": sc.get("scratch_score", 0),
@@ -227,20 +240,23 @@ def _render_live_scoring_matrix(t_id: int, active_game: int, total_lanes: int, b
     )
 
     if st.button(f"💾 Save Desk Score Adjustments for Game {active_game}", type="primary", use_container_width=True):
-        count_updated = 0
-        changed = []
-        for row in edited_scores.itertuples():
-            b_id = row._1  # Bowler ID
-            scratch = int(row.Scratch)
-            hdcp = int(row.HDCP)
-            if scratch > 0:
-                hid = _save_score(t_id, b_id, active_game, scratch, hdcp, td_name)
-                if hid:
-                    changed.append(hid)
-                count_updated += 1
-        st.session_state[f"desk_undo_{t_id}"] = changed
-        st.success(f"Successfully recorded and audited {count_updated} scores for Game {active_game}!")
-        st.rerun()
+        if not scoring_is_open(t_id):
+            st.error("This event is frozen. Scores were not changed. An admin can reopen it from Finals Closeout.")
+        else:
+            count_updated = 0
+            changed = []
+            for row in edited_scores.itertuples():
+                b_id = row._1  # Bowler ID
+                scratch = int(row.Scratch)
+                hdcp = int(row.HDCP)
+                if scratch > 0:
+                    hid = _save_score(t_id, b_id, int(active_game), scratch, hdcp, td_name)
+                    if hid:
+                        changed.append(hid)
+                    count_updated += 1
+            st.session_state[f"desk_undo_{t_id}"] = changed
+            st.success(f"Successfully recorded and audited {count_updated} scores for Game {active_game}!")
+            st.rerun()
 
     from components.undo_box import saved_undo_button
     saved_undo_button(f"desk_undo_{t_id}", td_name)
@@ -281,8 +297,6 @@ def render_active_squad() -> None:
 
     t_id = tourney["id"]
     st.session_state["active_tournament_id"] = t_id
-    host_code = tourney["host_center"]
-    total_lanes = CENTERS.get(host_code, {}).get("lanes", 24)
 
     # Top: event bar (name, game, brackets), then the main job: Needs verifying.
     top_col1, top_col2, top_col3 = st.columns([2, 1, 1])
@@ -290,17 +304,23 @@ def render_active_squad() -> None:
         st.subheader(f"{tourney['name']} ({tourney['host_center']})")
         st.caption(f"Format: **{tourney['squad_format']}**")
     with top_col2:
-        active_game = st.selectbox(
-            "Active Game",
-            options=list(range(1, tourney["game_count"] + 1)),
-            index=min(2, tourney["game_count"] - 1),
-            key="hub_active_game_select",
-        )
+        game_options = list(range(1, int(tourney["game_count"]) + 1))
+        game_key = f"hub_active_game_{t_id}"
+        # Game 1 until the TD picks another. Do not open on the last game.
+        if game_key not in st.session_state or st.session_state[game_key] not in game_options:
+            st.session_state[game_key] = game_options[0]
+        active_game = st.selectbox("Active Game", options=game_options, key=game_key)
     with top_col3:
         st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-        if st.button("🎲 Manage Brackets", use_container_width=True):
-            generate_eight_person_brackets(t_id)
-            st.success("Brackets verified/generated!")
+        if event_uses_brackets(tourney):
+            if st.button("🎲 Manage Brackets", use_container_width=True):
+                made = generate_eight_person_brackets(t_id)
+                if made:
+                    st.success(f"Brackets verified/generated ({made}).")
+                else:
+                    st.warning("Not enough bowlers for an 8-person bracket.")
+        else:
+            st.caption("No brackets for this event.")
 
     from components.td_team_panel import render_td_team_panel
     render_td_team_panel(t_id)  # 'Needs verifying (N)' + chat + TDs on duty line
@@ -336,7 +356,9 @@ def render_active_squad() -> None:
         st.warning("No bowlers loaded on this squad roster yet. Go to the Intake Gateway to import competitors.")
         return
 
-    _render_live_scoring_matrix(t_id, active_game, total_lanes, bowlers, (current_user() or {}).get("display_name") or "Tournament Director", tourney["game_count"])
+    td_name = (current_user() or {}).get("display_name") or "Tournament Director"
+    _render_lane_heatmap(t_id, int(active_game), tourney, bowlers)
+    _render_score_entry(t_id, int(active_game), tourney, bowlers, td_name, tourney["game_count"])
 
 def _render_logo_setup(t_id: int, tourney) -> None:
     """Optional logos for the certified PDF and the kiosk. Events without them look the same as before."""
