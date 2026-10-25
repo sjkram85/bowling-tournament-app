@@ -202,7 +202,8 @@ def test_statement_tail_is_stripped_before_libsql_sees_it():
     assert db_state._without_statement_tail("SELECT 1; SELECT 2;") == "SELECT 1; SELECT 2"
 
 
-def test_bootstrap_create_runs_when_turso_rejects_a_statement_tail(lib_db, monkeypatch):
+def test_bootstrap_skips_create_when_staff_table_exists(lib_db, monkeypatch):
+    """The live crash is this CREATE on every logged-out open. init_db already made the table."""
     from modules.auth import _bootstrap_admin
 
     seen = []
@@ -225,7 +226,7 @@ def test_bootstrap_create_runs_when_turso_rejects_a_statement_tail(lib_db, monke
     try:
         _bootstrap_admin()
         assert seen, "bootstrap did not execute any SQL"
-        assert any(sql.lstrip().upper().startswith("CREATE TABLE") for sql in seen)
+        assert not any(sql.lstrip().upper().startswith("CREATE TABLE") for sql in seen)
         assert all(not _has_statement_tail(sql) for sql in seen)
         conn = db_state.get_connection()
         row = conn.execute(
@@ -235,8 +236,89 @@ def test_bootstrap_create_runs_when_turso_rejects_a_statement_tail(lib_db, monke
         conn.close()
         assert row["username"] == "skramer"
         assert row["role"] == "admin"
+
+        seen.clear()
+        conn = db_state.get_connection()
+        conn.execute("DROP TABLE staff_users")
+        conn.commit()
+        conn.close()
+        _bootstrap_admin()
+        creates = [sql for sql in seen if sql.lstrip().upper().startswith("CREATE TABLE")]
+        assert len(creates) == 1
+        assert creates[0].lstrip().startswith("CREATE TABLE IF NOT EXISTS staff_users")
+        assert creates[0].rstrip().endswith(")")
+        assert ";" not in creates[0]
+        assert all(not _has_statement_tail(sql) for sql in seen)
+        conn = db_state.get_connection()
+        row = conn.execute(
+            "SELECT username, role FROM staff_users WHERE username = ?",
+            ("skramer",),
+        ).fetchone()
+        conn.close()
+        assert row["role"] == "admin"
     finally:
         _drain_pool()
+
+
+def test_dead_stream_matches_baton_and_closed_messages():
+    assert db_state._dead_stream(ValueError(
+        'Hrana: api error: {"message":"The stream has expired due to inactivity","code":"STREAM_EXPIRED"}'
+    ))
+    assert db_state._dead_stream(ValueError("stream closed: reset by peer"))
+    assert db_state._dead_stream(ValueError("Stream handle 7 was not found"))
+    assert db_state._dead_stream(ValueError("stream not found"))
+    try:
+        raise sqlite3.OperationalError("turso request failed") from ValueError(
+            "Stream handle abc was not found"
+        )
+    except sqlite3.OperationalError as exc:
+        assert db_state._dead_stream(exc)
+    assert not db_state._dead_stream(ValueError("no such table: staff_users"))
+    assert not db_state._dead_stream(ValueError("SQL string contains more than one statement"))
+
+
+def test_missing_stream_is_reopened_for_the_same_call(lib_db):
+    _drain_pool()
+    conn = db_state.get_connection()
+    state = {"n": 0}
+
+    def on_execute(sql):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise ValueError("Stream handle 19 was not found")
+
+    conn._raw = _RawProxy(conn._raw, on_execute)
+    try:
+        conn.execute("SELECT 1")
+        assert state["n"] == 1  # dead stream failed; the retry used a new connection
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+    finally:
+        conn.close()
+        _drain_pool()
+
+
+def test_idle_libsql_connection_is_dropped_before_turso_expires_it(lib_db):
+    _drain_pool()
+    a = db_state.get_connection()
+    a.execute("SELECT 1")
+    a.close()
+    a._prism_idle_at = 0  # older than Turso's 10s stream expiry
+    try:
+        b = db_state.get_connection()
+        assert b is not a
+        assert b.execute("SELECT 1").fetchone()[0] == 1
+        b.close()
+    finally:
+        _drain_pool()
+
+
+def test_executescript_error_is_not_swallowed(lib_db):
+    conn = db_state.get_connection()
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            conn.executescript("SELECT nope FROM tournaments;")
+    finally:
+        conn.close()
 
 
 def test_expired_turso_stream_is_reopened_for_the_same_call(lib_db):
