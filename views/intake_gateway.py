@@ -27,7 +27,9 @@ from modules import roster_import
 from modules import auth as _auth
 from modules.divisions import assign_all, clean_average, entry_handicap, entry_problems, normalize_birth
 from modules.events import cancel_tournament, entry_package_labels, public_checkin_url
+from components.ai_lane_feedback import bind_lane_placeholder, gutter_ball_html
 from components.preset_panel import render_preset_panel
+from modules.ai_provider import pop_retry_listener
 from modules.tournament_templates import CHUSBC_TEMPLATES, create_tournament_from_template, save_tournament_as_template
 from modules.settings import get_secret, ai_available, AI_OFF_MESSAGE, model_name
 
@@ -134,12 +136,20 @@ def _run_with_bowling_animation(task_func, *args):
 
     render_lane("Ball hooking into 1-3 pocket... parsing Rule 400 SMART tags...", 85, 83)
 
+    token = bind_lane_placeholder(anim_box)
     try:
-        result = task_func(*args)
-    except Exception as exc:
-        anim_box.empty()
-        progress_bar.empty()
-        raise RuntimeError(f"Gemini API request failed: {exc}")
+        try:
+            result = task_func(*args)
+        except Exception as exc:
+            text = str(exc)
+            if "Gutter ball" in text:
+                anim_box.markdown(gutter_ball_html(text, settled=True), unsafe_allow_html=True)
+            else:
+                anim_box.empty()
+            progress_bar.empty()
+            raise RuntimeError(f"Gemini API request failed: {exc}") from exc
+    finally:
+        pop_retry_listener(token)
 
     html_strike = (
         f'<div style="background:#064E3B; border:1px solid #059669; border-radius:10px; padding:16px 20px; margin-bottom:12px; box-shadow:0 4px 12px rgba(6,78,59,0.3);">'

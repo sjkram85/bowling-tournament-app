@@ -136,6 +136,161 @@ def apply_clean_theme() -> None:
             }
         }
 
+        /* Gutter ball + getting back on the approach (Gemini retry) */
+        .ai-lane-card {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            padding: 10px 14px;
+            background: #0F172A;
+            border: 1px solid #1E293B;
+            border-radius: 8px;
+            margin: 10px 0;
+        }
+
+        .ai-lane-gutter { border-left: 3px solid #EF4444; }
+        .ai-lane-approach { border-left: 3px solid #F59E0B; }
+
+        .ai-lane-copy { flex: 1; min-width: 140px; }
+
+        .ai-lane-title {
+            color: #F8FAFC;
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        .ai-lane-detail {
+            color: #CBD5E1;
+            font-size: 12px;
+            line-height: 1.45;
+            margin-top: 2px;
+            white-space: pre-wrap;
+        }
+
+        .gutter-lane, .approach-lane {
+            position: relative;
+            width: 86px;
+            height: 32px;
+            flex: 0 0 86px;
+            background: linear-gradient(180deg, #3E2723 0%, #5D4037 30%, #4E342E 100%);
+            border-radius: 4px;
+            overflow: hidden;
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.6);
+        }
+
+        .gutter-channel {
+            position: absolute;
+            left: 0;
+            right: 0;
+            height: 6px;
+            background: repeating-linear-gradient(90deg, #0B1220, #0B1220 4px, #1F2937 4px, #1F2937 8px);
+            z-index: 2;
+        }
+
+        .gutter-channel.top { top: 0; }
+        .gutter-channel.bottom { bottom: 0; }
+
+        .gutter-ball-svg, .approach-ball {
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            z-index: 3;
+        }
+
+        .gutter-ball-svg svg, .approach-ball svg, .gutter-pins svg {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .gutter-ball-svg {
+            left: 2px;
+            top: 9px;
+            animation: gutter-roll 0.65s ease-in forwards;
+        }
+
+        .gutter-ball-svg.is-settled {
+            animation: none;
+            left: 62px;
+            top: 17px;
+        }
+
+        .gutter-pins {
+            position: absolute;
+            right: 2px;
+            top: 6px;
+            width: 16px;
+            height: 20px;
+            z-index: 1;
+        }
+
+        .approach-foul {
+            position: absolute;
+            left: 8px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: #EF4444;
+            z-index: 2;
+        }
+
+        .approach-walker {
+            position: absolute;
+            top: 5px;
+            left: 56px;
+            width: 24px;
+            height: 22px;
+            z-index: 3;
+            animation: back-to-approach 1.15s ease-in-out infinite;
+        }
+
+        .approach-bowler {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 10px;
+            height: 16px;
+        }
+
+        .approach-bowler::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 2px;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #F8FAFC;
+        }
+
+        .approach-bowler::after {
+            content: "";
+            position: absolute;
+            top: 7px;
+            left: 4px;
+            width: 2px;
+            height: 8px;
+            background: #F59E0B;
+            border-radius: 1px;
+        }
+
+        .approach-ball {
+            right: 0;
+            bottom: 0;
+        }
+
+        @keyframes gutter-roll {
+            0% { left: 2px; top: 9px; transform: rotate(0deg); }
+            62% { left: 46px; top: 9px; transform: rotate(380deg); }
+            100% { left: 62px; top: 17px; transform: rotate(520deg); }
+        }
+
+        @keyframes back-to-approach {
+            0% { left: 56px; }
+            100% { left: 10px; }
+        }
+
         /* Suppress native streamlit circle loader */
         [data-testid="stLoading"] {
             display: none !important;
