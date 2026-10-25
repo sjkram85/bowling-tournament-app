@@ -66,6 +66,57 @@ def _get_existing_lane_scores(tournament_id: int, game_num: int) -> dict[int, di
         conn.close()
 
 
+def _entered_scratch(value):
+    """Blank / empty is not a score. 0 is a real score. NaN and junk are blank."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if value == "":
+            return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:  # NaN
+        return None
+    return int(number)
+
+
+def scores_to_save(values: dict) -> dict[int, int]:
+    """Scores a floor phone or photo review should write.
+
+    A blank box is not a score (that bowler has not bowled). A typed 0 is a
+    real score and is saved. Bowlers with no value are left out — nothing is invented.
+    """
+    saved = {}
+    for bowler_id, raw in values.items():
+        score = _entered_scratch(raw)
+        if score is None:
+            continue
+        saved[int(bowler_id)] = score
+    return saved
+
+
+def _score_box(label: str, key: str, saved, max_value: int):
+    """Scratch box. Starts empty so blank stays blank. Prefills a saved score, including 0.
+
+    value=None keeps the box clearable. Passing 0 as the default would make
+    'not bowled' and 'scored 0' the same number, which is how a zero was lost.
+    """
+    if key not in st.session_state and saved is not None:
+        st.session_state[key] = int(saved)
+    return st.number_input(
+        label,
+        min_value=0,
+        max_value=max_value,
+        value=None,
+        step=1,
+        placeholder="Not bowled",
+        key=key,
+    )
+
+
 def _record_score(tournament_id: int, bowler_id: int, game_num: int, scratch: int, hdcp: int, verifier_name: str,
                   source: str = "floor", device: str | None = None) -> int | None:
     if not scoring_is_open(tournament_id):
@@ -196,28 +247,32 @@ def render_mobile_scoring() -> None:
         if not bowlers:
             st.info(f"No bowlers assigned to Lane {lane}.")
         else:
+            st.caption("Leave a box blank if that bowler has not bowled. Type 0 to save a real zero.")
             with st.form(f"score_form_lane_{lane}_gm_{game}"):
                 all_recorded = True
+                entered = {}
                 for b in bowlers:
                     pacer_tag = " (PACER)" if b["is_pacer"] else ""
                     b_id = b["id"]
-                    prev_score = existing_scores.get(b_id, {})
-                    default_scratch = prev_score.get("scratch_score", 0)
-
-                    if default_scratch == 0:
+                    prev_score = existing_scores.get(b_id)
+                    if prev_score is None:
                         all_recorded = False
+                        current = None
+                    else:
+                        current = int(prev_score["scratch_score"])
 
                     st.markdown(f"**{b['name']}**{pacer_tag} — HDCP: `+{b['handicap']}`")
-                    if default_scratch > 0:
-                        st.caption(f"✅ Current Score: **{default_scratch}** (HDCP Total: **{prev_score.get('total_score')}**) &middot; By: {prev_score.get('recorded_by', 'Desk')}")
+                    if prev_score is not None:
+                        st.caption(
+                            f"✅ Current Score: **{current}** (HDCP Total: **{prev_score.get('total_score')}**) "
+                            f"· By: {prev_score.get('recorded_by', 'Desk')}"
+                        )
 
-                    st.number_input(
+                    entered[b_id] = _score_box(
                         f"Scratch Score for {b['name']}",
-                        min_value=0,
-                        max_value=300,
-                        value=default_scratch,
-                        step=1,
-                        key=f"scratch_{b_id}_g{game}",
+                        f"scratch_{b_id}_g{game}",
+                        current,
+                        300,
                     )
 
                 btn_label = f"Update Lane {lane} Game {game} Scores" if all_recorded else f"Submit Lane {lane} Game {game} Scores"
@@ -226,17 +281,26 @@ def render_mobile_scoring() -> None:
                     if not scoring_is_open(tourney["id"]):
                         st.error("This event is frozen. Scores were not changed.")
                         st.stop()
-                    changed = []
-                    for b in bowlers:
-                        val = st.session_state.get(f"scratch_{b['id']}_g{game}", 0)
-                        if val > 0:
-                            hid = _record_score(tourney["id"], b["id"], game, val, b["handicap"], verifier_name,
-                                                device=device)
+                    to_save = scores_to_save(entered)
+                    if not to_save:
+                        st.info("No scores were entered, so nothing was written. Leave a box blank to skip a bowler, or type 0 for a real zero.")
+                    else:
+                        changed = []
+                        for b in bowlers:
+                            if b["id"] not in to_save:
+                                continue
+                            hid = _record_score(
+                                tourney["id"], b["id"], game, to_save[b["id"]], b["handicap"], verifier_name,
+                                device=device,
+                            )
                             if hid:
                                 changed.append(hid)
-                    st.session_state["floor_undo"] = changed
-                    st.success(f"Scores for Lane {lane} Game {game} recorded!")
-                    st.rerun()
+                        st.session_state["floor_undo"] = changed
+                        st.success(
+                            f"Saved {len(to_save)} score{'s' if len(to_save) != 1 else ''} for Lane {lane} Game {game}. "
+                            "Blank boxes were skipped."
+                        )
+                        st.rerun()
 
         from components.undo_box import saved_undo_button
         saved_undo_button("floor_undo", verifier_name, device=device)
@@ -299,15 +363,18 @@ def _render_photo_review(tourney: dict, lane: int, game: int, image: bytes, revi
     from modules.photo_review import check_value, save_errors
 
     st.markdown("### Does this look right?")
-    st.caption("Fix any number that is wrong. Yellow = please check. Leave 0 to skip a bowler.")
+    st.caption(
+        "Fix any number that is wrong. Yellow = please check. "
+        "Leave a box blank to skip a bowler. Type 0 to save a real zero."
+    )
     left, right = st.columns([1, 1])
     left.image(image, caption=f"Lane {lane} · Game {game}", use_container_width=True)
     values = {}
     with right:
         for r in review["rows"]:
             k = f"photo_val_{r['bowler_id']}_{game}"
-            v = st.number_input(r["name"], min_value=0, max_value=999, value=int(r["value"] or 0), step=1, key=k)
-            values[r["bowler_id"]] = int(v)
+            v = _score_box(r["name"], k, r["value"], 999)
+            values[r["bowler_id"]] = v
             flags = check_value(v) + [f for f in r["flags"] if f == "low confidence"]
             if flags:
                 read = f" (photo said: {escape(str(r['read_name']))})" if r["read_name"] else ""
@@ -326,19 +393,22 @@ def _render_photo_review(tourney: dict, lane: int, game: int, image: bytes, revi
             st.error("This event is frozen. Scores were not changed.")
             return
         handicaps = {r["bowler_id"]: r["handicap"] for r in review["rows"]}
-        n, changed = 0, []
-        for bid, v in values.items():
-            if v > 0:
+        to_save = scores_to_save(values)
+        if not to_save:
+            st.info("No scores were entered, so nothing was written. Leave a box blank to skip a bowler, or type 0 for a real zero.")
+        else:
+            n, changed = 0, []
+            for bid, v in to_save.items():
                 hid = _record_score(tourney["id"], bid, game, v, handicaps.get(bid, 0), f"{verifier_name} (photo)",
                                     source="photo", device=st.session_state.get("floor_device"))
                 if hid:
                     changed.append(hid)
                 n += 1
-        st.session_state.pop("photo_review", None)
-        st.session_state["photo_undo"] = changed
-        st.success(f"Saved {n} score{'s' if n != 1 else ''}. They are waiting in the TD Verify list.")
-        from components.undo_box import saved_undo_button
-        saved_undo_button("photo_undo", verifier_name, device=st.session_state.get("floor_device"))
+            st.session_state.pop("photo_review", None)
+            st.session_state["photo_undo"] = changed
+            st.success(f"Saved {n} score{'s' if n != 1 else ''}. They are waiting in the TD Verify list.")
+            from components.undo_box import saved_undo_button
+            saved_undo_button("photo_undo", verifier_name, device=st.session_state.get("floor_device"))
     if b2.button("Cancel", use_container_width=True, key="photo_cancel"):
         st.session_state.pop("photo_review", None)
         st.rerun()

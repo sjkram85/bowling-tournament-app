@@ -19,6 +19,7 @@ from modules.smart_export import confirm_flyer_amounts
 from modules.standings import get_tournament
 from modules.tournament_templates import ROSE_MURPHY_KEY, create_tournament_from_template
 from views.hubs.active_squad import _matrix_snapshot, _save_score, changed_desk_scores
+from views.mobile_scoring import scores_to_save
 from views.hubs.backup_restore import SAFETY_COPY_PROMPT
 
 ET = ZoneInfo("America/New_York")
@@ -139,6 +140,89 @@ def test_desk_save_writes_a_real_zero_and_skips_unchanged_cells(db):
         _save_score(tid, bid, game, 0, 10, "Scott")
     _scores, done = _matrix_snapshot(tid, 1)
     assert _scores[bid]["scratch_score"] == 0 and done == 1
+
+
+def test_blank_is_not_a_zero_and_a_typed_zero_is_a_score():
+    assert scores_to_save({1: 0, 2: None, 3: "", 4: "  ", 5: float("nan")}) == {1: 0}
+    assert scores_to_save({1: "0", 2: 0.0, 3: 180}) == {1: 0, 2: 0, 3: 180}
+    assert scores_to_save({}) == {}
+
+
+def test_floor_phone_saves_a_typed_zero_and_skips_blank_boxes(db):
+    from streamlit.testing.v1 import AppTest
+
+    tid, _t = _rose()
+    conn = db_state.get_connection()
+    with conn:
+        ann = conn.execute(
+            "INSERT INTO bowlers (tournament_id, name, handicap, lane_assignment) VALUES (?, 'Ann', 10, 1)",
+            (tid,),
+        ).lastrowid
+        bea = conn.execute(
+            "INSERT INTO bowlers (tournament_id, name, handicap, lane_assignment) VALUES (?, 'Bea', 8, 1)",
+            (tid,),
+        ).lastrowid
+        cal = conn.execute(
+            "INSERT INTO bowlers (tournament_id, name, handicap, lane_assignment) VALUES (?, 'Cal', 12, 2)",
+            (tid,),
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO scores (tournament_id, bowler_id, game_number, scratch_score, hdcp_score, total_score, recorded_by)"
+            " VALUES (?,?,1,180,12,192,'Scott')",
+            (tid, cal),
+        )
+    conn.close()
+    path = str(db_state.DB_PATH)
+    at = AppTest.from_string(
+        "import streamlit as st\n"
+        "from pathlib import Path\n"
+        "from modules import db_state\n"
+        f"db_state.DB_PATH = Path({path!r})\n"
+        f"st.query_params['t'] = {str(tid)!r}\n"
+        f"st.session_state['scorer_event'] = {tid}\n"
+        "st.session_state['scorer_authenticated'] = True\n"
+        "st.session_state['verifier_name'] = 'Mike'\n"
+        "st.session_state['floor_device'] = 'phoneA'\n"
+        "from views.mobile_scoring import render_mobile_scoring\n"
+        "render_mobile_scoring()\n",
+        default_timeout=30,
+    ).run()
+    assert not at.exception
+    boxes = {n.label: n for n in at.number_input}
+    assert boxes["Scratch Score for Ann"].value is None
+    assert boxes["Scratch Score for Bea"].value is None
+    assert "Scratch Score for Cal" not in boxes  # other lane, untouched
+    boxes["Scratch Score for Ann"].set_value(0)
+    at.form_submit_button[0].click().run()
+    assert not at.exception
+
+    def row(bid, game):
+        c = db_state.get_connection()
+        found = c.execute(
+            "SELECT scratch_score, hdcp_score, total_score, verified, recorded_by FROM scores"
+            " WHERE bowler_id=? AND game_number=?",
+            (bid, game),
+        ).fetchone()
+        c.close()
+        return dict(found) if found else None
+
+    ann_g1 = row(ann, 1)
+    assert ann_g1["scratch_score"] == 0 and ann_g1["hdcp_score"] == 10 and ann_g1["total_score"] == 10
+    assert ann_g1["verified"] == 0 and ann_g1["recorded_by"] == "Mike"
+    assert row(bea, 1) is None
+    assert row(cal, 1)["scratch_score"] == 180
+
+    for game in (2, 3):
+        at.radio(key="mobile_game_radio").set_value(game).run()
+        assert not at.exception
+        next(n for n in at.number_input if n.label == "Scratch Score for Ann").set_value(0)
+        at.form_submit_button[0].click().run()
+        assert not at.exception
+        assert row(ann, game)["scratch_score"] == 0
+        assert row(bea, game) is None
+
+    _scores, done = _matrix_snapshot(tid, 3)
+    assert _scores[ann]["scratch_score"] == 0 and done == 1
 
 
 def test_desk_standings_match_kiosk_cut_and_champion(db):
