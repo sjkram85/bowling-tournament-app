@@ -1,6 +1,7 @@
 """Authentication, user sessions, role-based access control, and registration."""
 
 import base64
+import logging
 import os
 from pathlib import Path
 import sqlite3
@@ -11,6 +12,7 @@ from modules.constants import CENTERS, HOST_CENTERS
 from modules.db_state import get_connection, log_desk_action
 from modules.mailer import send_admin_registration_alert, send_applicant_approval_notice
 
+log = logging.getLogger(__name__)
 ph = PasswordHasher()
 
 # Public constants required by staff account management
@@ -56,8 +58,109 @@ def verify_password(password_hash: str, password: str) -> bool:
         return False
 
 
+# init_db owns this table. Sign-in sends it only when a read says it is missing.
+# No trailing semicolon: hosted Turso prepare treats whitespace after one as a
+# second statement and raises ValueError, which the page shows redacted.
+_STAFF_USERS_DDL = (
+    "CREATE TABLE IF NOT EXISTS staff_users ("
+    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+    "username TEXT UNIQUE NOT NULL, "
+    "password_hash TEXT NOT NULL, "
+    "display_name TEXT NOT NULL, "
+    "email TEXT DEFAULT '', "
+    "center_affiliation TEXT DEFAULT 'CHUSBC', "
+    "role TEXT NOT NULL DEFAULT 'td', "
+    "is_approved INTEGER DEFAULT 1, "
+    "is_active INTEGER DEFAULT 1, "
+    "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+)
+_STAFF_COLUMN_DDL = (
+    ("email", "ALTER TABLE staff_users ADD COLUMN email TEXT DEFAULT ''"),
+    ("is_approved", "ALTER TABLE staff_users ADD COLUMN is_approved INTEGER DEFAULT 1"),
+    ("center_affiliation", "ALTER TABLE staff_users ADD COLUMN center_affiliation TEXT DEFAULT 'CHUSBC'"),
+    ("is_active", "ALTER TABLE staff_users ADD COLUMN is_active INTEGER DEFAULT 1"),
+)
+_ADMIN_LOOKUP = "SELECT id FROM staff_users WHERE username = ?"
+
+
+def _exception_text(exc: BaseException) -> str:
+    parts: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        parts.append(str(current).lower())
+        current = current.__cause__ or current.__context__
+    return " ".join(parts)
+
+
+def _schema_problem(exc: BaseException) -> str | None:
+    """'table' or 'column' when SQLite reports staff_users is not usable yet."""
+    msg = _exception_text(exc)
+    if "no such table" in msg:
+        return "table"
+    # libsql says "no column named email"; sqlite3 says "no such column: email".
+    if "no such column" in msg or "no column named" in msg:
+        return "column"
+    return None
+
+
+def _lookup_admin(conn, username: str) -> tuple[bool, str]:
+    """Return (row exists, 'ok'|'table'|'column'). Other database errors propagate."""
+    try:
+        row = conn.execute(_ADMIN_LOOKUP, (username,)).fetchone()
+    except sqlite3.OperationalError as exc:
+        kind = _schema_problem(exc)
+        if kind is None:
+            raise
+        return False, kind
+    return row is not None, "ok"
+
+
+def _ensure_staff_columns(conn) -> None:
+    columns = [col[1] for col in conn.execute("PRAGMA table_info(staff_users)").fetchall()]
+    for name, ddl in _STAFF_COLUMN_DDL:
+        if name in columns:
+            continue
+        try:
+            conn.execute(ddl)
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in _exception_text(exc):
+                raise
+
+
+def _insert_default_admin(conn, username, password_hash, display_name, email, affiliation) -> None:
+    conn.execute(
+        "INSERT INTO staff_users "
+        "(username, password_hash, display_name, email, center_affiliation, role, is_approved) "
+        "VALUES (?, ?, ?, ?, ?, 'admin', 1)",
+        (username, password_hash, display_name, email, affiliation),
+    )
+
+
 def _bootstrap_admin() -> None:
-    """Bootstrap default administrator in SQLite with automatic column schema migration."""
+    """Ensure the default admin exists. Never raise into the sign-in page.
+
+    init_db already creates staff_users. Re-sending CREATE/ALTER, and re-hashing
+    the admin password, on every logged-out open is what Turso rejects inside
+    one ``with conn:`` (prepare tail, a dead Hrana stream, or a commit after
+    that stream is replaced). Streamlit then redacts the libsql message and the
+    form never renders.
+
+    A missing row is still inserted, including on the next open after a failed
+    attempt. An existing row is left alone. Any libsql error is logged and the
+    caller draws the form anyway.
+    """
+    try:
+        _ensure_default_admin()
+    except Exception as exc:
+        log.exception(
+            "Staff sign-in bootstrap failed; the login form will still load: %s",
+            exc,
+        )
+
+
+def _ensure_default_admin() -> None:
     username = "skramer"
     password = "Gussierocks1"
     display_name = "Scott Kramer"
@@ -66,66 +169,65 @@ def _bootstrap_admin() -> None:
 
     conn = get_connection()
     try:
-        with conn:
-            # init_db already created staff_users. Re-sending this CREATE on
-            # every logged-out open is the statement Turso fails (prepare tail
-            # on the indented semicolon, or an idle Hrana stream). Skip it
-            # when the table is there. No trailing semicolon: hosted prepare
-            # treats the whitespace after one as a second statement.
-            exists = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'staff_users'"
-            ).fetchone()
-            if not exists:
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS staff_users ("
-                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                    "username TEXT UNIQUE NOT NULL, "
-                    "password_hash TEXT NOT NULL, "
-                    "display_name TEXT NOT NULL, "
-                    "email TEXT DEFAULT '', "
-                    "center_affiliation TEXT DEFAULT 'CHUSBC', "
-                    "role TEXT NOT NULL DEFAULT 'td', "
-                    "is_approved INTEGER DEFAULT 1, "
-                    "is_active INTEGER DEFAULT 1, "
-                    "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-                )
-
-            # Check and migrate columns on existing database files
-            columns = [col[1] for col in conn.execute("PRAGMA table_info(staff_users)").fetchall()]
-            if "email" not in columns:
-                conn.execute("ALTER TABLE staff_users ADD COLUMN email TEXT DEFAULT ''")
-            if "is_approved" not in columns:
-                conn.execute("ALTER TABLE staff_users ADD COLUMN is_approved INTEGER DEFAULT 1")
-            if "center_affiliation" not in columns:
-                conn.execute("ALTER TABLE staff_users ADD COLUMN center_affiliation TEXT DEFAULT 'CHUSBC'")
-            if "is_active" not in columns:
-                conn.execute("ALTER TABLE staff_users ADD COLUMN is_active INTEGER DEFAULT 1")
-
-            # 3. Check for existing admin record
-            existing = conn.execute(
-                "SELECT id FROM staff_users WHERE username = ?",
-                (username,),
-            ).fetchone()
-            if not existing:
-                conn.execute(
-                    """
-                    INSERT INTO staff_users 
-                    (username, password_hash, display_name, email, center_affiliation, role, is_approved)
-                    VALUES (?, ?, ?, ?, ?, 'admin', 1)
-                    """,
-                    (username, hash_password(password), display_name, email, affiliation),
-                )
-            else:
-                conn.execute(
-                    """
-                    UPDATE staff_users 
-                    SET password_hash = ?, display_name = ?, email = ?, center_affiliation = ?, role = 'admin', is_approved = 1 
-                    WHERE username = ?
-                    """,
-                    (hash_password(password), display_name, email, affiliation, username),
-                )
+        found, schema = _lookup_admin(conn, username)
     finally:
         conn.close()
+    if found:
+        return
+
+    # Argon2 can outlast Turso's 10s idle stream. Hash with no connection held.
+    password_hash = hash_password(password)
+
+    conn = get_connection()
+    try:
+        if schema == "table":
+            conn.execute(_STAFF_USERS_DDL)
+        elif schema == "column":
+            _ensure_staff_columns(conn)
+        if _admin_row(conn, username) is not None:
+            return
+        try:
+            _insert_default_admin(
+                conn, username, password_hash, display_name, email, affiliation
+            )
+        except sqlite3.OperationalError as exc:
+            if _schema_problem(exc) != "column":
+                raise
+            conn.rollback()
+            _ensure_staff_columns(conn)
+            _insert_default_admin(
+                conn, username, password_hash, display_name, email, affiliation
+            )
+        except sqlite3.IntegrityError:
+            # Another open inserted the same username. The row is the bootstrap.
+            conn.rollback()
+            return
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Read it back on a new connection. A commit Turso answered with "no
+    # transaction is active" can leave the insert uncommitted, and returning
+    # this connection to the pool rolls that transaction back.
+    conn = get_connection()
+    try:
+        if _admin_row(conn, username) is None:
+            log.error(
+                "Staff sign-in bootstrap did not persist the default admin row. "
+                "The login form will still load and the next open will try again."
+            )
+    finally:
+        conn.close()
+
+
+def _admin_row(conn, username: str):
+    try:
+        return conn.execute(_ADMIN_LOOKUP, (username,)).fetchone()
+    except sqlite3.OperationalError as exc:
+        if _schema_problem(exc) != "column":
+            raise
+        _ensure_staff_columns(conn)
+        return conn.execute(_ADMIN_LOOKUP, (username,)).fetchone()
 
 
 def authenticate(username: str, password: str) -> dict | None:

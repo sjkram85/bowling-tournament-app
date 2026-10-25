@@ -2,6 +2,7 @@
 
 Uses libSQL's embedded file mode (no network, no credentials). Skipped if libsql isn't installed.
 """
+import logging
 import sqlite3
 
 import pytest
@@ -202,11 +203,8 @@ def test_statement_tail_is_stripped_before_libsql_sees_it():
     assert db_state._without_statement_tail("SELECT 1; SELECT 2;") == "SELECT 1; SELECT 2"
 
 
-def test_bootstrap_skips_create_when_staff_table_exists(lib_db, monkeypatch):
-    """The live crash is this CREATE on every logged-out open. init_db already made the table."""
-    from modules.auth import _bootstrap_admin
-
-    seen = []
+def _install_sql_probe(monkeypatch, seen, reject=None):
+    """Record SQL. ``reject(sql)`` may raise ValueError the way hosted Turso does."""
     real_connect = db_state._connect_libsql
 
     def connect(target, token=None):
@@ -214,19 +212,39 @@ def test_bootstrap_skips_create_when_staff_table_exists(lib_db, monkeypatch):
 
         def on_execute(sql):
             seen.append(sql)
-            # Hosted Turso raises ValueError for this. Embedded libSQL does not, so the test does.
-            if _has_statement_tail(sql):
-                raise ValueError("SQL string contains more than one statement")
+            if reject is not None:
+                reject(sql)
 
         conn._raw = _RawProxy(conn._raw, on_execute)
         return conn
 
     monkeypatch.setattr(db_state, "_connect_libsql", connect)
+
+
+def _sql_head(sql: str) -> str:
+    return sql.lstrip().upper()
+
+
+def test_bootstrap_skips_create_when_staff_table_exists(lib_db, monkeypatch):
+    """init_db already made staff_users. A logged-out open must not CREATE or ALTER."""
+    from modules import auth
+    from modules.auth import _bootstrap_admin
+
+    seen = []
+
+    def reject(sql):
+        # Hosted Turso raises ValueError for a statement tail. Embedded libSQL does not.
+        if _has_statement_tail(sql):
+            raise ValueError("SQL string contains more than one statement")
+
+    _install_sql_probe(monkeypatch, seen, reject)
     _drain_pool()
     try:
         _bootstrap_admin()
         assert seen, "bootstrap did not execute any SQL"
-        assert not any(sql.lstrip().upper().startswith("CREATE TABLE") for sql in seen)
+        assert not any(_sql_head(sql).startswith("CREATE TABLE") for sql in seen)
+        assert not any(_sql_head(sql).startswith("ALTER TABLE") for sql in seen)
+        assert not any("sqlite_master" in sql.lower() for sql in seen)
         assert all(not _has_statement_tail(sql) for sql in seen)
         conn = db_state.get_connection()
         row = conn.execute(
@@ -236,6 +254,23 @@ def test_bootstrap_skips_create_when_staff_table_exists(lib_db, monkeypatch):
         conn.close()
         assert row["username"] == "skramer"
         assert row["role"] == "admin"
+        assert auth.authenticate("skramer", "Gussierocks1")["role"] == "admin"
+
+        # The row is there. Another anonymous open is a read, not a rehash or UPDATE.
+        seen.clear()
+        hashed = []
+        real_hash = auth.hash_password
+
+        def note_hash(password):
+            hashed.append(password)
+            return real_hash(password)
+
+        monkeypatch.setattr(auth, "hash_password", note_hash)
+        _bootstrap_admin()
+        assert hashed == []
+        assert seen, "a later open did not read staff_users"
+        assert all(_sql_head(sql).startswith("SELECT") for sql in seen)
+        monkeypatch.setattr(auth, "hash_password", real_hash)
 
         seen.clear()
         conn = db_state.get_connection()
@@ -243,7 +278,7 @@ def test_bootstrap_skips_create_when_staff_table_exists(lib_db, monkeypatch):
         conn.commit()
         conn.close()
         _bootstrap_admin()
-        creates = [sql for sql in seen if sql.lstrip().upper().startswith("CREATE TABLE")]
+        creates = [sql for sql in seen if _sql_head(sql).startswith("CREATE TABLE")]
         assert len(creates) == 1
         assert creates[0].lstrip().startswith("CREATE TABLE IF NOT EXISTS staff_users")
         assert creates[0].rstrip().endswith(")")
@@ -257,6 +292,216 @@ def test_bootstrap_skips_create_when_staff_table_exists(lib_db, monkeypatch):
         conn.close()
         assert row["role"] == "admin"
     finally:
+        _drain_pool()
+
+
+def test_bootstrap_logs_prepare_error_and_tries_again(lib_db, monkeypatch, caplog):
+    """A Turso prepare failure must not raise, and must not stick for the next open."""
+    from modules.auth import _bootstrap_admin
+
+    seen = []
+    state = {"fail": True}
+
+    def reject(sql):
+        if state["fail"] and "staff_users" in sql.lower():
+            raise ValueError("SQL string contains more than one statement")
+
+    _install_sql_probe(monkeypatch, seen, reject)
+    _drain_pool()
+    try:
+        with caplog.at_level(logging.ERROR, logger="modules.auth"):
+            _bootstrap_admin()
+        assert "more than one statement" in caplog.text
+        first = len(seen)
+        assert first >= 1
+        caplog.clear()
+        with caplog.at_level(logging.ERROR, logger="modules.auth"):
+            _bootstrap_admin()
+        assert len(seen) > first
+        assert "more than one statement" in caplog.text
+
+        state["fail"] = False
+        _bootstrap_admin()
+        conn = db_state.get_connection()
+        row = conn.execute(
+            "SELECT role FROM staff_users WHERE username = ?",
+            ("skramer",),
+        ).fetchone()
+        conn.close()
+        assert row["role"] == "admin"
+    finally:
+        _drain_pool()
+
+
+def test_bootstrap_create_failure_is_retried_when_the_table_is_missing(lib_db, monkeypatch, caplog):
+    from modules.auth import _bootstrap_admin
+
+    seen = []
+    state = {"fail_create": True}
+
+    def reject(sql):
+        if state["fail_create"] and _sql_head(sql).startswith("CREATE TABLE"):
+            raise ValueError("SQL string contains more than one statement")
+
+    _install_sql_probe(monkeypatch, seen, reject)
+    _drain_pool()
+    try:
+        conn = db_state.get_connection()
+        conn.execute("DROP TABLE staff_users")
+        conn.commit()
+        conn.close()
+        seen.clear()
+        with caplog.at_level(logging.ERROR, logger="modules.auth"):
+            _bootstrap_admin()
+        assert "more than one statement" in caplog.text
+        assert sum(_sql_head(sql).startswith("CREATE TABLE") for sql in seen) == 1
+        conn = db_state.get_connection()
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'staff_users'"
+        ).fetchone()
+        conn.close()
+        assert tables is None
+
+        state["fail_create"] = False
+        seen.clear()
+        _bootstrap_admin()
+        assert sum(_sql_head(sql).startswith("CREATE TABLE") for sql in seen) == 1
+        conn = db_state.get_connection()
+        row = conn.execute(
+            "SELECT username, role FROM staff_users WHERE username = ?",
+            ("skramer",),
+        ).fetchone()
+        conn.close()
+        assert row["role"] == "admin"
+    finally:
+        _drain_pool()
+
+
+def test_bootstrap_repairs_missing_columns_without_a_leading_semicolon(lib_db):
+    from modules.auth import _bootstrap_admin
+
+    _drain_pool()
+    conn = db_state.get_connection()
+    conn.execute("DROP TABLE staff_users")
+    conn.execute(
+        "CREATE TABLE staff_users ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "username TEXT UNIQUE NOT NULL, "
+        "password_hash TEXT NOT NULL, "
+        "display_name TEXT NOT NULL, "
+        "role TEXT NOT NULL DEFAULT 'td')"
+    )
+    conn.commit()
+    conn.close()
+    _bootstrap_admin()
+    conn = db_state.get_connection()
+    try:
+        cols = [c[1] for c in conn.execute("PRAGMA table_info(staff_users)")]
+        row = conn.execute(
+            "SELECT role, center_affiliation FROM staff_users WHERE username = ?",
+            ("skramer",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert "center_affiliation" in cols and "email" in cols
+    assert row["role"] == "admin"
+    assert row["center_affiliation"] == "CHUSBC"
+
+
+def test_login_form_renders_when_bootstrap_cannot_prepare(tmp_path):
+    """The redacted OperationalError used to replace the Staff Sign In card."""
+    streamlit_testing = pytest.importorskip("streamlit.testing.v1")
+    script = f"""
+import sqlite3
+from pathlib import Path
+from modules import auth, db_state
+db_state.DB_PATH = Path({str(tmp_path / "desk.db")!r})
+
+def broken():
+    raise sqlite3.OperationalError("SQL string contains more than one statement")
+
+auth._ensure_default_admin = broken
+auth.render_login_screen()
+"""
+    app = streamlit_testing.AppTest.from_string(script, default_timeout=30).run()
+    assert not app.exception, app.exception
+    assert any(button.label == "Sign In" for button in app.button)
+    assert any(field.label == "Username" for field in app.text_input)
+
+
+def test_login_form_renders_after_real_bootstrap(tmp_path, monkeypatch):
+    streamlit_testing = pytest.importorskip("streamlit.testing.v1")
+    monkeypatch.delenv("TURSO_DATABASE_URL", raising=False)
+    monkeypatch.delenv("TURSO_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("PRISM_DB_ENGINE", raising=False)
+    script = f"""
+from pathlib import Path
+from modules import db_state
+db_state.DB_PATH = Path({str(tmp_path / "desk.db")!r})
+db_state.init_db()
+from modules.auth import render_login_screen
+render_login_screen()
+"""
+    app = streamlit_testing.AppTest.from_string(script, default_timeout=30).run()
+    assert not app.exception, app.exception
+    username = next(field for field in app.text_input if field.label == "Username")
+    password = next(field for field in app.text_input if field.label == "Password")
+    username.set_value("skramer")
+    password.set_value("Gussierocks1")
+    sign_in = next(button for button in app.button if button.label == "Sign In")
+    app = sign_in.click().run()
+    assert not app.exception, app.exception
+    assert app.session_state["user"]["username"] == "skramer"
+    assert app.session_state["user"]["role"] == "admin"
+
+
+def test_commit_without_a_transaction_matches_sqlite(lib_db):
+    """Hosted Turso raises this from with-block commit. sqlite3 does not."""
+    _drain_pool()
+    conn = db_state.get_connection()
+
+    class _CommitProxy:
+        def __init__(self, raw):
+            self._raw = raw
+
+        def commit(self):
+            raise ValueError(
+                "Hrana: stream error: SQLite error: cannot commit - no transaction is active"
+            )
+
+        def __getattr__(self, name):
+            return getattr(self._raw, name)
+
+    conn._raw = _CommitProxy(conn._raw)
+    try:
+        conn.commit()
+        with conn:
+            conn.execute("SELECT 1")
+    finally:
+        conn.close()
+        _drain_pool()
+
+
+def test_commit_still_raises_a_real_libsql_error(lib_db):
+    _drain_pool()
+    conn = db_state.get_connection()
+
+    class _CommitProxy:
+        def __init__(self, raw):
+            self._raw = raw
+
+        def commit(self):
+            raise ValueError("SQL string contains more than one statement")
+
+        def __getattr__(self, name):
+            return getattr(self._raw, name)
+
+    conn._raw = _CommitProxy(conn._raw)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="more than one statement"):
+            conn.commit()
+    finally:
+        conn.close()
         _drain_pool()
 
 
