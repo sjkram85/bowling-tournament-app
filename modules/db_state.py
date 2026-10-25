@@ -106,6 +106,24 @@ def _dead_stream(exc: BaseException) -> bool:
     return False
 
 
+def _no_active_transaction(exc: BaseException) -> bool:
+    """Remote libsql raises this where sqlite3 treats commit as a no-op.
+
+    Hosted Turso answers COMMIT with ``cannot commit - no transaction is active``
+    after DDL, after a Hrana stream is replaced, or when the block only read.
+    ``with conn:`` would otherwise turn that into the redacted OperationalError
+    on the sign-in page. There is nothing to commit, so the call succeeded.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if "no transaction is active" in str(current).lower():
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _script_statements(script: str):
     """Split a script the way sqlite3 does, one complete statement at a time.
 
@@ -296,6 +314,9 @@ class LibsqlConnection:
         try:
             self._raw.commit()
         except ValueError as exc:
+            if _no_active_transaction(exc):
+                log.info("libsql commit with no open transaction: %s", exc)
+                return
             raise _translate(exc) from exc
 
     def rollback(self):
