@@ -356,6 +356,11 @@ def reset_password(user_id: int, new_password: str, admin_name: str) -> str | No
     return None
 
 
+def _plain_text(value) -> str:
+    """Strip a stored string. Anything else (None, a number) is blank, not a crash."""
+    return value.strip() if isinstance(value, str) else ""
+
+
 def shifted_staff_fields(email, center_affiliation, role) -> dict | None:
     """Recover columns written by the positional create_staff_user call.
 
@@ -364,9 +369,9 @@ def shifted_staff_fields(email, center_affiliation, role) -> dict | None:
     host-center code, center is a role name, and role is ``td``. The recovered
     email is empty — a real address was never collected, so none is invented.
     """
-    stored_email = (email or "").strip()
-    stored_center = (center_affiliation or "").strip()
-    stored_role = (role or "").strip()
+    stored_email = _plain_text(email)
+    stored_center = _plain_text(center_affiliation)
+    stored_role = _plain_text(role)
     if stored_email not in HOST_CENTERS or stored_center not in ROLES or stored_role != "td":
         return None
     return {
@@ -456,7 +461,8 @@ def apply_shifted_scott_session_repair() -> None:
     user = st.session_state.get("user")
     if not isinstance(user, dict):
         return
-    if (user.get("username") or "").strip().lower() != "scott":
+    username = user.get("username")
+    if not isinstance(username, str) or username.strip().lower() != "scott":
         return
     fields = shifted_staff_fields(user.get("email"), user.get("center_affiliation"), user.get("role"))
     if fields is None:

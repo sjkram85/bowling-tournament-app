@@ -12,7 +12,7 @@ from components.prism_dock import collect_view_state, render_prism_dock
 from components.hide_chrome import hide_streamlit_chrome
 from components.styles import apply_clean_theme
 from modules import auth
-from modules.constants import CENTERS
+from modules.constants import CENTERS, HOST_CENTERS
 from modules.db_state import init_db, storage_label, using_turso
 from views.bowler_portal import render_bowler_portal
 from views.hubs.active_squad import render_active_squad
@@ -81,9 +81,44 @@ def _sidebar_identity(user: dict) -> None:
             st.rerun()
 
 
+def _repair_shifted_scott_session() -> None:
+    """Correct a signed-in scott session that still has the shifted columns.
+
+    Startup rewrites the database row. A session from before that still says
+    role td, which hides Staff Accounts. This only updates session state.
+
+    The auth module owns the same repair. Call it when that function is on the
+    loaded module. If it is not, apply the correction here so a stale auth
+    module cannot take the desk down.
+    """
+    repair = getattr(auth, "apply_shifted_scott_session_repair", None)
+    if repair is not None:
+        repair()
+        return
+    user = st.session_state.get("user")
+    if not isinstance(user, dict):
+        return
+    username = user.get("username")
+    if not isinstance(username, str) or username.strip().lower() != "scott":
+        return
+    email = user.get("email")
+    center = user.get("center_affiliation")
+    role = user.get("role")
+    email = email.strip() if isinstance(email, str) else ""
+    center = center.strip() if isinstance(center, str) else ""
+    role = role.strip() if isinstance(role, str) else ""
+    if email not in HOST_CENTERS or center not in auth.ROLES or role != "td":
+        return
+    updated = dict(user)
+    updated["email"] = ""
+    updated["center_affiliation"] = email
+    updated["role"] = center
+    st.session_state["user"] = updated
+
+
 def render_desk() -> None:
     # A session signed in before the scott repair still has role td, which hides this desk's admin pages.
-    auth.apply_shifted_scott_session_repair()
+    _repair_shifted_scott_session()
     user = auth.require_login()
     if user is None:
         return
