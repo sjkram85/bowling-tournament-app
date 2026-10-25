@@ -157,6 +157,29 @@ def record_stepladder_score(match_id: int, score_low: int, score_high: int, roll
     return True
 
 
+def matches_by_group(tournament_id: int) -> Dict[str, List[Dict[str, Any]]]:
+    """Every stepladder match for one event, keyed by group name. No table setup.
+
+    A missing table means no ladder has been started. Display code uses this so a
+    standings refresh does not run CREATE TABLE / PRAGMA on every click.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT * FROM stepladder_matches WHERE tournament_id = ?
+               ORDER BY group_name, match_number""",
+            (tournament_id,),
+        ).fetchall()
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for r in rows:
+        out.setdefault(r["group_name"] or "", []).append(dict(r))
+    return out
+
+
 def get_stepladder_state(tournament_id: int, group: Optional[str] = None) -> List[Dict[str, Any]]:
     """Matches with names, in order. group=None returns every group."""
     init_stepladder_tables()

@@ -133,11 +133,17 @@ def entry_handicap(tournament: dict | None, average, bowls_scratch: bool = False
 
 
 def handicap_for(avg, tournament: dict, bowls_scratch: bool = False) -> int | None:
-    """Handicap = pct% of (base - average), never below 0. Scratch bowlers get 0."""
+    """Handicap = pct% of (base - average), never below 0. Scratch bowlers get 0.
+
+    Fractions are dropped (truncated toward zero), not rounded to the nearest pin.
+    Example: 90% of (220 - 151) = 62.1, which stays 62. Scott is waiting on the
+    house before any other rounding rule. Do not switch this to round() until he answers.
+    """
     pct, base = tournament.get("handicap_pct"), tournament.get("handicap_base")
     if bowls_scratch:
         return 0
     try:
+        # Drop the fraction. Leave this as truncation until the house answers.
         return max(0, int((int(base) - int(avg)) * int(pct) / 100))
     except (TypeError, ValueError):
         return None
@@ -229,14 +235,28 @@ def entry_problems(tournament: dict, bowler: dict, now: datetime | None = None, 
 
 
 def past_deadline(tournament: dict, now: datetime | None = None) -> bool:
+    """True once the entry deadline's calendar day has ended in America/New_York.
+
+    Nov 29 means through 11:59:59 PM Eastern, not 23:59 UTC. A naive datetime is
+    read as Eastern so a UTC server clock cannot close entries early.
+    """
     raw = tournament.get("entry_deadline")
     if not raw:
         return False
     try:
-        deadline = datetime.strptime(raw, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        day = datetime.strptime(str(raw)[:10], "%Y-%m-%d")
     except ValueError:
         return False
-    return (now or datetime.now()) > deadline
+    from zoneinfo import ZoneInfo
+    eastern = ZoneInfo("America/New_York")
+    deadline = day.replace(hour=23, minute=59, second=59, tzinfo=eastern)
+    if now is None:
+        current = datetime.now(eastern)
+    elif now.tzinfo is None:
+        current = now.replace(tzinfo=eastern)
+    else:
+        current = now.astimezone(eastern)
+    return current > deadline
 
 
 def unconfirmed_items(tournament: dict | None) -> list[str]:

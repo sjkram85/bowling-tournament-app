@@ -27,6 +27,52 @@ def _row(r: dict, rank: int, finalist: bool = False, tied: bool = False, rolloff
             "tied": bool(tied), "rolloff": bool(rolloff)}
 
 
+def public_groups(tournament_id: int) -> list[dict]:
+    """Division boards the kiosk and the desk both show.
+
+    A finished stepladder is final placement (champion is 1st). An unfinished ladder
+    or roll-off stays in qualifying order and says so. Same rows, flags, and notes.
+    """
+    from modules.divisions import grouped_results
+    from modules.placement import (
+        STATUS_FINAL, STATUS_LADDER_PENDING, STATUS_ROLLOFF_PENDING, group_placement,
+    )
+    from modules.stepladder import matches_by_group
+
+    grouped = grouped_results(tournament_id)
+    if not grouped:
+        from modules.standings import compute_standings
+        rows = [_row(r, r["rank"]) for r in compute_standings(tournament_id)]
+        return [{"label": "Standings", "rows": rows}]
+    ladders = matches_by_group(tournament_id)
+    groups = []
+    for g in grouped:
+        plc = group_placement(tournament_id, g, ladders.get(g.get("group") or "", []))
+        stage = plc["status"]
+        champ_id = plc["matches"][-1].get("winner_id") if stage == STATUS_FINAL and plc.get("matches") else None
+        if stage == STATUS_FINAL:
+            ordered = list(plc["order"])
+            seen = {r.get("id") for r in ordered}
+            ordered += [r for r in g["rows"] if r.get("id") not in seen]
+            note = "Final placement — stepladder champion is 1st"
+        else:
+            ordered = g["rows"]
+            note = ""
+            if stage == STATUS_LADDER_PENDING:
+                note = "Finals not finished — order is still qualifying"
+            elif stage == STATUS_ROLLOFF_PENDING:
+                note = "Roll-off not recorded — order is still qualifying"
+        rows = []
+        for r in ordered:
+            rank = r.get("place") if stage == STATUS_FINAL and r.get("place") else r.get("rank")
+            item = _row(r, rank or 0, r.get("finalist") and stage != STATUS_FINAL, r.get("tied"), r.get("rolloff"))
+            item["champion"] = bool(champ_id and r.get("id") == champ_id)
+            rows.append(item)
+        groups.append({"label": g.get("label") or g.get("group") or "", "rows": rows,
+                       "stage": stage, "note": note})
+    return groups
+
+
 def load_board(tournament_id: int) -> dict | None:
     """{name, center, practice, groups:[{label, rows}]} or None if the tournament isn't found."""
     from modules.standings import get_tournament
@@ -37,46 +83,17 @@ def load_board(tournament_id: int) -> dict | None:
         return None
     if not t:
         return None
-    groups = []
     try:
-        from modules.divisions import grouped_results
-        from modules.placement import (
-            STATUS_FINAL, STATUS_LADDER_PENDING, STATUS_ROLLOFF_PENDING, group_placement,
-        )
-        for g in grouped_results(tournament_id):
-            plc = group_placement(tournament_id, g)
-            stage = plc["status"]
-            champ_id = plc["matches"][-1].get("winner_id") if stage == STATUS_FINAL and plc.get("matches") else None
-            if stage == STATUS_FINAL:
-                ordered = list(plc["order"])
-                seen = {r.get("id") for r in ordered}
-                ordered += [r for r in g["rows"] if r.get("id") not in seen]
-                note = "Final placement — stepladder champion is 1st"
-            else:
-                ordered = g["rows"]
-                note = ""
-                if stage == STATUS_LADDER_PENDING:
-                    note = "Finals not finished — order is still qualifying"
-                elif stage == STATUS_ROLLOFF_PENDING:
-                    note = "Roll-off not recorded — order is still qualifying"
-            rows = []
-            for r in ordered:
-                rank = r.get("place") if stage == STATUS_FINAL and r.get("place") else r.get("rank")
-                item = _row(r, rank or 0, r.get("finalist") and stage != STATUS_FINAL, r.get("tied"), r.get("rolloff"))
-                item["champion"] = bool(champ_id and r.get("id") == champ_id)
-                rows.append(item)
-            groups.append({"label": g.get("label") or g.get("group") or "", "rows": rows,
-                           "stage": stage, "note": note})
+        groups = public_groups(tournament_id)
     except Exception as exc:
         log.warning("kiosk grouped results failed: %s", exc)
-    if not groups:
         try:
             from modules.standings import compute_standings
             rows = [_row(r, r["rank"]) for r in compute_standings(tournament_id)]
-        except Exception as exc:
-            log.warning("kiosk standings failed: %s", exc)
-            rows = []
-        groups = [{"label": "Standings", "rows": rows}]
+            groups = [{"label": "Standings", "rows": rows}]
+        except Exception as exc2:
+            log.warning("kiosk standings failed: %s", exc2)
+            groups = [{"label": "Standings", "rows": []}]
     from modules.events import center_name
     return {"name": t.get("name") or "Tournament", "center": center_name(t.get("host_center") or ""),
             "practice": bool(t.get("is_practice")), "groups": groups, **_logo_uris(tournament_id)}

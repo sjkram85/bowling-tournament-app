@@ -77,6 +77,89 @@ def cancel_tournament(tournament_id: int, by: str) -> None:
         log.warning("cancel audit failed: %s", exc)
 
 
+# Rose Murphy: $30 ($15 bowling + $15 scholarships) at the Forest Hill front desk, not Prism.
+FRONT_DESK_FEE_COPY = (
+    "The $30 entry fee is collected at the Forest Hill Lanes front desk, "
+    "not at the tournament desk."
+)
+
+
+def front_desk_fee_copy(tournament: dict | None) -> str | None:
+    """Public check-in sentence for events that do not collect fees in Prism. None otherwise."""
+    if tournament and tournament.get("fees_at_front_desk"):
+        return FRONT_DESK_FEE_COPY
+    return None
+
+
+def mask_usbc_id(usbc: str | None) -> str:
+    """Public roster display. Full USBC IDs stay off the check-in screen."""
+    digits = "".join(ch for ch in str(usbc or "") if ch.isdigit())
+    if not digits:
+        return "Not on file"
+    if len(digits) <= 4:
+        return "••••"
+    return "••••" + digits[-4:]
+
+
+def public_checkin_url(base: str, tournament_id: int) -> str:
+    """Check-in link with the event id, same `t=` the hub kiosk QR uses."""
+    root = (base or "").rstrip("/")
+    return f"{root}/?mode=bowler&action=checkin&t={int(tournament_id)}"
+
+
+def pick_public_event(events: list[dict], params) -> tuple[dict | None, str | None]:
+    """(event, error). A `t=` that is not an open event is an error, not a different roster.
+
+    No `t=` and one open event selects that event. No `t=` and several events returns
+    (None, None) so the page can ask which one.
+    """
+    from modules.kiosk_data import parse_tournament_id
+    tid = parse_tournament_id(params)
+    if tid is not None:
+        match = next((e for e in events if int(e["id"]) == tid), None)
+        if match is None:
+            return None, "This check-in link does not match an open event. Ask the tournament desk for a new code."
+        return match, None
+    if len(events) == 1:
+        return events[0], None
+    return None, None
+
+
+def entry_package_labels(tournament: dict | None) -> dict:
+    """Which Add Bowler tags to offer.
+
+    Standings are one board for the squad. Doubles, Team, and All-Events are labels
+    on the entry. They are hidden unless this squad's format names them, because
+    checking them does not create those standings. All-Events is never offered:
+    no format here builds an All-Events board.
+    """
+    fmt = str((tournament or {}).get("squad_format") or "")
+    low = fmt.lower()
+    offer_doubles = "double" in low
+    offer_team = "team" in low
+    offer_singles = "single" in low or not (offer_doubles or offer_team)
+    show_picker = offer_doubles or offer_team
+    if show_picker:
+        caption = (
+            "Tags on this entry. Only events named in the squad format are listed. "
+            "Doubles and Team tags do not create a separate standings board. "
+            "All-Events is not used."
+        )
+    else:
+        caption = (
+            "Singles squad. Doubles, Team, and All-Events are hidden — "
+            "they do not create standings."
+        )
+    return {
+        "show_picker": show_picker,
+        "offer_singles": offer_singles,
+        "offer_doubles": offer_doubles,
+        "offer_team": offer_team,
+        "offer_all_events": False,
+        "caption": caption,
+    }
+
+
 def center_name(code: str) -> str:
     try:
         from modules.constants import CENTERS

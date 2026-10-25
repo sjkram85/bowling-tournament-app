@@ -132,6 +132,86 @@ def _csv(columns, rows) -> str:
     return out.getvalue()
 
 
+def _is_lower_place_reminder(item: str) -> bool:
+    text = (item or "").lower()
+    return "scholarship" in text and "2nd place" in text
+
+
+def _has_lower_amount(division: dict) -> bool:
+    for value in (division.get("place_amounts") or [])[1:]:
+        if value not in (None, ""):
+            return True
+    return False
+
+
+def lower_amounts_text(division: dict) -> str:
+    """Comma list of 2nd place and below already stored. Blank when none are set."""
+    parts = []
+    for value in (division.get("place_amounts") or [])[1:]:
+        if value in (None, ""):
+            parts.append("")
+            continue
+        number = float(value)
+        parts.append(str(int(number)) if number == int(number) else str(number))
+    return ", ".join(parts)
+
+
+def parse_optional_amounts(text: str) -> list | None:
+    """Blank means 'not set' (None). A typed list never invents a number for an empty slot.
+
+    Raises ValueError when a slot is not a number.
+    """
+    if not str(text or "").strip():
+        return None
+    parsed = []
+    for part in str(text).split(","):
+        part = part.strip().lstrip("$")
+        if not part:
+            parsed.append(None)
+            continue
+        try:
+            number = float(part)
+        except ValueError:
+            raise ValueError("Scholarship amounts must be numbers, like 250, 100. Nothing was saved.") from None
+        if number < 0:
+            raise ValueError("Scholarship amounts can't be negative. Nothing was saved.")
+        parsed.append(int(number) if number == int(number) else number)
+    return parsed
+
+
+def confirm_flyer_amounts(divs: list[dict], unconfirmed: list[str], first_places: dict,
+                          lower_text: dict) -> tuple[list[dict], list[str]]:
+    """Save flyer scholarship fields.
+
+    1st place is the number the TD typed (the preset already has one). 2nd place and
+    below are stored only when that box has amounts. A blank box does not invent
+    dollars and does not clear the 2nd-place reminder. The reminder stays until
+    every division has at least one lower-place amount.
+    """
+    new_divs = []
+    for division in divs:
+        updated = dict(division)
+        name = division["name"]
+        if name in first_places and first_places[name] is not None:
+            updated["first_place"] = first_places[name]
+        parsed = parse_optional_amounts(lower_text.get(name, ""))
+        if parsed is None:
+            updated.pop("place_amounts", None)
+        else:
+            sequence = [updated.get("first_place") if updated.get("first_place") is not None else 0]
+            sequence.extend(parsed)
+            while sequence and sequence[-1] is None:
+                sequence.pop()
+            if any(value is not None for value in sequence[1:]):
+                updated["place_amounts"] = sequence
+            else:
+                updated.pop("place_amounts", None)
+        new_divs.append(updated)
+    all_set = bool(new_divs) and all(_has_lower_amount(division) for division in new_divs)
+    kept = [item for item in unconfirmed if _is_lower_place_reminder(item) and not all_set]
+    return new_divs, kept
+
+
 def recipients_csv(data: dict, upload_only: bool = False) -> str:
     return _csv(UPLOAD_COLUMNS if upload_only else COLUMNS, data["rows"])
 
