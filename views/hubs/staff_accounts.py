@@ -45,6 +45,40 @@ def _report(error: str | None, success: str) -> None:
         st.success(success)
 
 
+_NOTICE_KEY = "staff_accounts_notice"
+
+
+def interpret_create_result(result: tuple[bool, str]) -> tuple[str, str]:
+    """Map create_staff_user's (ok, message) to a banner level and plain text.
+
+    The helper returns a tuple. That tuple must not be handed to st.error or
+    st.success, or Streamlit prints the raw Python value in the banner.
+    """
+    ok, message = result
+    return ("success" if ok else "error"), message
+
+
+def _show_notice() -> None:
+    notice = st.session_state.pop(_NOTICE_KEY, None)
+    if not notice:
+        return
+    level, message = notice
+    if level == "success":
+        st.success(message)
+    else:
+        st.error(message)
+
+
+def _handle_create(result: tuple[bool, str]) -> None:
+    level, message = interpret_create_result(result)
+    if level == "success":
+        # The staff table is rendered above this form, so rerun to reload it.
+        # Keep the message for that next run; a banner drawn before rerun is discarded.
+        st.session_state[_NOTICE_KEY] = (level, message)
+        st.rerun()
+    st.error(message)
+
+
 def _manage_selected(user: dict, me: dict) -> None:
     with st.container(border=True):
         st.subheader(f"Manage {user['display_name']} ({user['username']})")
@@ -118,6 +152,7 @@ def render_staff_accounts() -> None:
         st.error("Administrator access required.")
         return
 
+    _show_notice()
     staff = _staff()
     pending = [row for row in staff if not row["is_approved"]]
     if pending:
@@ -148,7 +183,14 @@ def render_staff_accounts() -> None:
             f"Temporary password (min {MIN_PASSWORD_LENGTH} characters)", type="password"
         )
         if st.form_submit_button("Add", type="primary"):
-            _report(
-                create_staff_user(username, password, display_name, center, role),
-                f"Added {display_name.strip()}.",
+            # center and role are keyword-only here: the helper's positional
+            # arguments after display_name are email, then center, then role.
+            _handle_create(
+                create_staff_user(
+                    username,
+                    password,
+                    display_name,
+                    center_affiliation=center,
+                    role=role,
+                )
             )
