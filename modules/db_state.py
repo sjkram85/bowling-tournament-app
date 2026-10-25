@@ -1,10 +1,13 @@
 """Database connection management, schema initialization, checkpointing, and audit logging."""
 
+import logging
 import os
 from pathlib import Path
 import sqlite3
 import threading
 import streamlit as st
+
+log = logging.getLogger(__name__)
 
 # Keep the original database file name so existing tournament data is still found.
 DB_PATH = Path(__file__).resolve().parent.parent / "tournament.db"
@@ -46,6 +49,35 @@ def _translate(exc: Exception) -> Exception:
     if "constraint" in msg.lower():
         return sqlite3.IntegrityError(msg)
     return sqlite3.OperationalError(msg)
+
+
+def _without_statement_tail(sql: str) -> str:
+    """Drop a semicolon that has only whitespace after it.
+
+    sqlite3 and embedded libSQL accept that. Hosted Turso's prepare does not:
+    the bytes after the statement are a second statement, and the ValueError is
+    reported as OperationalError. The sign-in screen's CREATE TABLE is that
+    shape (semicolon, then the newline inside the quotes). A real second
+    statement is left alone.
+    """
+    if not isinstance(sql, str):
+        return sql
+    trimmed = sql.rstrip()
+    if trimmed.endswith(";"):
+        trimmed = trimmed[:-1].rstrip()
+    return trimmed
+
+
+def _dead_stream(exc: BaseException) -> bool:
+    """Turso closes an idle Hrana stream. The pool then hands that connection out."""
+    msg = str(exc).lower()
+    return (
+        "stream_expired" in msg
+        or "stream has expired" in msg
+        or "expired due to inactivity" in msg
+        or "stream has been closed" in msg
+        or "connection already closed" in msg
+    )
 
 
 class LibsqlRow:
@@ -101,14 +133,17 @@ class LibsqlCursor:
 
     def execute(self, sql, params=()):
         try:
-            self._cur.execute(sql, tuple(params) if not isinstance(params, dict) else params)
+            self._cur.execute(
+                _without_statement_tail(sql),
+                tuple(params) if not isinstance(params, dict) else params,
+            )
         except ValueError as exc:
             raise _translate(exc) from exc
         return self
 
     def executemany(self, sql, seq):
         try:
-            self._cur.executemany(sql, [tuple(p) for p in seq])
+            self._cur.executemany(_without_statement_tail(sql), [tuple(p) for p in seq])
         except ValueError as exc:
             raise _translate(exc) from exc
         return self
@@ -157,11 +192,40 @@ class LibsqlConnection:
     def cursor(self):
         return LibsqlCursor(self._raw.cursor())
 
+    def _reopen(self) -> bool:
+        """Replace a dead Turso stream. The pooled object stays the one callers hold."""
+        key = getattr(self, "_prism_key", None)
+        if not key:
+            return False
+        self._prism_dead = True
+        _really_close(self)
+        try:
+            fresh = _connect_libsql(key[1], key[2]) if key[0] == "turso" else _connect_libsql(key[1])
+        except Exception:
+            return False
+        self._raw = fresh._raw
+        fresh._raw = None
+        self._prism_dead = False
+        try:
+            self._raw.cursor().execute("PRAGMA foreign_keys = ON")
+        except Exception:
+            pass
+        return True
+
+    def _call_again_if_stream_died(self, attempt):
+        try:
+            return attempt()
+        except sqlite3.OperationalError as exc:
+            if not _dead_stream(exc) or not self._reopen():
+                raise
+            log.warning("Turso connection was closed; reconnected and retried")
+            return attempt()
+
     def execute(self, sql, params=()):
-        return self.cursor().execute(sql, params)
+        return self._call_again_if_stream_died(lambda: self.cursor().execute(sql, params))
 
     def executemany(self, sql, seq):
-        return self.cursor().executemany(sql, seq)
+        return self._call_again_if_stream_died(lambda: self.cursor().executemany(sql, seq))
 
     def executescript(self, script):
         try:
@@ -249,6 +313,9 @@ def _release(conn) -> None:
     if getattr(conn, "_prism_in_pool", False):
         return
     conn._prism_in_pool = True
+    if getattr(conn, "_prism_dead", False) or getattr(conn, "_raw", None) is None:
+        _really_close(conn)
+        return
     raw = getattr(conn, "_raw", None)
     try:
         if raw is not None and getattr(raw, "in_transaction", False):
