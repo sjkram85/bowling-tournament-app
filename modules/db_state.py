@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sqlite3
 import threading
+import time
 import streamlit as st
 
 log = logging.getLogger(__name__)
@@ -44,10 +45,16 @@ def storage_label() -> str:
 
 
 def _translate(exc: Exception) -> Exception:
-    """libsql raises ValueError; turn it into the sqlite3 errors the rest of the app already catches."""
+    """libsql raises ValueError; turn it into the sqlite3 errors the rest of the app already catches.
+
+    The message is logged here because Streamlit redacts it in the page. The
+    red box stays generic; the server log has the Turso/libsql text.
+    """
     msg = str(exc)
     if "constraint" in msg.lower():
+        log.debug("libsql constraint: %s", msg)
         return sqlite3.IntegrityError(msg)
+    log.warning("libsql error: %s", msg)
     return sqlite3.OperationalError(msg)
 
 
@@ -68,16 +75,56 @@ def _without_statement_tail(sql: str) -> str:
     return trimmed
 
 
+# Turso drops an idle Hrana stream after 10s (STREAM_EXPIRED) and deletes the
+# baton a few minutes later ("was not found"). The client also says
+# "stream closed" / "stream not found", which the first matcher missed, so the
+# sign-in CREATE kept raising OperationalError.
+_DEAD_STREAM_MARKERS = (
+    "stream_expired",
+    "stream has expired",
+    "expired due to inactivity",
+    "stream has been closed",
+    "stream closed",
+    "stream not found",
+    "stream_not_found",
+    "connection already closed",
+    "baton",
+    "was not found",
+)
+
+
 def _dead_stream(exc: BaseException) -> bool:
-    """Turso closes an idle Hrana stream. The pool then hands that connection out."""
-    msg = str(exc).lower()
-    return (
-        "stream_expired" in msg
-        or "stream has expired" in msg
-        or "expired due to inactivity" in msg
-        or "stream has been closed" in msg
-        or "connection already closed" in msg
-    )
+    """True when this error, or its cause, is a dead Turso Hrana stream."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        msg = str(current).lower()
+        if any(marker in msg for marker in _DEAD_STREAM_MARKERS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _script_statements(script: str):
+    """Split a script the way sqlite3 does, one complete statement at a time.
+
+    libsql's executescript discards the error from the whole batch, so a
+    failed init never surfaces. Each piece is executed on its own instead.
+    """
+    if not isinstance(script, str):
+        return
+    buf: list[str] = []
+    for ch in script:
+        buf.append(ch)
+        if ch == ";" and sqlite3.complete_statement("".join(buf)):
+            stmt = "".join(buf).strip()
+            if stmt:
+                yield stmt
+            buf = []
+    tail = "".join(buf).strip()
+    if tail:
+        yield tail
 
 
 class LibsqlRow:
@@ -149,13 +196,22 @@ class LibsqlCursor:
         return self
 
     def fetchone(self):
-        return self._row(self._cur.fetchone())
+        try:
+            return self._row(self._cur.fetchone())
+        except ValueError as exc:
+            raise _translate(exc) from exc
 
     def fetchall(self):
-        return [self._row(r) for r in self._cur.fetchall()]
+        try:
+            return [self._row(r) for r in self._cur.fetchall()]
+        except ValueError as exc:
+            raise _translate(exc) from exc
 
     def fetchmany(self, size=None):
-        rows = self._cur.fetchmany(size) if size else self._cur.fetchmany()
+        try:
+            rows = self._cur.fetchmany(size) if size else self._cur.fetchmany()
+        except ValueError as exc:
+            raise _translate(exc) from exc
         return [self._row(r) for r in rows]
 
     def __iter__(self):
@@ -228,10 +284,12 @@ class LibsqlConnection:
         return self._call_again_if_stream_died(lambda: self.cursor().executemany(sql, seq))
 
     def executescript(self, script):
-        try:
-            self._raw.executescript(script)
-        except ValueError as exc:
-            raise _translate(exc) from exc
+        # The installed libsql executescript swallows the batch error and
+        # returns success. Run each statement through execute so a bad
+        # statement raises, the trailing semicolon is stripped, and a dead
+        # Hrana stream is reopened once.
+        for stmt in _script_statements(script):
+            self.execute(stmt)
         return self
 
     def commit(self):
@@ -290,6 +348,9 @@ def _connect_sqlite(path) -> sqlite3.Connection:
 _pool_guard = threading.Lock()
 _pool_idle: dict[tuple, list] = {}
 _POOL_IDLE_MAX = 4
+# Turso expires an idle Hrana stream at 10s. Drop pooled connections before that
+# so the next desk open does not start on STREAM_EXPIRED.
+_STREAM_IDLE_SECONDS = 8
 
 
 def _pool_key() -> tuple | None:
@@ -329,21 +390,37 @@ def _release(conn) -> None:
         if key is None or len(idle) >= _POOL_IDLE_MAX:
             _really_close(conn)
             return
+        conn._prism_idle_at = time.monotonic()
         idle.append(conn)
 
 
-def _checkout_libsql(key: tuple, opener):
+def _take_idle(key: tuple):
+    """Newest pooled connection that Turso has not had time to expire."""
+    now = time.monotonic()
+    stale = []
+    chosen = None
     with _pool_guard:
-        idle = _pool_idle.get(key)
-        if idle:
+        idle = _pool_idle.get(key) or []
+        while idle and chosen is None:
             conn = idle.pop()
-            conn._prism_in_pool = False
-            return conn
+            age = now - getattr(conn, "_prism_idle_at", now)
+            if age >= _STREAM_IDLE_SECONDS:
+                stale.append(conn)
+            else:
+                chosen = conn
+                chosen._prism_in_pool = False
+        if not idle:
+            _pool_idle.pop(key, None)
+    for conn in stale:
+        _really_close(conn)
+    return chosen
+
+
+def _checkout_libsql(key: tuple, opener):
+    chosen = _take_idle(key)
+    if chosen is not None:
+        return chosen
     conn = opener()
-    try:
-        conn.execute("PRAGMA foreign_keys = ON;")
-    except Exception:
-        pass
     conn._prism_key = key
     conn._prism_in_pool = False
     conn._prism_orig_close = conn.close
@@ -352,6 +429,10 @@ def _checkout_libsql(key: tuple, opener):
         _release(conn)
 
     conn.close = close
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+    except Exception:
+        pass
     return conn
 
 
