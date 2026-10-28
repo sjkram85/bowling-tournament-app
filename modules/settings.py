@@ -8,8 +8,8 @@ import os
 import streamlit as st
 
 AI_OFF_MESSAGE = (
-    "Prism A.I. is turned off because no Gemini key has been set up. "
-    "Everything else works normally. To turn A.I. on, add GEMINI_API_KEY to the app's secrets."
+    "Prism A.I. is turned off because no Grok key has been set up. "
+    "Everything else works normally. To turn A.I. on, add XAI_API_KEY to the app's secrets."
 )
 
 
@@ -25,23 +25,23 @@ def get_secret(key: str, default=None):
 
 
 def ai_available() -> bool:
-    """True when a Gemini API key is configured."""
-    return bool(get_secret("GEMINI_API_KEY"))
+    """True when an xAI API key is configured."""
+    return bool(get_secret("XAI_API_KEY"))
 
 
-# Current Gemini Flash id for Co-Pilot and the Rule Arbitrator.
-# gemini-2.0-flash and gemini-2.5-flash are retired; ai_provider blocks them.
-FLASH_MODEL = "gemini-3.8-flash"
-DEFAULT_MODEL = FLASH_MODEL
-DEFAULT_RULES_MODEL = FLASH_MODEL
-# Second Flash model, used once when the main model is busy, slow, or over its limit.
-DEFAULT_BACKUP_MODEL = "gemini-3.6-flash"
+# Current Grok model for Co-Pilot and the Rule Arbitrator (xAI docs, Oct 2026).
+# grok-4.7 accepts text and images and is the flagship chat model.
+GROK_MODEL = "grok-4.7"
+DEFAULT_MODEL = GROK_MODEL
+DEFAULT_RULES_MODEL = GROK_MODEL
+# Previous flagship, used once when the main model is busy, slow, or over its limit.
+DEFAULT_BACKUP_MODEL = "grok-4.6"
 
 
 def model_name(purpose: str = "general") -> str:
-    """The one place the A.I. model is chosen. Co-Pilot and the Rule Arbitrator use Flash."""
+    """The one place the A.I. model is chosen. Co-Pilot and the Rule Arbitrator use Grok."""
     if purpose == "backup":
-        return str(get_secret("GEMINI_BACKUP_MODEL") or DEFAULT_BACKUP_MODEL).strip()
+        return str(get_secret("XAI_BACKUP_MODEL") or DEFAULT_BACKUP_MODEL).strip()
     if purpose == "rules":
-        return str(get_secret("GEMINI_RULES_MODEL") or DEFAULT_RULES_MODEL).strip()
-    return str(get_secret("GEMINI_MODEL") or DEFAULT_MODEL).strip()
+        return str(get_secret("XAI_RULES_MODEL") or DEFAULT_RULES_MODEL).strip()
+    return str(get_secret("XAI_MODEL") or DEFAULT_MODEL).strip()

@@ -1,38 +1,59 @@
-"""The single place Prism talks to an A.I. service (currently Google Gemini).
+"""The single place Prism talks to an A.I. service (xAI Grok).
 
 Every A.I. feature calls ask_text(), extract_json() or read_image(). To switch
 providers later, only this file needs to change.
 
 There is no silent fallback: if the key is missing, the model is retired, or
-Google refuses the request, AIError is raised with a plain-English message.
+xAI refuses the request, AIError is raised with a plain-English message.
 
 Busy signals, timeouts, and other API errors are retried a couple of times.
 A listener (see push_retry_listener) can show the gutter-ball / approach
 feedback while those retries run. A bad key or a retired model is not retried.
+
+Calls use the OpenAI SDK against https://api.x.ai/v1 (Responses API). Reasoning
+stays on "low" so a normal desk question can finish inside the 15 second limit.
 """
 
 from __future__ import annotations
 
+import base64
 import contextvars
+import io
 import json
 import time
 from datetime import datetime
 
-from modules.settings import AI_OFF_MESSAGE, DEFAULT_MODEL, DEFAULT_RULES_MODEL, get_secret, model_name
+from modules.settings import (
+    AI_OFF_MESSAGE,
+    DEFAULT_BACKUP_MODEL,
+    DEFAULT_MODEL,
+    DEFAULT_RULES_MODEL,
+    get_secret,
+    model_name,
+)
 
 TIMEOUT_MS = 15_000
+XAI_BASE_URL = "https://api.x.ai/v1"
 
-# Extra shots after the first one fails because Gemini is busy, slow, or errors.
+# Extra shots after the first one fails because Grok is busy, slow, or errors.
 # Each retry holds the gutter ball, then "getting back on the approach", then calls again.
 EXTRA_RETRIES = 2
 # (seconds the gutter stays up, seconds the approach stays up) before that retry.
 RETRY_BEATS = ((0.75, 0.55), (1.25, 0.7))
 APPROACH_STATUS = "Getting back on the approach..."
 
-# Model names Google has shut down or restricted (Gemini API deprecations page, Oct 2026).
+# Model names xAI has retired (May 15, 2026) plus leftover Gemini ids.
+# Current ids such as grok-4.7, grok-4.6, grok-4.5, grok-4.3, and grok-4.20 stay allowed.
 RETIRED_PREFIXES = (
-    "gemini-1.0", "gemini-1.5", "gemini-pro", "gemini-2.0", "gemini-2.5",
-    "gemini-3-pro-preview", "gemini-3.1-flash-lite-preview", "gemini-exp",
+    "gemini",
+    "grok-2",
+    "grok-3",
+    "grok-beta",
+    "grok-vision",
+    "grok-4-0709",
+    "grok-4-fast",
+    "grok-4-1-fast",
+    "grok-code-fast",
 )
 
 # Last call result, shown in the About box.
@@ -42,10 +63,16 @@ LAST_STATUS: dict = {"model": None, "ok": None, "message": "No A.I. requests yet
 _retry_listener: contextvars.ContextVar = contextvars.ContextVar("prism_ai_retry_listener", default=None)
 
 _TRANSIENT = {
-    "busy": ("Google's A.I. is very busy right now.", "Please try again in a minute."),
+    "busy": ("xAI's A.I. is very busy right now.", "Please try again in a minute."),
     "limit": ("Prism A.I. is temporarily over its usage limit.", "Wait a minute and try again."),
     "timeout": ("Prism A.I. took too long to answer (over 15 seconds).", "Please try again."),
     "api": ("Prism A.I. couldn't complete the request.", "Please try again in a moment."),
+}
+
+_SETTING_DEFAULT = {
+    "XAI_MODEL": DEFAULT_MODEL,
+    "XAI_RULES_MODEL": DEFAULT_RULES_MODEL,
+    "XAI_BACKUP_MODEL": DEFAULT_BACKUP_MODEL,
 }
 
 
@@ -58,10 +85,11 @@ def is_retired(name: str) -> bool:
     return n.startswith(RETIRED_PREFIXES)
 
 
-def retired_message(name: str, setting: str = "GEMINI_MODEL") -> str:
+def retired_message(name: str, setting: str = "XAI_MODEL") -> str:
+    fallback = _SETTING_DEFAULT.get(setting, DEFAULT_MODEL)
     return (
-        f"Prism A.I. is set to an old model ({name}) that Google has retired. "
-        f"Change {setting} to {DEFAULT_MODEL if setting == 'GEMINI_MODEL' else DEFAULT_RULES_MODEL}."
+        f"Prism A.I. is set to an old model ({name}) that xAI has retired. "
+        f"Change {setting} to {fallback}."
     )
 
 
@@ -93,27 +121,38 @@ def _record(model: str, ok: bool, message: str) -> None:
 
 
 def _client():
-    api_key = get_secret("GEMINI_API_KEY")
+    api_key = get_secret("XAI_API_KEY")
     if not api_key:
         raise AIError(AI_OFF_MESSAGE)
     try:
-        from google import genai
-        from google.genai import types
+        from openai import OpenAI
     except ImportError:
-        raise AIError("Prism A.I. can't start because the Google A.I. package isn't installed.")
-    return genai.Client(
+        raise AIError("Prism A.I. can't start because the xAI client package isn't installed.")
+    return OpenAI(
         api_key=api_key,
-        http_options=types.HttpOptions(
-            timeout=TIMEOUT_MS,
-            retry_options=types.HttpRetryOptions(
-                attempts=1, initial_delay=1.0, http_status_codes=[408, 429, 500, 502, 503, 504]
-            ),
-        ),
+        base_url=XAI_BASE_URL,
+        timeout=TIMEOUT_MS / 1000,
+        max_retries=0,
     )
 
 
+def _status_code(exc: Exception):
+    return getattr(exc, "status_code", None)
+
+
 def _error_kind(exc: Exception) -> str:
-    """Classify a Gemini exception the same way the on-screen sentences do."""
+    """Classify an xAI exception the same way the on-screen sentences do."""
+    status = _status_code(exc)
+    if status == 404:
+        return "model"
+    if status in (401, 403):
+        return "auth"
+    if status == 429:
+        return "limit"
+    if status in (408, 504) or "timeout" in type(exc).__name__.lower():
+        return "timeout"
+    if status == 503:
+        return "busy"
     text = str(exc).lower()
     if any(k in text for k in ("404", "not found", "not supported", "no longer available")):
         return "model"
@@ -134,19 +173,23 @@ def _is_retryable(kind: str) -> bool:
 
 def _is_busy(exc: Exception) -> bool:
     """Overloaded, too slow, or over the usage limit: worth one try on the backup model."""
+    status = _status_code(exc)
+    if status in (408, 429, 503, 504) or "timeout" in type(exc).__name__.lower():
+        return True
     text = str(exc).lower()
     return any(k in text for k in ("503", "504", "429", "unavailable", "deadline", "timeout", "timed out",
                                    "resource_exhausted", "quota", "high demand", "overloaded"))
 
 
-def _friendly_message(kind: str, model: str, *, exhausted: bool = False) -> str:
+def _friendly_message(kind: str, model: str, *, exhausted: bool = False, setting: str = "XAI_MODEL") -> str:
     if kind == "model":
+        fallback = _SETTING_DEFAULT.get(setting, DEFAULT_MODEL)
         return (
-            f"Google says the model '{model}' isn't available to this account. "
-            f"Change GEMINI_MODEL to {DEFAULT_MODEL}."
+            f"xAI says the model '{model}' isn't available to this account. "
+            f"Change {setting} to {fallback}."
         )
     if kind == "auth":
-        return "Google refused the Gemini key. Check that GEMINI_API_KEY is correct and active."
+        return "xAI refused the Grok key. Check that XAI_API_KEY is correct and active."
     if kind == "empty":
         return "Prism A.I. returned an empty answer. Please try again."
     base, ending = _TRANSIENT.get(kind, _TRANSIENT["api"])
@@ -158,8 +201,8 @@ def _friendly_message(kind: str, model: str, *, exhausted: bool = False) -> str:
     return f"{base} {ending}"
 
 
-def _raise(kind: str, model: str, exc: Exception | None, *, exhausted: bool = False) -> None:
-    msg = _friendly_message(kind, model, exhausted=exhausted)
+def _raise(kind: str, model: str, exc: Exception | None, *, exhausted: bool = False, setting: str = "XAI_MODEL") -> None:
+    msg = _friendly_message(kind, model, exhausted=exhausted, setting=setting)
     if exhausted:
         _notify("give_up", msg)
     _record(model, False, msg)
@@ -168,54 +211,131 @@ def _raise(kind: str, model: str, exc: Exception | None, *, exhausted: bool = Fa
     raise AIError(msg)
 
 
-def _call_model(client, model: str, contents, config) -> str:
-    response = client.models.generate_content(model=model, contents=contents, config=config)
-    return (getattr(response, "text", None) or "").strip()
+def _messages(system: str | None, user_content) -> list:
+    items = []
+    if system:
+        items.append({"role": "system", "content": system})
+    items.append({"role": "user", "content": user_content})
+    return items
 
 
-def _attempt(client, model: str, backup: str | None, contents, config):
+def _with_file(messages: list, file_id: str) -> list:
+    """Copy the conversation and attach an uploaded document to the user turn."""
+    copied = [dict(item) for item in messages]
+    last = copied[-1]
+    content = last["content"]
+    if isinstance(content, str):
+        parts = [{"type": "input_text", "text": content}]
+    else:
+        parts = list(content)
+    parts.append({"type": "input_file", "file_id": file_id})
+    last["content"] = parts
+    return copied
+
+
+def _output_text(response) -> str:
+    direct = getattr(response, "output_text", None)
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    chunks = []
+    for item in getattr(response, "output", None) or []:
+        content = item.get("content") if isinstance(item, dict) else getattr(item, "content", None)
+        for part in content or []:
+            piece = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+            if piece:
+                chunks.append(piece)
+    return "\n".join(chunks).strip()
+
+
+def _call_model(client, model: str, messages, *, want_json: bool, temperature: float) -> str:
+    kwargs = {
+        "model": model,
+        "input": messages,
+        "temperature": temperature,
+        # grok-4.7 defaults to high reasoning, which often exceeds this desk's 15 second limit.
+        "reasoning": {"effort": "low"},
+        # One-shot desk calls (names, scores, photos). Do not keep them on xAI's server.
+        "store": False,
+    }
+    if want_json:
+        kwargs["text"] = {"format": {"type": "json_object"}}
+    response = client.responses.create(**kwargs)
+    return _output_text(response)
+
+
+def _upload(client, filename: str, data: bytes, mime: str) -> str:
+    created = client.files.create(
+        file=(filename, io.BytesIO(data), mime),
+        purpose="assistants",
+    )
+    file_id = getattr(created, "id", None)
+    if not file_id and isinstance(created, dict):
+        file_id = created.get("id")
+    if not file_id:
+        raise RuntimeError("xAI file upload returned no id")
+    return file_id
+
+
+def _delete_file(client, file_id: str) -> None:
+    try:
+        client.files.delete(file_id)
+    except Exception:
+        return
+
+
+def _attempt(client, model: str, backup: str | None, messages, *, want_json: bool,
+             temperature: float, attachment):
     """One shot on the main model, then the backup model if that shot was busy or slow.
 
     Returns (text, kind, model_for_the_message, exception). text is empty on failure.
+    A document is uploaded for this shot and deleted before the function returns.
     """
+    file_id = None
     try:
-        text = _call_model(client, model, contents, config)
-    except Exception as exc:
-        if not (backup and _is_busy(exc)):
-            return "", _error_kind(exc), model, exc
+        if attachment:
+            filename, data, mime = attachment
+            file_id = _upload(client, filename, data, mime)
+            messages = _with_file(messages, file_id)
         try:
-            text = _call_model(client, backup, contents, config)
-        except Exception as exc2:
-            return "", _error_kind(exc2), backup, exc2
-        if text:
-            return text, None, backup, None
-        # Backup came back empty. Keep the original busy/timeout reason, as before.
+            text = _call_model(client, model, messages, want_json=want_json, temperature=temperature)
+        except Exception as exc:
+            if not (backup and _is_busy(exc)):
+                return "", _error_kind(exc), model, exc
+            try:
+                text = _call_model(client, backup, messages, want_json=want_json, temperature=temperature)
+            except Exception as exc2:
+                return "", _error_kind(exc2), backup, exc2
+            if text:
+                return text, None, backup, None
+            # Backup came back empty. Keep the original busy/timeout reason, as before.
+            return "", _error_kind(exc), model, exc
+        if not text:
+            return "", "empty", model, None
+        return text, None, model, None
+    except Exception as exc:
         return "", _error_kind(exc), model, exc
-    if not text:
-        return "", "empty", model, None
-    return text, None, model, None
+    finally:
+        if file_id:
+            _delete_file(client, file_id)
 
 
-def _generate(contents, purpose: str, system: str | None = None, want_json: bool = False,
-              temperature: float = 0.2, client=None) -> str:
+def _generate(user_content, purpose: str, system: str | None = None, want_json: bool = False,
+              temperature: float = 0.2, client=None, attachment=None) -> str:
     model = model_name(purpose)
-    setting = "GEMINI_RULES_MODEL" if purpose == "rules" else "GEMINI_MODEL"
+    setting = "XAI_RULES_MODEL" if purpose == "rules" else "XAI_MODEL"
     if is_retired(model):
         msg = retired_message(model, setting)
         _record(model, False, msg)
         raise AIError(msg)
+    if want_json:
+        note = "Respond with one JSON value and no other text."
+        system = f"{system}\n{note}" if system else note
     try:
         client = client or _client()
     except AIError as exc:
         _record(model, False, str(exc))
         raise
-    from google.genai import types
-
-    config = types.GenerateContentConfig(
-        system_instruction=system,
-        temperature=temperature,
-        response_mime_type="application/json" if want_json else None,
-    )
+    messages = _messages(system, user_content)
     backup_name = model_name("backup")
     backup = backup_name if backup_name and backup_name != model and not is_retired(backup_name) else None
 
@@ -223,11 +343,14 @@ def _generate(contents, purpose: str, system: str | None = None, want_json: bool
     for attempt in range(EXTRA_RETRIES + 1):
         if attempt:
             gutter_beat, approach_beat = RETRY_BEATS[min(attempt - 1, len(RETRY_BEATS) - 1)]
-            _notify("gutter", _friendly_message(last_kind, last_model))
+            _notify("gutter", _friendly_message(last_kind, last_model, setting=setting))
             _pause(gutter_beat)
             _notify("approach", APPROACH_STATUS)
             _pause(approach_beat)
-        text, kind, used, exc = _attempt(client, model, backup, contents, config)
+        text, kind, used, exc = _attempt(
+            client, model, backup, messages,
+            want_json=want_json, temperature=temperature, attachment=attachment,
+        )
         if text:
             if used != model:
                 _record(used, True, f"Last request succeeded using the backup model ({model} was busy or over its limit).")
@@ -238,8 +361,8 @@ def _generate(contents, purpose: str, system: str | None = None, want_json: bool
             return text
         last_kind, last_model, last_exc = kind, used, exc
         if not _is_retryable(kind):
-            _raise(kind, used, exc)
-    _raise(last_kind, last_model, last_exc, exhausted=True)
+            _raise(kind, used, exc, setting=setting)
+    _raise(last_kind, last_model, last_exc, exhausted=True, setting=setting)
 
 
 def _parse_json(text: str):
@@ -257,16 +380,33 @@ def ask_text(prompt: str, system: str | None = None, purpose: str = "general", c
     return _generate(prompt, purpose, system=system, client=client)
 
 
+def _document_name(mime: str) -> str:
+    if mime == "application/pdf":
+        return "roster.pdf"
+    if mime.startswith("text/"):
+        return "roster.txt"
+    return "document.bin"
+
+
 def extract_json(prompt: str, data: str | None = None, file_bytes: bytes | None = None,
                  mime_type: str | None = None, purpose: str = "general", client=None):
     """Extract structured data (JSON) from text or a document (PDF/image)."""
-    contents = [prompt]
-    if data:
-        contents.append(data)
+    text = prompt if not data else f"{prompt}\n\n{data}"
+    attachment = None
+    user_content = text
     if file_bytes is not None:
-        from google.genai import types
-        contents.append(types.Part.from_bytes(data=file_bytes, mime_type=mime_type or "application/octet-stream"))
-    return _parse_json(_generate(contents, purpose, want_json=True, temperature=0.1, client=client))
+        mime = mime_type or "application/octet-stream"
+        if mime.startswith("image/"):
+            encoded = base64.b64encode(file_bytes).decode("ascii")
+            user_content = [
+                {"type": "input_text", "text": text},
+                {"type": "input_image", "image_url": f"data:{mime};base64,{encoded}", "detail": "high"},
+            ]
+        else:
+            attachment = (_document_name(mime), file_bytes, mime)
+    return _parse_json(_generate(
+        user_content, purpose, want_json=True, temperature=0.1, client=client, attachment=attachment,
+    ))
 
 
 def read_image(prompt: str, image_bytes: bytes, mime_type: str = "image/jpeg", client=None):
@@ -279,6 +419,6 @@ def status_summary() -> dict:
     return {
         "model": model_name("general"),
         "rules_model": model_name("rules"),
-        "key_set": bool(get_secret("GEMINI_API_KEY")),
+        "key_set": bool(get_secret("XAI_API_KEY")),
         **{f"last_{k}": v for k, v in LAST_STATUS.items()},
     }

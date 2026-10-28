@@ -28,9 +28,9 @@ def show_about_dialog() -> None:
     st.markdown("**Prism A.I.**")
     info = ai_provider.status_summary()
     if not info["key_set"]:
-        st.write("Status: turned off (no Gemini key set up).")
+        st.write("Status: turned off (no Grok key set up).")
     st.write(f"Model: {info['model']}  \nRule Arbitrator model: {info['rules_model']}")
-    for label, name in (("GEMINI_MODEL", info["model"]), ("GEMINI_RULES_MODEL", info["rules_model"])):
+    for label, name in (("XAI_MODEL", info["model"]), ("XAI_RULES_MODEL", info["rules_model"])):
         if ai_provider.is_retired(name):
             st.warning(ai_provider.retired_message(name, label))
     if info["last_ok"] is None:

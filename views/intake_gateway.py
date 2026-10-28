@@ -11,14 +11,14 @@ import streamlit as st
 # Safe import with fallback to prevent top-level app.py crash
 try:
     from modules.ai_roster import (
-        parse_roster_text_with_gemini,
-        parse_roster_with_gemini,
+        parse_roster_text_with_grok,
+        parse_roster_with_grok,
     )
     AI_MODULE_LOADED = True
 except Exception:
     AI_MODULE_LOADED = False
-    parse_roster_text_with_gemini = lambda text: []
-    parse_roster_with_gemini = lambda b, fn: []
+    parse_roster_text_with_grok = lambda text: []
+    parse_roster_with_grok = lambda b, fn: []
 
 from modules.auth import current_user
 from modules.constants import CENTERS, HOST_CENTERS
@@ -100,7 +100,7 @@ def _run_with_bowling_animation(task_func, *args):
     progress_bar = st.progress(0)
 
     stages = [
-        (20, "Setting lane oil pattern & initializing Gemini Flash...", 18),
+        (20, "Setting lane oil pattern & initializing Grok...", 18),
         (45, "Bowler on the approach... reading roster names & USBC IDs...", 42),
         (70, "Mid-lane roll... parsing entering averages & handicaps...", 64),
     ]
@@ -147,7 +147,7 @@ def _run_with_bowling_animation(task_func, *args):
             else:
                 anim_box.empty()
             progress_bar.empty()
-            raise RuntimeError(f"Gemini API request failed: {exc}") from exc
+            raise RuntimeError(f"Grok request failed: {exc}") from exc
     finally:
         pop_retry_listener(token)
 
@@ -447,7 +447,7 @@ def render_intake_gateway() -> None:
             "Select Intake Method:",
             [
                 "📁 Upload Document (Excel, CSV, PDF, Photo)",
-                "📋 Copy & Paste Roster Text (Gemini Auto-Parser)",
+                "📋 Copy & Paste Roster Text (Grok Auto-Parser)",
                 "✍️ Manual Entry (Single Walk-In Bowler)",
             ],
             horizontal=True,
@@ -516,17 +516,17 @@ def render_intake_gateway() -> None:
                     if col_m1.button("➡️ Use These Columns", type="primary"):
                         rows = roster_import.apply_mapping(table, mapping)
                         st.session_state["parsed_ai_roster"] = roster_import.validate_rows(rows)
-                    use_ai = col_m2.button("🤖 Let Gemini Try Instead", disabled=not ai_available(), help=None if ai_available() else AI_OFF_MESSAGE)
+                    use_ai = col_m2.button("🤖 Let Grok Try Instead", disabled=not ai_available(), help=None if ai_available() else AI_OFF_MESSAGE)
                 else:
                     if ai_available():
-                        st.info("PDFs, photos, and text files are read with Gemini. Check every row in the review below.")
+                        st.info("PDFs, photos, and text files are read with Grok. Check every row in the review below.")
                     else:
                         st.warning(AI_OFF_MESSAGE + " Please upload an Excel or CSV file instead (use the template above).")
-                    use_ai = st.button("🤖 Ingest File with Gemini", type="primary", disabled=not ai_available())
+                    use_ai = st.button("🤖 Ingest File with Grok", type="primary", disabled=not ai_available())
                 if use_ai:
                     try:
                         extracted = _run_with_bowling_animation(
-                            parse_roster_with_gemini, file_bytes, uploaded_file.name
+                            parse_roster_with_grok, file_bytes, uploaded_file.name
                         )
                         if not extracted:
                             st.warning("No bowler records found in document.")
@@ -559,13 +559,13 @@ def render_intake_gateway() -> None:
             )
             if not ai_available():
                 st.caption("Prism A.I. is off, so pasted text is read by the built-in reader. Follow the format above exactly.")
-            if st.button("🤖 Ingest Pasted Text with Gemini" if ai_available() else "📋 Read Pasted Text", type="primary"):
+            if st.button("🤖 Ingest Pasted Text with Grok" if ai_available() else "📋 Read Pasted Text", type="primary"):
                 if not pasted_text.strip():
                     st.warning("Please paste some text before clicking Ingest.")
                 else:
                     try:
                         extracted = _run_with_bowling_animation(
-                            parse_roster_text_with_gemini, pasted_text
+                            parse_roster_text_with_grok, pasted_text
                         )
                         if not extracted:
                             st.warning("No bowler records detected in pasted text.")

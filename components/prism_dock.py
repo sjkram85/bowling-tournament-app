@@ -29,7 +29,7 @@ def _present_answer(text: str) -> None:
 
 
 def _ask(fn, waiting_label: str):
-    """Run a Co-Pilot call with the rolling ball, and gutter / approach if Gemini retries."""
+    """Run a Co-Pilot call with the rolling ball, and gutter / approach if Grok retries."""
     return call_with_lane_feedback(fn, waiting_html=rolling_ball_html(waiting_label))
 
 

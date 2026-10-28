@@ -9,7 +9,7 @@ from modules.ai_provider import AIError
 
 
 def test_lane_cards_use_the_bowling_words_and_escape_html():
-    gutter = gutter_ball_html("Gutter ball. Google's A.I. is very busy. <script>", settled=True)
+    gutter = gutter_ball_html("Gutter ball. xAI's A.I. is very busy. <script>", settled=True)
     assert "Gutter ball" in gutter
     assert "very busy" in gutter
     assert "<script>" not in gutter
@@ -28,12 +28,12 @@ def test_theme_css_animates_the_gutter_and_the_approach():
     assert "@keyframes back-to-approach" in css
 
 
-def test_copilot_shows_gutter_card_when_gemini_fails(monkeypatch):
+def test_copilot_shows_gutter_card_when_grok_fails(monkeypatch):
     monkeypatch.setattr("components.prism_dock.build_screen_context", lambda *_a, **_k: {"page": "Intake"})
 
     def boom(*_args, **_kwargs):
         raise AIError(
-            "Gutter ball. Google's A.I. is very busy right now. "
+            "Gutter ball. xAI's A.I. is very busy right now. "
             "Prism got back on the approach and tried again, but the ball still went in the gutter. "
             "Please try again in a minute."
         )
