@@ -20,7 +20,10 @@ DB_FILE = DB_PATH  # alias used by newer code
 # leftover Turso secrets cannot switch the live database. A deploy does not
 # need a Turso database. On Streamlit Cloud the file can reset when the app
 # sleeps or is redeployed; it stays while the app is up and serving traffic.
-# PRISM_DB_ENGINE=libsql-file runs the libSQL adapter against that same file (tests).
+# Staff sign-in rows are copied off this disk by modules.staff_vault when that
+# vault is configured, and an empty staff_users table is refilled on startup.
+# Tournament data stays in this file. PRISM_DB_ENGINE=libsql-file runs the
+# libSQL adapter against that same file (tests).
 
 
 def turso_config() -> tuple[str, str] | None:
@@ -703,6 +706,11 @@ def init_db() -> None:
                 _stamp_schema_version(conn)
             finally:
                 conn.close()
+    # Refill staff sign-ins before the scott repair, so a restored shifted row is
+    # still corrected. Missing vault secrets leave the local table unchanged.
+    # Tournament rows are not part of that copy.
+    from modules.staff_vault import sync_staff_accounts
+    sync_staff_accounts()
     # scott's row from the positional create bug (email=center, center=role, role=td).
     # Idempotent: a repaired or later-edited row no longer matches. Still runs when
     # the schema stamp is current, so a shifted row inserted later is still repaired.
