@@ -136,7 +136,7 @@ def apply_clean_theme() -> None:
             }
         }
 
-        /* Gutter ball + getting back on the approach (Gemini retry) */
+        /* Gutter ball + getting back on the approach (Grok retry) */
         .ai-lane-card {
             display: flex;
             align-items: center;

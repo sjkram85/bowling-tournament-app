@@ -4,7 +4,7 @@ Two modes:
 1. Everyday help: a short summary of the current screen (counts and warnings) goes to the
    general model, which answers in plain English for tournament directors.
 2. Rule questions: we look up the best-matching sections of the 2026-27 USBC Playing Rules
-   (modules/rulebook.py) and send only those to the Flash rules model, which must answer from them
+   (modules/rulebook.py) and send only those to the Grok rules model, which must answer from them
    and quote the rule numbers. If no section matches, we say so instead of guessing.
 """
 

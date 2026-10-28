@@ -1,4 +1,4 @@
-"""Bowling-lane feedback when Prism A.I. has to retry Gemini.
+"""Bowling-lane feedback when Prism A.I. has to retry Grok.
 
 CSS lives in components/styles.py (apply_clean_theme). This module is HTML plus
 a small Streamlit placeholder so Co-Pilot, roster ingest, and photo read can
@@ -98,7 +98,7 @@ def approach_html() -> str:
 
 
 def bind_lane_placeholder(placeholder):
-    """Point Gemini retries at a Streamlit placeholder. Returns a reset token."""
+    """Point Grok retries at a Streamlit placeholder. Returns a reset token."""
 
     def listener(phase: str, message: str) -> None:
         if phase == "approach":
@@ -113,7 +113,7 @@ def bind_lane_placeholder(placeholder):
 
 
 def call_with_lane_feedback(fn, *, waiting_html: str):
-    """Show the rolling ball, then gutter / approach if Gemini retries, then return fn()."""
+    """Show the rolling ball, then gutter / approach if Grok retries, then return fn()."""
     slot = st.empty()
     slot.markdown(waiting_html, unsafe_allow_html=True)
     token = bind_lane_placeholder(slot)

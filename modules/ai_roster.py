@@ -1,4 +1,4 @@
-"""Roster ingestion: Gemini extraction (via modules.ai_provider) plus the built-in line reader."""
+"""Roster ingestion: Grok extraction (via modules.ai_provider) plus the built-in line reader."""
 
 import io
 import json
@@ -89,7 +89,7 @@ def _format_records(raw_text: str) -> list[dict]:
 def _fast_structured_text_parser(text: str) -> list[dict]:
     """
     High-speed local parser for structured line/CSV rosters.
-    Guarantees instant extraction if Gemini hits a high-demand spike.
+    Guarantees instant extraction if Grok hits a high-demand spike.
     """
     bowlers = []
     for line in text.strip().splitlines():
@@ -157,7 +157,7 @@ def _as_records(data) -> list[dict]:
 _MIME = {".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 
 
-def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
+def parse_roster_with_grok(file_bytes: bytes, file_name: str) -> list[dict]:
     """Read an uploaded document with Prism A.I. Raises AIError (plain English) on any problem."""
     extracted_text = _extract_text_from_file(file_bytes, file_name)
     if extracted_text:
@@ -168,7 +168,7 @@ def parse_roster_with_gemini(file_bytes: bytes, file_name: str) -> list[dict]:
     return _as_records(data)
 
 
-def parse_roster_text_with_gemini(raw_text_input: str) -> list[dict]:
+def parse_roster_text_with_grok(raw_text_input: str) -> list[dict]:
     """Read pasted text. Uses Prism A.I. when it's set up; otherwise the built-in line reader."""
     if not ai_available():
         return _fast_structured_text_parser(raw_text_input)

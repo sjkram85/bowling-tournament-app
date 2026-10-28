@@ -1,5 +1,25 @@
 # bowling-tournament-app
 
+## Prism A.I. (Grok)
+
+Co-Pilot, the Rule Arbitrator, roster reading, and lane photos call xAI Grok. Nothing in the app calls Google Gemini.
+
+In the Streamlit app's secrets, set:
+
+```toml
+XAI_API_KEY = "the key from the xAI console"
+```
+
+Optional model overrides. Leave them unset to use the defaults (`grok-4.7` for Co-Pilot and the Rule Arbitrator, `grok-4.6` once when that model is busy or over its limit):
+
+```toml
+XAI_MODEL = "grok-4.7"
+XAI_RULES_MODEL = "grok-4.7"
+XAI_BACKUP_MODEL = "grok-4.6"
+```
+
+`GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_RULES_MODEL`, and `GEMINI_BACKUP_MODEL` are not read. Those secrets can be removed from the Streamlit app after this is deployed. Save the secrets, then reboot the app once so it picks them up.
+
 The desk stores tournament data in an on-disk SQLite file, `tournament.db`.
 
 `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` are not read. Streamlit Secrets entries for Turso are ignored, and a deploy does not need a Turso database. Those secrets can be removed from the Streamlit app after this is deployed.
