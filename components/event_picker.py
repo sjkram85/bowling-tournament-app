@@ -7,6 +7,17 @@ import streamlit as st
 from modules.events import active_events, center_name, resolve_event
 
 KEY = "active_tournament_id"
+INTAKE_PAGE_TITLE = "Intake Gateway"
+
+
+def should_switch_to_intake_for_new_event(starting_new, page_title: str) -> bool:
+    """True when New was chosen on a desk page other than Intake.
+
+    Intake is the default page, so Streamlit reports its url_path as "" and
+    ignores the "intake" path passed to st.Page. A check against "intake"
+    never matches, and st.switch_page then runs again on every rerun.
+    """
+    return bool(starting_new) and (page_title or "") != INTAKE_PAGE_TITLE
 
 
 def _picker(events: list[dict], title: str, on_pick) -> None:
