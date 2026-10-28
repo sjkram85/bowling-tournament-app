@@ -425,22 +425,35 @@ def render_active_squad() -> None:
     st.markdown("---")
     _render_score_entry(t_id, int(active_game), tourney, bowlers, td_name, tourney["game_count"])
 
+# Same three stored files as before (printed results, optional kiosk version, event).
+# Labels say where each file shows up. Letter-color jargon stays out of the desk.
+_LOGO_SLOTS = (
+    ("partner", "Logo for the printed results",
+     "This is the logo on the certified results PDF. Use one that shows up on a white page."),
+    ("partner_kiosk", "Different logo for the lobby kiosk (optional)",
+     "Only if you need a second logo that shows on the dark lobby screen. Leave this empty otherwise."),
+    ("event", "Event logo",
+     "Shown with the event title on the printed results and the lobby kiosk."),
+)
+
+
 def _render_logo_setup(t_id: int, tourney) -> None:
-    """Optional logos for the certified PDF and the kiosk. Events without them look the same as before."""
+    """Optional host name and logos. Events without them look the same as before."""
     from modules.event_logos import get_logos, partner_heading, set_logo, set_partner_name, validate_image
-    st.markdown("**🖼️ Logos (optional)** — shown on the certified results PDF and the lobby kiosk")
+    st.markdown("**🖼️ Logos (optional)**")
+    st.caption("Host name and logos for the printed results and the lobby kiosk. Skip any you don't have.")
     logos = get_logos(t_id)
     partner = st.text_input("Host / partner name", value=(dict(tourney).get("partner_name") or ""),
                             key=f"partner_name_{t_id}", placeholder="e.g. Forest Hill Lanes")
     if partner.strip():
         st.caption(partner_heading(partner.strip()))
-    labels = {"partner": "Host/partner logo (dark letters, for the white PDF)",
-              "partner_kiosk": "Host/partner logo for the dark kiosk (light letters, optional)",
-              "event": "Event logo (under the title)"}
-    for kind, label in labels.items():
+    else:
+        st.caption('Prints on the certified results as "Hosted by …".')
+    for kind, label, hint in _LOGO_SLOTS:
         c1, c2 = st.columns([3, 1])
         with c1:
             up = st.file_uploader(label, type=["png", "jpg", "jpeg"], key=f"logo_{kind}_{t_id}")
+            st.caption(hint)
             if up is not None:
                 try:
                     set_logo(t_id, kind, validate_image(up.getvalue()))
@@ -453,6 +466,6 @@ def _render_logo_setup(t_id: int, tourney) -> None:
                 if st.button("Remove", key=f"rm_logo_{kind}_{t_id}"):
                     set_logo(t_id, kind, None)
                     st.rerun()
-    if st.button("Save partner name", key=f"save_partner_{t_id}"):
+    if st.button("Save host / partner name", key=f"save_partner_{t_id}"):
         set_partner_name(t_id, partner)
         st.success("Saved.")

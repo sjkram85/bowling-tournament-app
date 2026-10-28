@@ -92,3 +92,62 @@ def test_partner_name_migration_column(db):
     event_logos.set_partner_name(tid, " Forest Hill Lanes ")
     from modules.standings import get_tournament
     assert get_tournament(tid)["partner_name"] == "Forest Hill Lanes"
+
+
+def test_logo_setup_copy_names_each_slot(db):
+    """A TD can tell the four fields apart without letter-color jargon."""
+    from streamlit.testing.v1 import AppTest
+
+    from modules.standings import get_tournament
+    from views.hubs.active_squad import _LOGO_SLOTS
+
+    tid = _plain_event()
+    at = AppTest.from_string(
+        "from modules.standings import get_tournament\n"
+        "from views.hubs.active_squad import _render_logo_setup\n"
+        f"_render_logo_setup({tid}, get_tournament({tid}))\n",
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    assert [w.label for w in at.text_input] == ["Host / partner name"]
+    assert [w.label for w in at.file_uploader] == [label for _kind, label, _hint in _LOGO_SLOTS]
+    assert [kind for kind, _label, _hint in _LOGO_SLOTS] == ["partner", "partner_kiosk", "event"]
+    blob = " ".join(
+        [m.value for m in at.markdown]
+        + [c.value for c in at.caption]
+        + [b.label for b in at.button]
+    )
+    assert "Logos (optional)" in blob
+    assert "Save host / partner name" in blob
+    assert 'Prints on the certified results as "Hosted by' in blob
+    for banned in ("dark letters", "light letters", "white PDF", "under the title"):
+        assert banned not in blob
+    # Typing the name previews the exact line that prints. The empty hint goes away.
+    at.text_input[0].set_value("Forest Hill Lanes").run()
+    captions = [c.value for c in at.caption]
+    assert any(c.startswith("Hosted by Forest Hill Lanes") for c in captions)
+    assert not any("Hosted by …" in c for c in captions)
+    next(b for b in at.button if b.label == "Save host / partner name").click().run()
+    assert get_tournament(tid)["partner_name"] == "Forest Hill Lanes"
+
+    buf = io.BytesIO()
+    Image.new("RGB", (12, 12), "navy").save(buf, "PNG")
+    png = buf.getvalue()
+    for index, kind in enumerate(("partner", "partner_kiosk", "event")):
+        at.file_uploader[index].upload(f"{kind}.png", png, "image/png").run()
+        assert not at.exception, at.exception
+        assert kind in event_logos.get_logos(tid)
+        assert any(s.value == "Logo saved." for s in at.success)
+
+    # A fresh visit still shows the three saved files and can drop just one of them.
+    again = AppTest.from_string(
+        "from modules.standings import get_tournament\n"
+        "from views.hubs.active_squad import _render_logo_setup\n"
+        f"_render_logo_setup({tid}, get_tournament({tid}))\n",
+        default_timeout=30,
+    ).run()
+    assert not again.exception, again.exception
+    assert len([b for b in again.button if b.label == "Remove"]) == 3
+    next(b for b in again.button if b.key == f"rm_logo_partner_{tid}").click().run()
+    assert "partner" not in event_logos.get_logos(tid)
+    assert set(event_logos.get_logos(tid)) == {"partner_kiosk", "event"}
