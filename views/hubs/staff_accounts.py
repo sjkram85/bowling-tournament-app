@@ -5,6 +5,7 @@ import streamlit as st
 from modules import auth
 from modules.auth import MIN_PASSWORD_LENGTH, ROLES, create_staff_user, is_admin
 from modules.constants import HOST_CENTERS
+from modules.staff_vault import notice as staff_vault_notice
 from modules.standings import query
 
 
@@ -238,6 +239,7 @@ def render_staff_accounts() -> None:
         return
 
     _show_notice()
+    st.caption(staff_vault_notice())
     staff = _staff()
     pending = [row for row in staff if not row["is_approved"]]
     if pending:

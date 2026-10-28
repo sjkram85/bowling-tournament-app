@@ -178,6 +178,7 @@ def _ensure_default_admin() -> None:
     # Argon2 can outlast Turso's 10s idle stream. Hash with no connection held.
     password_hash = hash_password(password)
 
+    inserted = False
     conn = get_connection()
     try:
         if schema == "table":
@@ -190,6 +191,7 @@ def _ensure_default_admin() -> None:
             _insert_default_admin(
                 conn, username, password_hash, display_name, email, affiliation
             )
+            inserted = True
         except sqlite3.OperationalError as exc:
             if _schema_problem(exc) != "column":
                 raise
@@ -198,6 +200,7 @@ def _ensure_default_admin() -> None:
             _insert_default_admin(
                 conn, username, password_hash, display_name, email, affiliation
             )
+            inserted = True
         except sqlite3.IntegrityError:
             # Another open inserted the same username. The row is the bootstrap.
             conn.rollback()
@@ -212,12 +215,15 @@ def _ensure_default_admin() -> None:
     conn = get_connection()
     try:
         if _admin_row(conn, username) is None:
+            inserted = False
             log.error(
                 "Staff sign-in bootstrap did not persist the default admin row. "
                 "The login form will still load and the next open will try again."
             )
     finally:
         conn.close()
+    if inserted:
+        _save_staff_vault()
 
 
 def _admin_row(conn, username: str):
@@ -228,6 +234,15 @@ def _admin_row(conn, username: str):
             raise
         _ensure_staff_columns(conn)
         return conn.execute(_ADMIN_LOOKUP, (username,)).fetchone()
+
+
+def _save_staff_vault() -> None:
+    """Copy staff accounts into the durable vault. A vault problem must not undo the change."""
+    try:
+        from modules.staff_vault import save_staff_vault
+        save_staff_vault()
+    except Exception:
+        log.exception("Staff vault save failed")
 
 
 def authenticate(username: str, password: str) -> dict | None:
@@ -305,6 +320,7 @@ def create_staff_user(
         "admin",
         f"Created staff account '{username.strip()}' with role '{role}'",
     )
+    _save_staff_vault()
     return True, "Staff account created successfully."
 
 
@@ -366,6 +382,7 @@ def register_staff_user(
     except Exception:
         pass
 
+    _save_staff_vault()
     return True, "Access request submitted successfully! An administrator will review and activate your account."
 
 
@@ -397,6 +414,7 @@ def approve_user(user_id: int, admin_name: str) -> str | None:
             send_applicant_approval_notice(user_info["email"], user_info["display_name"])
         except Exception:
             pass
+    _save_staff_vault()
     return None
 
 
@@ -427,6 +445,7 @@ def delete_user(user_id: int, admin_id: int, admin_name: str) -> str | None:
         "admin",
         f"Deleted staff user '{target_username}' (ID: {user_id})",
     )
+    _save_staff_vault()
     return None
 
 
@@ -460,6 +479,7 @@ def reset_password(user_id: int, new_password: str, admin_name: str) -> str | No
         "admin",
         f"Reset password for staff user '{target_username}'",
     )
+    _save_staff_vault()
     return None
 
 
@@ -556,6 +576,7 @@ def repair_shifted_scott_account() -> bool:
         "admin",
         "Repaired staff account after the positional create bug (" + "; ".join(changes) + ")",
     )
+    _save_staff_vault()
     return True
 
 
@@ -632,6 +653,7 @@ def update_staff_profile(
         "admin",
         f"Updated profile for staff user '{target_username}' (role {role}, center {center})",
     )
+    _save_staff_vault()
     return None
 
 
@@ -665,6 +687,7 @@ def set_role(user_id: int, new_role: str, admin_name: str) -> str | None:
         "admin",
         f"Updated role to '{new_role}' for staff user '{target_username}'",
     )
+    _save_staff_vault()
     return None
 
 
@@ -691,6 +714,7 @@ def change_own_password(user_id: int, current_password: str, new_password: str) 
     finally:
         conn.close()
 
+    _save_staff_vault()
     return None
 
 
