@@ -115,8 +115,10 @@ def render_desk() -> None:
     user = auth.require_login()
     if user is None:
         return
+    from components.event_picker import INTAKE_PAGE_TITLE, should_switch_to_intake_for_new_event
+
     operations = [
-        st.Page(render_intake_gateway, title="Intake Gateway", icon="📥", url_path="intake", default=True),
+        st.Page(render_intake_gateway, title=INTAKE_PAGE_TITLE, icon="📥", url_path="intake", default=True),
         st.Page(render_active_squad, title="Active Squad Hub", icon="🎳", url_path="squad"),
         st.Page(render_finals_close, title="Finals Closeout", icon="🏆", url_path="finals"),
     ]
@@ -141,29 +143,40 @@ def render_desk() -> None:
 
 
     from components.event_picker import staff_event_bar
-    if st.session_state.get("intake_new_event") and page.url_path != "intake":
+    # Title, not url_path: the default page's url_path is always "".
+    if should_switch_to_intake_for_new_event(st.session_state.get("intake_new_event"), page.title):
         st.switch_page(operations[0])
     ready = staff_event_bar()
     # The fragment heartbeats on this run and again every 30s. A second write here
     # was a Turso round trip on every click and did not change who shows as on duty.
-    _heartbeat_tick(user)
+    event_id = None if st.session_state.get("intake_new_event") else st.session_state.get("active_tournament_id")
+    _heartbeat_tick(user, event_id)
     _practice_banner()
     if ready or page.url_path == "backup":  # restore must work even when no events exist
         page.run()
 
 
 @st.fragment(run_every=30)
-def _heartbeat_tick(user: dict) -> None:
-    """Keeps this TD showing as 'on duty' while the screen is open."""
+def _heartbeat_tick(user: dict, event_id) -> None:
+    """Keeps this TD showing as 'on duty' while the screen is open.
+
+    New-event setup passes event_id=None so a practice session is not recorded
+    as the event being created.
+    """
     from modules.td_team import heartbeat
-    heartbeat(user.get("username") or user["display_name"], user["display_name"],
-              st.session_state.get("active_tournament_id"))
+    heartbeat(user.get("username") or user["display_name"], user["display_name"], event_id)
 
 
 def _practice_banner() -> None:
-    """Big, unmissable warning on every screen while a practice tournament is open."""
+    """Big, unmissable warning on every screen while a practice tournament is open.
+
+    Hidden while New is setting up a real event. The practice row stays in the
+    database; Back to my events returns to it.
+    """
     from modules.practice import is_practice
 
+    if st.session_state.get("intake_new_event"):
+        return
     t_id = st.session_state.get("active_tournament_id")
     if is_practice(t_id):
         st.markdown(
