@@ -118,33 +118,67 @@ def _score_box(label: str, key: str, saved, max_value: int):
     )
 
 
+def _forget_desk_matrix(tournament_id: int, game_num: int) -> None:
+    """The desk heatmap shares a per-run snapshot. Drop it after a floor save."""
+    from modules.run_memo import forget
+    forget(("desk-matrix", int(tournament_id), int(game_num)))
+
+
 def _record_score(tournament_id: int, bowler_id: int, game_num: int, scratch: int, hdcp: int, verifier_name: str,
                   source: str = "floor", device: str | None = None) -> int | None:
+    """Save one floor score.
+
+    A tournament director (staff name, or a unique first name such as Scott) is
+    already checked — same as a desk save. A floor helper, and a photo saved by
+    someone who is not a director, stays in Needs verifying.
+    """
     if not scoring_is_open(tournament_id):
         return None
     from modules import score_history
+    from modules.td_team import tournament_director_name
     before = score_history.current(tournament_id, bowler_id, game_num)
+    director = tournament_director_name(verifier_name)
     conn = get_connection()
     total = scratch + hdcp
     try:
         with conn:
-            conn.execute(
-                """
-                INSERT INTO scores (tournament_id, bowler_id, game_number, scratch_score, hdcp_score, total_score, recorded_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(tournament_id, bowler_id, game_number) DO UPDATE SET
-                    scratch_score = excluded.scratch_score,
-                    hdcp_score = excluded.hdcp_score,
-                    total_score = excluded.total_score,
-                    recorded_by = excluded.recorded_by,
-                    verified = 0, verified_by = NULL, verified_at = NULL,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (tournament_id, bowler_id, game_num, scratch, hdcp, total, verifier_name),
-            )
+            if director:
+                conn.execute(
+                    """
+                    INSERT INTO scores (tournament_id, bowler_id, game_number, scratch_score, hdcp_score,
+                                        total_score, recorded_by, verified, verified_by, verified_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(tournament_id, bowler_id, game_number) DO UPDATE SET
+                        scratch_score = excluded.scratch_score,
+                        hdcp_score = excluded.hdcp_score,
+                        total_score = excluded.total_score,
+                        recorded_by = excluded.recorded_by,
+                        verified = 1, verified_by = excluded.verified_by, verified_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (tournament_id, bowler_id, game_num, scratch, hdcp, total, verifier_name, director),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO scores (tournament_id, bowler_id, game_number, scratch_score, hdcp_score, total_score, recorded_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(tournament_id, bowler_id, game_number) DO UPDATE SET
+                        scratch_score = excluded.scratch_score,
+                        hdcp_score = excluded.hdcp_score,
+                        total_score = excluded.total_score,
+                        recorded_by = excluded.recorded_by,
+                        verified = 0, verified_by = NULL, verified_at = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (tournament_id, bowler_id, game_num, scratch, hdcp, total, verifier_name),
+                )
     finally:
         conn.close()
-    log_desk_action(verifier_name, "floor_verifier", f"Entered Game {game_num} score {scratch} (Total {total}) for Bowler #{bowler_id}")
+    _forget_desk_matrix(tournament_id, game_num)
+    checked = " Tournament director — already checked." if director else ""
+    log_desk_action(verifier_name, "floor_verifier",
+                    f"Entered Game {game_num} score {scratch} (Total {total}) for Bowler #{bowler_id}.{checked}")
     return score_history.log_change(tournament_id, bowler_id, game_num, before, scratch, source, verifier_name, device)
 
 
@@ -242,13 +276,20 @@ def render_mobile_scoring() -> None:
             else:
                 lane = st.selectbox("Select Lane", options=active_lanes, key=f"mobile_lane_g{game}")
 
+        saved_note = st.session_state.pop("floor_saved_note", None)
+        if saved_note:
+            st.success(saved_note)
+
         bowlers = _bowlers_on_lane(tourney, squad, int(lane), int(game))
         existing_scores = _get_existing_lane_scores(tourney["id"], game)
 
         if not bowlers:
             st.info(f"No bowlers assigned to Lane {lane}.")
         else:
-            st.caption("Leave a box blank if that bowler has not bowled. Type 0 to save a real zero.")
+            st.caption(
+                "Leave a box blank if that bowler has not bowled. Type 0 to save a real zero. "
+                "A tournament director's scores are already checked. Anyone else still shows under Needs verifying."
+            )
             with st.form(f"score_form_lane_{lane}_gm_{game}"):
                 all_recorded = True
                 entered = {}
@@ -297,10 +338,19 @@ def render_mobile_scoring() -> None:
                             if hid:
                                 changed.append(hid)
                         st.session_state["floor_undo"] = changed
-                        st.success(
-                            f"Saved {len(to_save)} score{'s' if len(to_save) != 1 else ''} for Lane {lane} Game {game}. "
-                            "Blank boxes were skipped."
-                        )
+                        from modules.td_team import tournament_director_name
+                        noun = f"score{'s' if len(to_save) != 1 else ''}"
+                        if tournament_director_name(verifier_name):
+                            note = (
+                                f"Saved {len(to_save)} {noun} for Lane {lane} Game {game}. "
+                                "Blank boxes were skipped. No second check is needed."
+                            )
+                        else:
+                            note = (
+                                f"Saved {len(to_save)} {noun} for Lane {lane} Game {game}. "
+                                "Blank boxes were skipped. The desk will verify them."
+                            )
+                        st.session_state["floor_saved_note"] = note
                         st.rerun()
 
         from components.undo_box import saved_undo_button
@@ -422,7 +472,12 @@ def _render_photo_review(tourney: dict, lane: int, game: int, image: bytes, revi
                 n += 1
             st.session_state.pop("photo_review", None)
             st.session_state["photo_undo"] = changed
-            st.success(f"Saved {n} score{'s' if n != 1 else ''}. They are waiting in the TD Verify list.")
+            from modules.td_team import tournament_director_name
+            noun = f"score{'s' if n != 1 else ''}"
+            if tournament_director_name(verifier_name):
+                st.success(f"Saved {n} {noun}. No second check is needed.")
+            else:
+                st.success(f"Saved {n} {noun}. They are waiting in the TD Verify list.")
             from components.undo_box import saved_undo_button
             saved_undo_button("photo_undo", verifier_name, device=st.session_state.get("floor_device"))
     if b2.button("Cancel", use_container_width=True, key="photo_cancel"):
