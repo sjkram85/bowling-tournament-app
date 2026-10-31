@@ -22,8 +22,9 @@ DB_FILE = DB_PATH  # alias used by newer code
 # sleeps or is redeployed; it stays while the app is up and serving traffic.
 # Staff sign-in rows are copied off this disk by modules.staff_vault when that
 # vault is configured, and an empty staff_users table is refilled on startup.
-# Tournament data stays in this file. PRISM_DB_ENGINE=libsql-file runs the
-# libSQL adapter against that same file (tests).
+# Tournament rows are copied by modules.tournament_vault (same Gmail account
+# and STAFF_VAULT_KEY, separate label) and an empty file is refilled on startup.
+# PRISM_DB_ENGINE=libsql-file runs the libSQL adapter against that same file (tests).
 
 
 def turso_config() -> tuple[str, str] | None:
@@ -291,9 +292,11 @@ class LibsqlConnection:
             return attempt()
 
     def execute(self, sql, params=()):
+        _mark_tournament_sql(self, sql)
         return self._call_again_if_stream_died(lambda: self.cursor().execute(sql, params))
 
     def executemany(self, sql, seq):
+        _mark_tournament_sql(self, sql)
         return self._call_again_if_stream_died(lambda: self.cursor().executemany(sql, seq))
 
     def executescript(self, script):
@@ -311,14 +314,17 @@ class LibsqlConnection:
         except ValueError as exc:
             if _no_active_transaction(exc):
                 log.info("libsql commit with no open transaction: %s", exc)
+                _after_tournament_commit(self)
                 return
             raise _translate(exc) from exc
+        _after_tournament_commit(self)
 
     def rollback(self):
         try:
             self._raw.rollback()
         except ValueError:
             pass
+        self._prism_tournament_pending = False
 
     def close(self):
         try:
@@ -348,8 +354,83 @@ def _connect_libsql(target: str, token: str | None = None) -> LibsqlConnection:
     return LibsqlConnection(raw)
 
 
+def _mark_tournament_sql(conn, sql) -> None:
+    """Remember a tournament write so the commit can publish the mailbox copy."""
+    if os.environ.get("PRISM_TOURNAMENT_VAULT") == "off":
+        return
+    if not isinstance(sql, str):
+        return
+    from modules.tournament_vault import statement_changes_tournament
+    if statement_changes_tournament(sql):
+        conn._prism_tournament_pending = True
+
+
+def _after_tournament_commit(conn) -> None:
+    if not getattr(conn, "_prism_tournament_pending", False):
+        return
+    conn._prism_tournament_pending = False
+    if os.environ.get("PRISM_TOURNAMENT_VAULT") == "off":
+        return
+    try:
+        from modules.tournament_vault import note_tournament_change
+        note_tournament_change()
+    except Exception:
+        log.warning("Tournament vault was not notified", exc_info=True)
+
+
+class PrismCursor(sqlite3.Cursor):
+    def execute(self, sql, parameters=()):
+        _mark_tournament_sql(self.connection, sql)
+        return super().execute(sql, parameters)
+
+    def executemany(self, sql, seq):
+        _mark_tournament_sql(self.connection, sql)
+        return super().executemany(sql, seq)
+
+
+class PrismConnection(sqlite3.Connection):
+    """sqlite3 connection that notices tournament writes on commit.
+
+    The C implementation of ``with conn`` does not call an overridden commit,
+    so __exit__ is overridden too. isinstance(..., sqlite3.Connection) stays true.
+    """
+
+    def cursor(self, factory=None):
+        if factory is None:
+            return super().cursor(PrismCursor)
+        return super().cursor(factory)
+
+    def execute(self, sql, parameters=()):
+        _mark_tournament_sql(self, sql)
+        return super().execute(sql, parameters)
+
+    def executemany(self, sql, seq):
+        _mark_tournament_sql(self, sql)
+        return super().executemany(sql, seq)
+
+    def executescript(self, script):
+        for stmt in _script_statements(script):
+            _mark_tournament_sql(self, stmt)
+        return super().executescript(script)
+
+    def commit(self):
+        super().commit()
+        _after_tournament_commit(self)
+
+    def rollback(self):
+        super().rollback()
+        self._prism_tournament_pending = False
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self.commit()
+        else:
+            self.rollback()
+        return False
+
+
 def _connect_sqlite(path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(path), check_same_thread=False)
+    conn = sqlite3.connect(str(path), check_same_thread=False, factory=PrismConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
@@ -680,35 +761,49 @@ def _apply_schema(conn) -> bool:
     return True
 
 
-def init_db() -> None:
-    """Initialize core tables, audit log, multi-event package tracking, and schema dependencies.
-
-    When prism_schema.version is already SCHEMA_VERSION, the CREATE/ALTER script is skipped.
-    A missing stamp or an older one still migrates, then the stamp is written.
-    """
+def migrate_if_needed() -> None:
+    """Create or upgrade tables when prism_schema is missing or older than SCHEMA_VERSION."""
     auto_migrate_to_turso()  # no-op: hosted Turso is not the live database
     conn = get_connection()
     try:
         up_to_date = _schema_version(conn) >= SCHEMA_VERSION
     finally:
         conn.close()
-    if not up_to_date:
+    if up_to_date:
+        return
+    conn = get_connection()
+    try:
+        applied = _apply_schema(conn)
+    finally:
+        conn.close()
+    # New per-tournament rules/fee/handicap columns (added in the dynamic rules update)
+    ensure_tournament_config_columns()
+    if applied:
         conn = get_connection()
         try:
-            applied = _apply_schema(conn)
+            _stamp_schema_version(conn)
         finally:
             conn.close()
-        # New per-tournament rules/fee/handicap columns (added in the dynamic rules update)
-        ensure_tournament_config_columns()
-        if applied:
-            conn = get_connection()
-            try:
-                _stamp_schema_version(conn)
-            finally:
-                conn.close()
+
+
+def init_db() -> None:
+    """Initialize core tables, audit log, multi-event package tracking, and schema dependencies.
+
+    When prism_schema.version is already SCHEMA_VERSION, the CREATE/ALTER script is skipped.
+    A missing stamp or an older one still migrates, then the stamp is written.
+
+    Tournament data is restored before staff accounts. A vault snapshot can replace
+    the file; the staff vault then refills sign-in rows, and the scott repair runs
+    on that refilled table. Missing vault secrets leave the local file unchanged.
+    """
+    migrate_if_needed()
+    try:
+        from modules.tournament_vault import sync_tournament_data
+        sync_tournament_data()
+    except Exception:
+        log.warning("Tournament vault sync failed", exc_info=True)
     # Refill staff sign-ins before the scott repair, so a restored shifted row is
     # still corrected. Missing vault secrets leave the local table unchanged.
-    # Tournament rows are not part of that copy.
     from modules.staff_vault import sync_staff_accounts
     sync_staff_accounts()
     # scott's row from the positional create bug (email=center, center=role, role=td).
@@ -953,7 +1048,10 @@ def restore_from_bytes(data: bytes) -> Path:
         finally:
             src.close()
             dst.close()
-    init_db()  # bring older backups up to the current schema
+    # The file just chosen by hand is the copy to keep, including in the mailbox snapshot.
+    from modules.tournament_vault import prefer_local_database
+    with prefer_local_database():
+        init_db()  # bring older backups up to the current schema
     try:
         from modules.event_logos import clear_logo_cache
         clear_logo_cache()

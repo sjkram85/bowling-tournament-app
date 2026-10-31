@@ -66,6 +66,9 @@ def _sidebar_identity(user: dict) -> None:
         )
         if is_admin:
             st.caption("🟠 " + storage_label())
+        from modules.tournament_vault import needs_attention, notice as tournament_vault_notice
+        if needs_attention():
+            st.caption(tournament_vault_notice())
         about, sign_out = st.columns(2)
         if about.button("About", key="side_about", use_container_width=True):
             show_about_dialog()
