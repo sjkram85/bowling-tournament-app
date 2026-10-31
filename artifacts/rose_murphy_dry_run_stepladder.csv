@@ -1,0 +1,14 @@
+group,match_number,match_name,low_name,score_low,high_name,score_high,rolloff_low,rolloff_high,winner_name,status
+Division 1 – Boys,1,Match 1 (#3 seed vs #2 seed),Kai Moreno,240,Hunter Ellis,212,,,Kai Moreno,completed
+Division 1 – Boys,2,Championship (vs #1 seed),Kai Moreno,203,Isaac Romero,199,,,Kai Moreno,completed
+Division 1 – Girls,1,Match 1 (#3 seed vs #2 seed),Ava Sinclair,189,Chloe Bennett,210,,,Chloe Bennett,completed
+Division 1 – Girls,2,Championship (vs #1 seed),Chloe Bennett,231,Emma Ruiz,185,,,Chloe Bennett,completed
+Division 2 – Boys,1,Match 1 (#5 seed vs #4 seed),Mason Hale,183,Owen Price,230,,,Owen Price,completed
+Division 2 – Boys,2,Match 2 (winner vs #3 seed),Owen Price,179,Ryan Foster,240,,,Ryan Foster,completed
+Division 2 – Boys,3,Match 3 (winner vs #2 seed),Ryan Foster,245,Lucas Bennett,237,,,Ryan Foster,completed
+Division 2 – Boys,4,Championship (vs #1 seed),Ryan Foster,229,Henry Diaz,227,,,Ryan Foster,completed
+Division 2 – Girls,1,Match 1 (#3 seed vs #2 seed),Grace Patel,178,Hannah Kim,220,,,Hannah Kim,completed
+Division 2 – Girls,2,Championship (vs #1 seed),Hannah Kim,227,Isla Donovan,223,,,Hannah Kim,completed
+Division 3 – Boys,1,Match 1 (#3 seed vs #2 seed),Nolan Briggs,216,Logan Pierce,239,,,Logan Pierce,completed
+Division 3 – Boys,2,Championship (vs #1 seed),Logan Pierce,217,Marcus Webb,222,,,Marcus Webb,completed
+Division 3 – Girls,1,Championship (vs #1 seed),Maya Chen,235,Sophia Alvarez,233,,,Maya Chen,completed
