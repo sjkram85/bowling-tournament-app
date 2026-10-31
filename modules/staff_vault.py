@@ -1,11 +1,13 @@
 """Durable copy of staff sign-in accounts.
 
-Tournament data stays in the local SQLite file. That file is wiped when
-Streamlit Cloud sleeps or redeploys. Staff rows are the exception: when
-STAFF_VAULT_KEY and the CHUSBC Gmail app password are set, this module stores
-an encrypted snapshot (Argon2 hashes, names, roles — never a plaintext
-password) as one message in that mailbox, and refills an empty staff_users
-table from it on startup.
+The live database is the local SQLite file. That file is wiped when Streamlit
+Cloud sleeps or redeploys. When STAFF_VAULT_KEY and the CHUSBC Gmail app
+password are set, this module stores an encrypted snapshot (Argon2 hashes,
+names, roles — never a plaintext password) as one message in that mailbox,
+and refills an empty staff_users table from it on startup.
+
+Events, bowlers, and scores are not in this snapshot. modules.tournament_vault
+stores those in the same mailbox under a separate label, with the same key.
 
 Hosted Turso is not used. With the secrets missing, nothing is copied and the
 desk keeps working on the local file alone.

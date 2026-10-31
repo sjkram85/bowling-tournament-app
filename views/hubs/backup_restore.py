@@ -3,6 +3,7 @@
 import streamlit as st
 
 from modules import auth, db_state
+from modules.tournament_vault import notice as tournament_vault_notice
 
 SAFETY_COPY_PROMPT = (
     "Download the safety copy now, before you leave this page. "
@@ -16,10 +17,12 @@ def render_backup_restore() -> None:
         st.error("Only admins can use Backup & Restore.")
         return
     st.title("💾 Backup & Restore")
+    st.caption(tournament_vault_notice())
 
     st.subheader("1. Download full backup")
     st.write("Saves everything (events, bowlers, scores, staff) to one file. "
-             "Do this after every squad and keep the file somewhere safe.")
+             "When auto-backup is on, the mailbox copy updates after scores and event changes. "
+             "Download this file after every squad anyway and keep it somewhere safe.")
     if st.button("Prepare backup file", key="bk_prepare"):
         st.session_state["bk_data"] = (db_state.backup_filename(), db_state.backup_bytes())
     if st.session_state.get("bk_data"):
