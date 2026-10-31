@@ -95,6 +95,63 @@ def tds_on_duty(tournament_id: int) -> list[dict]:
         conn.close()
 
 
+def _entered_name(value: str) -> str:
+    """Name typed on the floor phone. Photo saves append ' (photo)'."""
+    text = " ".join(str(value or "").split())
+    suffix = " (photo)"
+    if text.casefold().endswith(suffix):
+        text = text[: -len(suffix)].strip()
+    return " ".join(text.split())
+
+
+def tournament_director_name(entered_by: str) -> str | None:
+    """Display name when this floor entry was made by a tournament director.
+
+    The floor phone is not the staff login. Anyone with the scoring PIN can type
+    a name. Bowlers do not get that page. A save counts as a director's when the
+    typed name matches one active staff account: the username, the full display
+    name, or a first name that belongs to only one director (Scott matches
+    Scott Kramer). Photo reads use the same rule after the ' (photo)' suffix is
+    removed, so a director who checks the photo and saves it is done. A floor
+    helper, or a photo saved by someone who is not a director, stays in
+    Needs verifying. Ambiguous names stay there too — type the full name.
+    """
+    key = _entered_name(entered_by).casefold()
+    if not key:
+        return None
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT username, display_name, role FROM staff_users
+               WHERE COALESCE(is_approved, 1) = 1
+                 AND COALESCE(is_active, 1) = 1
+                 AND role IN ('td', 'admin')"""
+        ).fetchall()
+    except Exception as exc:
+        log.warning("td_team.tournament_director_name failed: %s", exc)
+        return None
+    finally:
+        conn.close()
+    exact = []
+    first_names = []
+    for row in rows:
+        display = " ".join(str(row["display_name"] or "").split())
+        username = " ".join(str(row["username"] or "").split()).casefold()
+        if key == display.casefold() or (username and key == username):
+            exact.append(display or row["username"])
+            continue
+        parts = display.split()
+        if parts and key == parts[0].casefold():
+            first_names.append(display)
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        return None
+    if len(first_names) == 1:
+        return first_names[0]
+    return None
+
+
 # ---------- Score verification ----------
 @_safe([])
 def needs_verifying(tournament_id: int) -> list[dict]:

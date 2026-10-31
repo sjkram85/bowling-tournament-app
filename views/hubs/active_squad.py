@@ -70,7 +70,8 @@ def _matrix_snapshot(tournament_id: int, game_number: int) -> tuple[dict[int, di
     """Scores for one game, plus how many bowlers have finished every game. One round trip.
 
     The lane heatmap and the score grid share this for a single page run. A later
-    fragment poll is a new run, so it still reads fresh scores.
+    fragment poll is a new run, so it reads the database again instead of the
+    snapshot from when the page first opened.
     """
     from modules.run_memo import memo
     return memo(("desk-matrix", int(tournament_id), int(game_number)),
@@ -145,6 +146,115 @@ def changed_desk_scores(baseline: dict, edited: dict) -> dict[int, int]:
     return updates
 
 
+def _editor_edits(editor_state) -> dict:
+    """Row position -> {column: value} for cells the TD actually changed.
+
+    The data editor's session state only lists committed edits. A blank cell
+    that the grid did not touch is not in here, so auto-save cannot turn
+    'no score yet' into 0.
+    """
+    if not editor_state or not hasattr(editor_state, "get"):
+        return {}
+    rows = editor_state.get("edited_rows") or {}
+    return rows if isinstance(rows, dict) else {}
+
+
+def changed_cells_from_editor(bowler_ids: list[int], editor_state, baseline: dict) -> dict[int, int]:
+    """Scratch scores the TD committed in the grid, and only those.
+
+    Row numbers follow the grid order. A cleared cell is not a score and is
+    not a delete. 0 is saved when the TD entered it and it differs from what
+    was already saved.
+    """
+    updates = {}
+    for index, changes in _editor_edits(editor_state).items():
+        if not isinstance(changes, dict):
+            continue
+        if "Scratch" in changes:
+            raw = changes["Scratch"]
+        elif "Scratch Score" in changes:
+            raw = changes["Scratch Score"]
+        else:
+            continue
+        try:
+            row = int(index)
+        except (TypeError, ValueError):
+            continue
+        if row < 0 or row >= len(bowler_ids):
+            continue
+        new = _cell_score(raw)
+        if new is None:
+            continue
+        bowler_id = int(bowler_ids[row])
+        old = _cell_score((baseline or {}).get(bowler_id))
+        if old != new:
+            updates[bowler_id] = new
+    return updates
+
+
+def same_scratch_map(baseline: dict, live: dict) -> bool:
+    """True when two scratch maps are the same score-for-score. Blank matches blank. 0 matches 0."""
+    keys = set(baseline or {}) | set(live or {})
+    return all(_cell_score((baseline or {}).get(key)) == _cell_score((live or {}).get(key)) for key in keys)
+
+
+def baseline_needs_refresh(baseline: dict, live: dict, editor_state) -> bool:
+    """The database moved and the TD has nothing unsent in the grid.
+
+    Used so the grid picks up floor scores without writing the cells the TD
+    is in the middle of changing.
+    """
+    if _editor_edits(editor_state):
+        return False
+    return not same_scratch_map(baseline, live)
+
+
+def forget_desk_matrix(tournament_id: int, game_number: int) -> None:
+    """Drop this run's cached game snapshot so the next read sees the save."""
+    from modules.run_memo import forget
+    forget(("desk-matrix", int(tournament_id), int(game_number)))
+
+
+def apply_desk_editor(tournament_id: int, game_number: int, bowler_ids: list[int], handicaps: dict,
+                      editor_state, baseline: dict, user_name: str) -> tuple[dict[int, int] | None, list[int]]:
+    """Write the cells the TD changed.
+
+    Returns (updates, undo ids). updates is None when the event is frozen and
+    nothing was written. An empty dict means there was nothing new to write.
+    Blank cells are skipped. Saved cells are verified, same as the old Save button.
+    """
+    updates = changed_cells_from_editor(bowler_ids, editor_state, baseline)
+    if not updates:
+        return {}, []
+    if not scoring_is_open(tournament_id):
+        return None, []
+    history_ids = []
+    for bowler_id, scratch in updates.items():
+        history_id = _save_score(
+            tournament_id, bowler_id, int(game_number), scratch,
+            int(handicaps.get(bowler_id, 0) or 0), user_name,
+        )
+        if history_id:
+            history_ids.append(history_id)
+    forget_desk_matrix(tournament_id, game_number)
+    return updates, history_ids
+
+
+def lane_status_label(bowler_count: int, scored_count: int) -> str:
+    """Lane board label from saved scores only.
+
+    COMPLETED when every bowler on the lane has a saved score for this game.
+    A saved 0 counts. PENDING when nobody on the lane has a saved score yet.
+    A partial save stays on the in-between label — it does not jump back to
+    PENDING and it is not treated as finished.
+    """
+    if bowler_count <= 0 or scored_count <= 0:
+        return "PENDING"
+    if scored_count >= bowler_count:
+        return "COMPLETED"
+    return f"{scored_count}/{bowler_count} ENTERED"
+
+
 def _save_score(tournament_id: int, bowler_id: int, game_number: int, scratch: int, hdcp: int, user_name: str) -> int | None:
     """Write one scratch score onto the game the desk has selected. Refuses a frozen event."""
     if not scoring_is_open(tournament_id):
@@ -172,6 +282,7 @@ def _save_score(tournament_id: int, bowler_id: int, game_number: int, scratch: i
     finally:
         conn.close()
     log_desk_action(user_name, "td", f"Logged Game {game_number} score {scratch} (HDCP +{hdcp}) for Bowler #{bowler_id}")
+    forget_desk_matrix(tournament_id, game_number)
     return score_history.log_change(tournament_id, bowler_id, game_number, before, scratch, "desk", user_name)
 
 
@@ -208,12 +319,16 @@ def _render_lane_heatmap(t_id: int, active_game: int, tourney: dict, bowlers: li
     assigned_lanes = sorted({lane for lane in lane_of.values() if lane})
     for i, lane_num in enumerate(assigned_lanes):
         lane_bowlers = [b for b in bowlers if lane_of[b["id"]] == lane_num]
+        # Finished means every bowler on the lane has a saved score for this game.
+        # A blank cell on the desk is not a score. The next poll reads the database
+        # again, so a lane stays completed while those scores are still stored.
         reported_count = sum(1 for b in lane_bowlers if b["id"] in scores_map)
-        all_reported = (reported_count == len(lane_bowlers)) and len(lane_bowlers) > 0
+        label = lane_status_label(len(lane_bowlers), reported_count)
+        all_reported = label == "COMPLETED"
+        any_reported = reported_count > 0 and not all_reported
 
-        bg_color = "#064E3B" if all_reported else "#78350F" if reported_count > 0 else "#1E293B"
-        border_color = "#10B981" if all_reported else "#F59E0B" if reported_count > 0 else "#334155"
-        label = "COMPLETED" if all_reported else f"{reported_count}/{len(lane_bowlers)} ENTERED" if reported_count > 0 else "PENDING"
+        bg_color = "#064E3B" if all_reported else "#78350F" if any_reported else "#1E293B"
+        border_color = "#10B981" if all_reported else "#F59E0B" if any_reported else "#334155"
 
         col = lane_status_cols[i % 6]
         with col:
@@ -236,7 +351,8 @@ def _render_score_entry(t_id: int, active_game: int, tourney: dict, bowlers: lis
     st.subheader(f"Direct Desk Score Entry — Game {active_game}")
     st.caption(
         "Leave a cell blank if that game has no score yet. Type 0 to save a real zero. "
-        "Save writes only cells you changed, for this game, on the lane shown (same as the floor phone)."
+        "A score saves when you leave the cell. Only cells you change are saved, for this game, "
+        "on the lane shown (same as the floor phone)."
     )
     editor_key = f"editor_scores_{t_id}_g{active_game}"
     base_key = f"desk_score_baseline_{t_id}_g{active_game}"
@@ -252,8 +368,12 @@ def _render_score_entry(t_id: int, active_game: int, tourney: dict, bowlers: lis
             baseline[bowler_id] = scratch
 
     triage_rows = []
+    bowler_ids = []
+    handicaps = {}
     for b in bowlers:
         b_id = b["id"]
+        bowler_ids.append(b_id)
+        handicaps[b_id] = int(b["handicap"] or 0)
         sc = scores_map.get(b_id, {})
         lane_shown = _lane_now(b, active_game, tourney, bowlers)
         pacer_str = " (PACER)" if b["is_pacer"] else ""
@@ -270,7 +390,7 @@ def _render_score_entry(t_id: int, active_game: int, tourney: dict, bowlers: lis
         })
 
     df_scores = pd.DataFrame(triage_rows)
-    edited_scores = st.data_editor(
+    st.data_editor(
         df_scores,
         hide_index=True,
         use_container_width=True,
@@ -287,36 +407,30 @@ def _render_score_entry(t_id: int, active_game: int, tourney: dict, bowlers: lis
         },
     )
 
-    save_col, reload_col = st.columns([3, 1])
-    if reload_col.button("Reload scores", key=f"desk_reload_{t_id}_g{active_game}", use_container_width=True,
-                         help="Show the latest saved scores. This does not write anything."):
+    if st.button("Reload scores", key=f"desk_reload_{t_id}_g{active_game}",
+                 help="Show the latest saved scores. This does not write anything."):
         st.session_state.pop(base_key, None)
         st.session_state.pop(editor_key, None)
         st.rerun()
-    if save_col.button(f"💾 Save Desk Score Adjustments for Game {active_game}", type="primary", use_container_width=True):
-        if not scoring_is_open(t_id):
-            st.error("This event is frozen. Scores were not changed. An admin can reopen it from Finals Closeout.")
-        else:
-            edited_map = {}
-            handicaps = {}
-            for row in edited_scores.to_dict("records"):
-                bowler_id = int(row["Bowler ID"])
-                edited_map[bowler_id] = row["Scratch"]
-                handicaps[bowler_id] = int(row["HDCP"] or 0)
-            updates = changed_desk_scores(baseline, edited_map)
-            if not updates:
-                st.info("No score cells were changed, so nothing was written.")
-            else:
-                changed = []
-                for bowler_id, scratch in updates.items():
-                    hid = _save_score(t_id, bowler_id, int(active_game), scratch, handicaps.get(bowler_id, 0), td_name)
-                    if hid:
-                        changed.append(hid)
-                st.session_state[f"desk_undo_{t_id}"] = changed
-                st.session_state.pop(base_key, None)
-                st.session_state.pop(editor_key, None)
-                st.success(f"Saved {len(updates)} changed score(s) for Game {active_game}. Unchanged cells were left as they are.")
-                st.rerun()
+
+    editor_state = st.session_state.get(editor_key)
+    saved, history_ids = apply_desk_editor(
+        t_id, int(active_game), bowler_ids, handicaps, editor_state, baseline, td_name,
+    )
+    if saved is None:
+        st.error("This event is frozen. Scores were not changed. An admin can reopen it from Finals Closeout.")
+    elif saved:
+        st.session_state[f"desk_undo_{t_id}"] = history_ids
+        for bowler_id, scratch in saved.items():
+            baseline[bowler_id] = scratch
+        st.session_state[base_key] = baseline
+        st.rerun()
+    elif baseline_needs_refresh(baseline, live, editor_state):
+        # Floor scores (or another TD) landed after this grid was opened.
+        # Show them. Do not write — the TD has not changed a cell.
+        st.session_state[base_key] = dict(live)
+        st.session_state.pop(editor_key, None)
+        st.rerun()
 
     from components.undo_box import saved_undo_button
     saved_undo_button(f"desk_undo_{t_id}", td_name)
